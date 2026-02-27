@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
-from loony_dev.models import Comment
+from loony_dev.models import Comment, truncate_for_log
 from loony_dev.tasks.base import Task
 
 if TYPE_CHECKING:
     from loony_dev.github import GitHubClient
     from loony_dev.models import Issue, TaskResult
+
+logger = logging.getLogger(__name__)
 
 PLAN_MARKER = "<!-- loony-plan -->"
 
@@ -35,16 +38,30 @@ class PlanningTask(Task):
     def discover(github: GitHubClient) -> Iterator[PlanningTask]:
         """Yield planning tasks for issues that need a new or revised plan."""
         for issue, labels in github.list_issues("ready-for-planning"):
+            logger.debug("Examining issue #%d: %s (labels=%s)", issue.number, issue.title, labels)
             if "ready-for-development" in labels:
                 # User approved the plan; hand off to coding agent.
+                logger.debug(
+                    "Issue #%d has 'ready-for-development' — plan approved, removing 'ready-for-planning'",
+                    issue.number,
+                )
                 github.remove_label(issue.number, "ready-for-planning")
                 continue
             comments = github.get_issue_comments(issue.number)
             existing_plan, new_comments = PlanningTask._analyze_planning_comments(
                 comments, github.bot_name
             )
+            if existing_plan is not None:
+                logger.debug(
+                    "Issue #%d: existing plan found (%d chars), %d new comment(s) since last plan",
+                    issue.number, len(existing_plan), len(new_comments),
+                )
+            else:
+                logger.debug("Issue #%d: no existing plan — will create initial plan", issue.number)
             if existing_plan is None or new_comments:
                 yield PlanningTask(issue, existing_plan, new_comments)
+            else:
+                logger.debug("Issue #%d: plan exists and no new feedback — skipping", issue.number)
 
     @staticmethod
     def _analyze_planning_comments(
@@ -102,12 +119,17 @@ class PlanningTask(Task):
         )
 
     def on_start(self, github: GitHubClient) -> None:
-        pass  # Keep ready-for-planning label so state is visible; execution is serial
+        logger.debug("Issue #%d: starting planning (keeping 'ready-for-planning' label)", self.issue.number)
 
     def on_complete(self, github: GitHubClient, result: TaskResult) -> None:
+        logger.debug(
+            "Issue #%d: posting plan (%d chars): %s",
+            self.issue.number, len(result.summary), truncate_for_log(result.summary),
+        )
         github.post_comment(self.issue.number, f"{PLAN_MARKER}\n\n{result.summary}")
 
     def on_failure(self, github: GitHubClient, error: Exception) -> None:
+        logger.debug("Issue #%d: planning failed (%s)", self.issue.number, error)
         github.post_comment(
             self.issue.number,
             f"Planning failed: {error}",

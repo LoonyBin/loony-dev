@@ -4,7 +4,7 @@ import json
 import logging
 import subprocess
 
-from loony_dev.models import Comment, Issue
+from loony_dev.models import Comment, Issue, truncate_for_log
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +47,15 @@ class GitHubClient:
             "--state", "open",
             "--json", "number,title,body,labels",
         )
-        return [
+        result = [
             (
                 Issue(number=item["number"], title=item["title"], body=item.get("body", "")),
                 [l["name"] for l in item.get("labels", [])],
             )
             for item in data
         ]
+        logger.debug("list_issues(label=%r) returned %d issue(s)", label, len(result))
+        return result
 
     def get_issue_comments(self, number: int) -> list[Comment]:
         """Get all comments on an issue, sorted by creation time."""
@@ -69,24 +71,27 @@ class GitHubClient:
             for c in data.get("comments", [])
         ]
         comments.sort(key=lambda c: c.created_at)
+        logger.debug("get_issue_comments(#%d) returned %d comment(s)", number, len(comments))
         return comments
 
     # --- Pull Requests ---
 
     def list_open_prs(self) -> list[dict]:
         """Fetch all open PRs with their labels, comments, and reviews."""
-        return self._gh_json(
+        result = self._gh_json(
             "pr", "list",
             "--state", "open",
             "--json", "number,headRefName,title,comments,reviews,labels",
         )
+        logger.debug("list_open_prs() returned %d open PR(s)", len(result))
+        return result
 
     def get_pr_inline_comments(self, pr_number: int) -> list[Comment]:
         """Fetch inline review comments for a PR."""
         try:
             data = self._gh_api(f"pulls/{pr_number}/comments")
             if isinstance(data, list):
-                return [
+                comments = [
                     Comment(
                         author=c.get("user", {}).get("login", ""),
                         body=c.get("body", ""),
@@ -96,6 +101,8 @@ class GitHubClient:
                     )
                     for c in data
                 ]
+                logger.debug("get_pr_inline_comments(#%d) returned %d comment(s)", pr_number, len(comments))
+                return comments
         except subprocess.CalledProcessError:
             logger.warning("Failed to fetch inline review comments for PR #%d", pr_number)
         return []
@@ -117,6 +124,7 @@ class GitHubClient:
     # --- Comments ---
 
     def post_comment(self, number: int, body: str) -> None:
+        logger.debug("post_comment(#%d): %s", number, truncate_for_log(body))
         self._gh("issue", "comment", str(number), "--body", body)
 
     # --- Repo detection ---
