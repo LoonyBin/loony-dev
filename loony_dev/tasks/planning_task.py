@@ -15,7 +15,7 @@ PLAN_MARKER = "<!-- loony-plan -->"
 
 class PlanningTask(Task):
     task_type = "plan_issue"
-    priority = 2
+    priority = 30
 
     def __init__(
         self,

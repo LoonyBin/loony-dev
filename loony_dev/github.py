@@ -78,7 +78,7 @@ class GitHubClient:
         return self._gh_json(
             "pr", "list",
             "--state", "open",
-            "--json", "number,headRefName,title,comments,reviews,labels",
+            "--json", "number,headRefName,title,comments,reviews,labels,mergeable",
         )
 
     def get_pr_inline_comments(self, pr_number: int) -> list[Comment]:

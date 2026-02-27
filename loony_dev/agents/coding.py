@@ -43,7 +43,7 @@ class CodingAgent(Agent):
         self.work_dir = work_dir
 
     def can_handle(self, task: Task) -> bool:
-        return task.task_type in ("implement_issue", "address_review")
+        return task.task_type in ("implement_issue", "address_review", "resolve_conflicts")
 
     QUOTA_FALLBACK_SECONDS = 5 * 60
 

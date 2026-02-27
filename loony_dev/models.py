@@ -25,6 +25,7 @@ class PullRequest:
     branch: str
     title: str
     new_comments: list[Comment] = field(default_factory=list)
+    mergeable: str | None = None
 
 
 @dataclass
