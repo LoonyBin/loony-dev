@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class GitHubClient:
-    def __init__(self, repo: str, bot_name: str = "loony-dev[bot]") -> None:
+    def __init__(self, repo: str, bot_name: str) -> None:
         self.repo = repo
         self.bot_name = bot_name
 
@@ -126,6 +126,15 @@ class GitHubClient:
         """Detect owner/repo from git remote URL."""
         result = subprocess.run(
             ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
+            capture_output=True, text=True, check=True,
+        )
+        return result.stdout.strip()
+
+    @staticmethod
+    def detect_bot_name() -> str:
+        """Detect the authenticated GitHub user's login via the gh CLI."""
+        result = subprocess.run(
+            ["gh", "api", "user", "-q", ".login"],
             capture_output=True, text=True, check=True,
         )
         return result.stdout.strip()
