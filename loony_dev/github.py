@@ -60,28 +60,20 @@ class GitHubClient:
         data = self._gh_json("issue", "view", str(number), "--json", "comments")
         if not isinstance(data, dict):
             return []
-        comments = []
-        for c in data.get("comments", []):
-            comments.append(Comment(
+        comments = [
+            Comment(
                 author=c.get("author", {}).get("login", ""),
                 body=c.get("body", ""),
                 created_at=c.get("createdAt", ""),
-            ))
+            )
+            for c in data.get("comments", [])
+        ]
         comments.sort(key=lambda c: c.created_at)
         return comments
 
     def get_ready_issues(self) -> list[Issue]:
         """Get issues labeled 'ready-for-development'."""
-        data = self._gh_json(
-            "issue", "list",
-            "--label", "ready-for-development",
-            "--state", "open",
-            "--json", "number,title,body",
-        )
-        return [
-            Issue(number=item["number"], title=item["title"], body=item.get("body", ""))
-            for item in data
-        ]
+        return [issue for issue, _ in self.list_issues("ready-for-development")]
 
     # --- Pull Requests ---
 

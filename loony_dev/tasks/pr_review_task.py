@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-import subprocess
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
@@ -11,8 +9,6 @@ from loony_dev.tasks.base import Task
 if TYPE_CHECKING:
     from loony_dev.github import GitHubClient
     from loony_dev.models import TaskResult
-
-logger = logging.getLogger(__name__)
 
 
 class PRReviewTask(Task):
@@ -48,23 +44,23 @@ class PRReviewTask(Task):
     @staticmethod
     def _assemble_comments(pr_data: dict, github: GitHubClient) -> list[Comment]:
         """Combine general comments, review bodies, and inline review comments."""
-        comments: list[Comment] = []
-
-        for c in pr_data.get("comments", []):
-            comments.append(Comment(
+        comments = [
+            Comment(
                 author=c.get("author", {}).get("login", ""),
                 body=c.get("body", ""),
                 created_at=c.get("createdAt", ""),
-            ))
-
-        for review in pr_data.get("reviews", []):
-            if review.get("body"):
-                comments.append(Comment(
-                    author=review.get("author", {}).get("login", ""),
-                    body=review.get("body", ""),
-                    created_at=review.get("submittedAt", ""),
-                ))
-
+            )
+            for c in pr_data.get("comments", [])
+        ]
+        comments += [
+            Comment(
+                author=review.get("author", {}).get("login", ""),
+                body=review.get("body", ""),
+                created_at=review.get("submittedAt", ""),
+            )
+            for review in pr_data.get("reviews", [])
+            if review.get("body")
+        ]
         comments.extend(github.get_pr_inline_comments(pr_data["number"]))
         comments.sort(key=lambda c: c.created_at)
         return comments
