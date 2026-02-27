@@ -68,14 +68,30 @@ class Orchestrator:
         as a handleable task is found — avoiding unnecessary GitHub API calls.
         """
         for task_class in TASK_CLASSES:
+            logger.debug("Checking %s for work...", task_class.__name__)
+            found_in_class = 0
             for task in task_class.discover(self.github):
+                found_in_class += 1
                 for agent in self.agents:
                     if agent.can_handle(task):
+                        logger.debug(
+                            "Selected agent '%s' for task '%s' (type=%s)",
+                            agent.name, task, task.task_type,
+                        )
                         return task, agent
+                logger.debug(
+                    "No agent can handle task type '%s' — skipping", task.task_type,
+                )
+            logger.debug("%s yielded %d candidate(s)", task_class.__name__, found_in_class)
         return None
 
     def dispatch(self, agent: Agent, task: Task) -> None:
+        logger.debug("Task description:\n%s", task.describe())
         task.on_start(self.github)
+        branch = self.git.current_branch()
+        logger.debug("Current branch before sync: %s", branch)
+        has_changes = self.git.has_uncommitted_changes()
+        logger.debug("Uncommitted changes before sync: %s", has_changes)
         self.git.ensure_main_up_to_date()
         try:
             result = agent.execute(task)

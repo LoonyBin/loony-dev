@@ -3,6 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+def truncate_for_log(text: str, head: int = 300, tail: int = 200) -> str:
+    """Return text trimmed to head+tail chars for log readability."""
+    if len(text) <= head + tail:
+        return text
+    return f"{text[:head]}\n... [truncated] ...\n{text[-tail:]}"
+
+
 @dataclass
 class Issue:
     number: int

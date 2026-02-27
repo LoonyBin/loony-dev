@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from loony_dev.agents.base import Agent
-from loony_dev.models import TaskResult
+from loony_dev.models import TaskResult, truncate_for_log
 
 if TYPE_CHECKING:
     from loony_dev.tasks.base import Task
@@ -49,14 +49,23 @@ class CodingAgent(Agent):
 
     def execute(self, task: Task) -> TaskResult:
         prompt = task.describe()
+        cmd = ["claude", "-p", "--dangerously-skip-permissions", prompt]
+        logger.debug("Running Claude CLI (cwd=%s): claude -p --dangerously-skip-permissions <prompt>", self.work_dir)
+        logger.debug("Claude prompt: %s", truncate_for_log(prompt))
 
         while True:
             result = subprocess.run(
-                ["claude", "-p", "--dangerously-skip-permissions", prompt],
+                cmd,
                 cwd=self.work_dir,
                 capture_output=True,
                 text=True,
             )
+
+            logger.debug("Claude CLI exited with code %d", result.returncode)
+            if result.stdout:
+                logger.debug("Claude stdout: %s", truncate_for_log(result.stdout))
+            if result.stderr:
+                logger.debug("Claude stderr: %s", truncate_for_log(result.stderr))
 
             if result.returncode != 0:
                 combined = f"{result.stdout}\n{result.stderr}"
@@ -135,16 +144,17 @@ class CodingAgent(Agent):
 
     def _generate_summary(self, output: str) -> str:
         """Use Claude to generate a brief summary of the work done."""
+        summary_prompt = f"Summarize what was done in 2-3 sentences based on this output:\n\n{output[-3000:]}"
+        logger.debug("Running summary Claude call")
+        logger.debug("Summary prompt: %s", truncate_for_log(summary_prompt))
         result = subprocess.run(
-            [
-                "claude",
-                "-p",
-                "--dangerously-skip-permissions",
-                f"Summarize what was done in 2-3 sentences based on this output:\n\n{output[-3000:]}",
-            ],
+            ["claude", "-p", "--dangerously-skip-permissions", summary_prompt],
             capture_output=True,
             text=True,
         )
+        logger.debug("Summary Claude call exited with code %d", result.returncode)
+        if result.stdout:
+            logger.debug("Summary output: %s", truncate_for_log(result.stdout))
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
         return "Changes were made successfully."

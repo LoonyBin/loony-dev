@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
+from loony_dev.models import truncate_for_log
 from loony_dev.tasks.base import Task
 from loony_dev.tasks.planning_task import PLAN_MARKER
 
 if TYPE_CHECKING:
     from loony_dev.github import GitHubClient
     from loony_dev.models import Comment, Issue, TaskResult
+
+logger = logging.getLogger(__name__)
 
 
 class IssueTask(Task):
@@ -27,8 +31,13 @@ class IssueTask(Task):
     def discover(github: GitHubClient) -> Iterator[IssueTask]:
         """Yield implementation tasks for issues labeled ready-for-development."""
         for issue, _ in github.list_issues("ready-for-development"):
+            logger.debug("Examining issue #%d: %s", issue.number, issue.title)
             comments = github.get_issue_comments(issue.number)
             plan = IssueTask._find_plan(comments, github.bot_name)
+            if plan is not None:
+                logger.debug("Issue #%d has an approved plan (%d chars)", issue.number, len(plan))
+            else:
+                logger.debug("Issue #%d has no approved plan — will implement from issue body", issue.number)
             yield IssueTask(issue, plan=plan)
 
     @staticmethod
@@ -61,10 +70,13 @@ class IssueTask(Task):
         )
 
     def on_start(self, github: GitHubClient) -> None:
+        logger.debug("Issue #%d: removing 'ready-for-development', adding 'in-progress'", self.issue.number)
         github.remove_label(self.issue.number, "ready-for-development")
         github.add_label(self.issue.number, "in-progress")
 
     def on_complete(self, github: GitHubClient, result: TaskResult) -> None:
+        logger.debug("Issue #%d: removing 'in-progress', posting completion comment", self.issue.number)
+        logger.debug("Completion comment body: %s", truncate_for_log(result.summary))
         github.remove_label(self.issue.number, "in-progress")
         github.post_comment(
             self.issue.number,
@@ -72,6 +84,10 @@ class IssueTask(Task):
         )
 
     def on_failure(self, github: GitHubClient, error: Exception) -> None:
+        logger.debug(
+            "Issue #%d: task failed (%s), restoring 'ready-for-development'",
+            self.issue.number, error,
+        )
         github.remove_label(self.issue.number, "in-progress")
         github.add_label(self.issue.number, "ready-for-development")
         github.post_comment(
