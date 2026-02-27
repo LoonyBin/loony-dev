@@ -84,7 +84,9 @@ class Orchestrator:
 
         # Priority 3: Development tasks
         for issue in self.github.get_ready_issues():
-            tasks.append(IssueTask(issue))
+            comments = self.github.get_issue_comments(issue.number)
+            approved_plan, _ = self._analyze_planning_comments(comments)
+            tasks.append(IssueTask(issue, plan=approved_plan))
 
         return tasks
 

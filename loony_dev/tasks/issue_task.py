@@ -12,14 +12,18 @@ if TYPE_CHECKING:
 class IssueTask(Task):
     task_type = "implement_issue"
 
-    def __init__(self, issue: Issue) -> None:
+    def __init__(self, issue: Issue, plan: str | None = None) -> None:
         self.issue = issue
+        self.plan = plan
 
     def describe(self) -> str:
+        if self.plan is not None:
+            content = f"## Approved Implementation Plan\n\n{self.plan}"
+        else:
+            content = f"Issue #{self.issue.number}: {self.issue.title}\n\n{self.issue.body}"
         return (
             f"Implement the following GitHub issue.\n\n"
-            f"Issue #{self.issue.number}: {self.issue.title}\n\n"
-            f"{self.issue.body}\n\n"
+            f"{content}\n\n"
             f"Instructions:\n"
             f"- Create a new branch for this work\n"
             f"- Implement the changes described in the issue\n"
