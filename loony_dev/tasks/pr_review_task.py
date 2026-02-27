@@ -1,19 +1,89 @@
 from __future__ import annotations
 
+import logging
+import subprocess
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
+from loony_dev.models import Comment, PullRequest
 from loony_dev.tasks.base import Task
 
 if TYPE_CHECKING:
     from loony_dev.github import GitHubClient
-    from loony_dev.models import PullRequest, TaskResult
+    from loony_dev.models import TaskResult
+
+logger = logging.getLogger(__name__)
 
 
 class PRReviewTask(Task):
     task_type = "address_review"
+    priority = 1
 
     def __init__(self, pr: PullRequest) -> None:
         self.pr = pr
+
+    # ------------------------------------------------------------------
+    # Task discovery
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def discover(github: GitHubClient) -> Iterator[PRReviewTask]:
+        """Yield PRs that have new review comments since the bot last responded."""
+        for item in github.list_open_prs():
+            labels = [l["name"] for l in item.get("labels", [])]
+            if "in-progress" in labels:
+                continue
+
+            all_comments = PRReviewTask._assemble_comments(item, github)
+            new_comments = PRReviewTask._new_since_bot(all_comments, github.bot_name)
+
+            if new_comments:
+                yield PRReviewTask(PullRequest(
+                    number=item["number"],
+                    branch=item["headRefName"],
+                    title=item["title"],
+                    new_comments=new_comments,
+                ))
+
+    @staticmethod
+    def _assemble_comments(pr_data: dict, github: GitHubClient) -> list[Comment]:
+        """Combine general comments, review bodies, and inline review comments."""
+        comments: list[Comment] = []
+
+        for c in pr_data.get("comments", []):
+            comments.append(Comment(
+                author=c.get("author", {}).get("login", ""),
+                body=c.get("body", ""),
+                created_at=c.get("createdAt", ""),
+            ))
+
+        for review in pr_data.get("reviews", []):
+            if review.get("body"):
+                comments.append(Comment(
+                    author=review.get("author", {}).get("login", ""),
+                    body=review.get("body", ""),
+                    created_at=review.get("submittedAt", ""),
+                ))
+
+        comments.extend(github.get_pr_inline_comments(pr_data["number"]))
+        comments.sort(key=lambda c: c.created_at)
+        return comments
+
+    @staticmethod
+    def _new_since_bot(comments: list[Comment], bot_name: str) -> list[Comment]:
+        """Return non-bot comments that appear after the bot's last comment."""
+        bot_last_idx = -1
+        for i, c in enumerate(comments):
+            if c.author == bot_name:
+                bot_last_idx = i
+
+        if bot_last_idx == -1:
+            return [c for c in comments if c.author != bot_name]
+        return [c for c in comments[bot_last_idx + 1:] if c.author != bot_name]
+
+    # ------------------------------------------------------------------
+    # Task interface
+    # ------------------------------------------------------------------
 
     def describe(self) -> str:
         comments_text = "\n\n".join(
@@ -29,7 +99,7 @@ class PRReviewTask(Task):
             f"- Commit and push your changes"
         )
 
-    def _format_comment(self, comment) -> str:
+    def _format_comment(self, comment: Comment) -> str:
         location = ""
         if comment.path:
             location = f" ({comment.path}"

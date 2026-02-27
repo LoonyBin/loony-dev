@@ -4,6 +4,10 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from loony_dev.tasks.issue_task import IssueTask
+from loony_dev.tasks.planning_task import PlanningTask
+from loony_dev.tasks.pr_review_task import PRReviewTask
+
 if TYPE_CHECKING:
     from loony_dev.agents.base import Agent
     from loony_dev.git import GitRepo
@@ -12,11 +16,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
-class NoAgentError(Exception):
-    def __init__(self, task: Task) -> None:
-        super().__init__(f"No agent can handle task type: {task.task_type}")
-        self.task = task
+# Task classes ordered by priority (lowest number = highest priority).
+# The orchestrator iterates these in order, stopping as soon as it finds
+# a task that some configured agent can handle.
+TASK_CLASSES = sorted(
+    [PRReviewTask, PlanningTask, IssueTask],
+    key=lambda tc: tc.priority,
+)
 
 
 class Orchestrator:
@@ -46,28 +52,27 @@ class Orchestrator:
             time.sleep(self.interval)
 
     def _tick(self) -> None:
-        tasks = self.gather_tasks()
-        if not tasks:
+        result = self._find_work()
+        if result is None:
             logger.debug("No tasks found.")
             return
 
-        task = tasks[0]
+        task, agent = result
         logger.info("Dispatching task: %s", task.task_type)
-        agent = self.find_agent(task)
         self.dispatch(agent, task)
 
-    def gather_tasks(self) -> list[Task]:
-        """Collect tasks from all registered agents in registration order."""
-        tasks: list[Task] = []
-        for agent in self.agents:
-            tasks.extend(agent.discover_tasks(self.github))
-        return tasks
+    def _find_work(self) -> tuple[Task, Agent] | None:
+        """Iterate task classes by priority; return first (task, agent) pair found.
 
-    def find_agent(self, task: Task) -> Agent:
-        for agent in self.agents:
-            if agent.can_handle(task):
-                return agent
-        raise NoAgentError(task)
+        Each task class's discover() is an iterator so discovery stops as soon
+        as a handleable task is found — avoiding unnecessary GitHub API calls.
+        """
+        for task_class in TASK_CLASSES:
+            for task in task_class.discover(self.github):
+                for agent in self.agents:
+                    if agent.can_handle(task):
+                        return task, agent
+        return None
 
     def dispatch(self, agent: Agent, task: Task) -> None:
         task.on_start(self.github)

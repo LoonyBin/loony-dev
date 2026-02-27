@@ -1,20 +1,48 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from loony_dev.tasks.base import Task
+from loony_dev.tasks.planning_task import PLAN_MARKER
 
 if TYPE_CHECKING:
     from loony_dev.github import GitHubClient
-    from loony_dev.models import Issue, TaskResult
+    from loony_dev.models import Comment, Issue, TaskResult
 
 
 class IssueTask(Task):
     task_type = "implement_issue"
+    priority = 3
 
     def __init__(self, issue: Issue, plan: str | None = None) -> None:
         self.issue = issue
         self.plan = plan
+
+    # ------------------------------------------------------------------
+    # Task discovery
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def discover(github: GitHubClient) -> Iterator[IssueTask]:
+        """Yield implementation tasks for issues labeled ready-for-development."""
+        for issue in github.get_ready_issues():
+            comments = github.get_issue_comments(issue.number)
+            plan = IssueTask._find_plan(comments, github.bot_name)
+            yield IssueTask(issue, plan=plan)
+
+    @staticmethod
+    def _find_plan(comments: list[Comment], bot_name: str) -> str | None:
+        """Return the text of the most recent approved plan comment, or None."""
+        plan: str | None = None
+        for c in comments:
+            if c.author == bot_name and c.body.startswith(PLAN_MARKER):
+                plan = c.body[len(PLAN_MARKER):].strip()
+        return plan
+
+    # ------------------------------------------------------------------
+    # Task interface
+    # ------------------------------------------------------------------
 
     def describe(self) -> str:
         if self.plan is not None:

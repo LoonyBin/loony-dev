@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -12,6 +13,17 @@ class Task(ABC):
     """A unit of work dispatched to an agent."""
 
     task_type: str
+    priority: int  # Lower number = higher priority; used to order discovery across tick
+
+    @staticmethod
+    @abstractmethod
+    def discover(github: GitHubClient) -> Iterator[Task]:
+        """Yield tasks of this type discovered from GitHub. Called each tick.
+
+        Implementations should yield lazily so the orchestrator can stop
+        iterating as soon as a can-perform task is found.
+        """
+        ...
 
     @abstractmethod
     def describe(self) -> str:
