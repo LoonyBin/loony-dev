@@ -16,10 +16,19 @@ class GitHubClient:
 
     def _gh(self, *args: str) -> str:
         """Run a gh CLI command and return stdout."""
-        cmd = ["gh", *args, "-R", self.repo]
+        cmd = ["gh", *args]
+        if args and args[0] != "api":
+            cmd += ["-R", self.repo]
         logger.debug("Running: %s", " ".join(cmd))
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         return result.stdout.strip()
+
+    def _gh_api(self, endpoint: str) -> list | dict:
+        """Call gh api for this repo and parse JSON output."""
+        output = self._gh("api", f"repos/{self.repo}/{endpoint}")
+        if not output:
+            return []
+        return json.loads(output)
 
     def _gh_json(self, *args: str) -> list | dict:
         """Run a gh CLI command and parse JSON output."""
@@ -95,9 +104,7 @@ class GitHubClient:
 
         # Also fetch inline review comments via API
         try:
-            inline = self._gh_json(
-                "api", f"repos/{self.repo}/pulls/{pr_data['number']}/comments",
-            )
+            inline = self._gh_api(f"pulls/{pr_data['number']}/comments")
             if isinstance(inline, list):
                 for c in inline:
                     comments.append(Comment(
