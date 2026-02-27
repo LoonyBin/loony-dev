@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 class IssueTask(Task):
     task_type = "implement_issue"
-    priority = 3
+    priority = 40
 
     def __init__(self, issue: Issue, plan: str | None = None) -> None:
         self.issue = issue

@@ -4,6 +4,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from loony_dev.tasks.conflict_task import ConflictResolutionTask
 from loony_dev.tasks.issue_task import IssueTask
 from loony_dev.tasks.planning_task import PlanningTask
 from loony_dev.tasks.pr_review_task import PRReviewTask
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 # The orchestrator iterates these in order, stopping as soon as it finds
 # a task that some configured agent can handle.
 TASK_CLASSES = sorted(
-    [PRReviewTask, PlanningTask, IssueTask],
+    [ConflictResolutionTask, PRReviewTask, PlanningTask, IssueTask],
     key=lambda tc: tc.priority,
 )
 

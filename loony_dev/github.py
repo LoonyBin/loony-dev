@@ -81,7 +81,7 @@ class GitHubClient:
         result = self._gh_json(
             "pr", "list",
             "--state", "open",
-            "--json", "number,headRefName,title,comments,reviews,labels",
+            "--json", "number,headRefName,title,comments,reviews,labels,mergeable",
         )
         logger.debug("list_open_prs() returned %d open PR(s)", len(result))
         return result

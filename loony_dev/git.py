@@ -34,6 +34,14 @@ class GitRepo:
         branch = result.stdout.strip()
         self._run("push", "-u", "origin", branch)
 
+    def checkout_branch(self, branch: str) -> None:
+        """Checkout an existing remote-tracking branch."""
+        self._run("checkout", branch)
+
+    def push_branch(self, branch: str) -> None:
+        """Push the current branch (force-with-lease to protect against races)."""
+        self._run("push", "--force-with-lease", "-u", "origin", branch)
+
     def checkout_main(self) -> None:
         self._run("checkout", "main")
 

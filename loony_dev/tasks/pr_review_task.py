@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class PRReviewTask(Task):
     task_type = "address_review"
-    priority = 1
+    priority = 20
 
     def __init__(self, pr: PullRequest) -> None:
         self.pr = pr
