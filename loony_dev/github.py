@@ -71,10 +71,6 @@ class GitHubClient:
         comments.sort(key=lambda c: c.created_at)
         return comments
 
-    def get_ready_issues(self) -> list[Issue]:
-        """Get issues labeled 'ready-for-development'."""
-        return [issue for issue, _ in self.list_issues("ready-for-development")]
-
     # --- Pull Requests ---
 
     def list_open_prs(self) -> list[dict]:

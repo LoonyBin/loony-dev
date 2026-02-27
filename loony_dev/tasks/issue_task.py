@@ -26,7 +26,7 @@ class IssueTask(Task):
     @staticmethod
     def discover(github: GitHubClient) -> Iterator[IssueTask]:
         """Yield implementation tasks for issues labeled ready-for-development."""
-        for issue in github.get_ready_issues():
+        for issue, _ in github.list_issues("ready-for-development"):
             comments = github.get_issue_comments(issue.number)
             plan = IssueTask._find_plan(comments, github.bot_name)
             yield IssueTask(issue, plan=plan)
