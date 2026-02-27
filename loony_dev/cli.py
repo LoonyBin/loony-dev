@@ -16,7 +16,7 @@ from loony_dev.orchestrator import Orchestrator
 @click.option("--repo", default=None, help="owner/repo (default: detected from git remote)")
 @click.option("--interval", default=60, help="Polling interval in seconds", show_default=True)
 @click.option("--work-dir", default=".", type=click.Path(exists=True), help="Working directory for the agent")
-@click.option("--bot-name", default="loony-dev[bot]", help="Bot username for watermark detection", show_default=True)
+@click.option("--bot-name", default=None, help="Bot username for watermark detection (default: detected from gh auth)")
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging")
 def main(repo: str | None, interval: int, work_dir: str, bot_name: str, verbose: bool) -> None:
     """Loony-Dev: Agent orchestrator that watches GitHub and dispatches work."""
@@ -30,6 +30,10 @@ def main(repo: str | None, interval: int, work_dir: str, bot_name: str, verbose:
     if repo is None:
         repo = GitHubClient.detect_repo()
         click.echo(f"Detected repo: {repo}")
+
+    if bot_name is None:
+        bot_name = GitHubClient.detect_bot_name()
+        click.echo(f"Detected bot name: {bot_name}")
 
     github = GitHubClient(repo=repo, bot_name=bot_name)
     git = GitRepo(work_dir=work_path)
