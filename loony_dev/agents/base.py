@@ -14,11 +14,18 @@ class Agent(ABC):
     name: str
 
     @abstractmethod
-    def execute(self, task: Task) -> TaskResult:
-        """Execute a task. Blocking. Returns result."""
+    def can_handle(self, task: Task) -> bool:
+        """Whether this agent can handle the given task type.
+
+        Multiple agents may be able to handle the same task type (e.g. a
+        Claude coding agent and a Gemini coding agent). Only one will be
+        configured with valid credentials in a given deployment, so the
+        orchestrator checks can_handle on each agent in turn and uses the
+        first affirmative response.
+        """
         ...
 
     @abstractmethod
-    def can_handle(self, task: Task) -> bool:
-        """Whether this agent can handle the given task type."""
+    def execute(self, task: Task) -> TaskResult:
+        """Execute a task. Blocking. Returns result."""
         ...
