@@ -8,6 +8,8 @@ if TYPE_CHECKING:
     from loony_dev.github import GitHubClient
     from loony_dev.models import Comment, Issue, TaskResult
 
+PLAN_MARKER = "<!-- loony-plan -->"
+
 
 class PlanningTask(Task):
     task_type = "plan_issue"
@@ -51,7 +53,7 @@ class PlanningTask(Task):
         pass  # Keep ready-for-planning label so state is visible; execution is serial
 
     def on_complete(self, github: GitHubClient, result: TaskResult) -> None:
-        github.post_comment(self.issue.number, result.summary)
+        github.post_comment(self.issue.number, f"{PLAN_MARKER}\n\n{result.summary}")
 
     def on_failure(self, github: GitHubClient, error: Exception) -> None:
         github.post_comment(

@@ -11,8 +11,13 @@ from zoneinfo import ZoneInfo
 
 from loony_dev.agents.base import Agent
 from loony_dev.models import TaskResult
+from loony_dev.tasks.issue_task import IssueTask
+from loony_dev.tasks.planning_task import PLAN_MARKER
+from loony_dev.tasks.pr_review_task import PRReviewTask
 
 if TYPE_CHECKING:
+    from loony_dev.github import GitHubClient
+    from loony_dev.models import Comment
     from loony_dev.tasks.base import Task
 
 logger = logging.getLogger(__name__)
@@ -41,6 +46,29 @@ class CodingAgent(Agent):
 
     def __init__(self, work_dir: Path) -> None:
         self.work_dir = work_dir
+
+    def discover_tasks(self, github: GitHubClient) -> list[Task]:
+        """Find PRs needing review (higher priority) and issues ready for development."""
+        tasks: list[Task] = []
+
+        for pr in github.get_prs_needing_review():
+            tasks.append(PRReviewTask(pr))
+
+        for issue in github.get_ready_issues():
+            comments = github.get_issue_comments(issue.number)
+            plan = self._find_plan(comments, github.bot_name)
+            tasks.append(IssueTask(issue, plan=plan))
+
+        return tasks
+
+    @staticmethod
+    def _find_plan(comments: list[Comment], bot_name: str) -> str | None:
+        """Return the text of the most recent plan comment, or None."""
+        plan: str | None = None
+        for c in comments:
+            if c.author == bot_name and c.body.startswith(PLAN_MARKER):
+                plan = c.body[len(PLAN_MARKER):].strip()
+        return plan
 
     def can_handle(self, task: Task) -> bool:
         return task.task_type in ("implement_issue", "address_review")

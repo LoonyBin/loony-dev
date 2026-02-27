@@ -33,7 +33,7 @@ def main(repo: str | None, interval: int, work_dir: str, bot_name: str, verbose:
 
     github = GitHubClient(repo=repo, bot_name=bot_name)
     git = GitRepo(work_dir=work_path)
-    agents = [PlanningAgent(work_dir=work_path), CodingAgent(work_dir=work_path)]
+    agents = [CodingAgent(work_dir=work_path), PlanningAgent(work_dir=work_path)]
 
     orchestrator = Orchestrator(
         github=github,

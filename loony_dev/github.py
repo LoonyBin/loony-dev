@@ -39,29 +39,21 @@ class GitHubClient:
 
     # --- Issues ---
 
-    def get_planning_issues(self) -> list[Issue]:
-        """Get issues labeled 'ready-for-planning' but not 'ready-for-development'.
-
-        If an issue carries both labels the user has approved the plan, so
-        'ready-for-planning' is removed and the issue is excluded here (the
-        coding agent will pick it up via get_ready_issues).
-        """
+    def list_issues(self, label: str) -> list[tuple[Issue, list[str]]]:
+        """Return open issues with the given label, along with their label names."""
         data = self._gh_json(
             "issue", "list",
-            "--label", "ready-for-planning",
+            "--label", label,
             "--state", "open",
             "--json", "number,title,body,labels",
         )
-        issues = []
-        for item in data:
-            labels = [label["name"] for label in item.get("labels", [])]
-            if "ready-for-development" in labels:
-                self.remove_label(item["number"], "ready-for-planning")
-            else:
-                issues.append(
-                    Issue(number=item["number"], title=item["title"], body=item.get("body", ""))
-                )
-        return issues
+        return [
+            (
+                Issue(number=item["number"], title=item["title"], body=item.get("body", "")),
+                [l["name"] for l in item.get("labels", [])],
+            )
+            for item in data
+        ]
 
     def get_issue_comments(self, number: int) -> list[Comment]:
         """Get all comments on an issue, sorted by creation time."""
