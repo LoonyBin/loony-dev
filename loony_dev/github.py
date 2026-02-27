@@ -39,6 +39,45 @@ class GitHubClient:
 
     # --- Issues ---
 
+    def get_planning_issues(self) -> list[Issue]:
+        """Get issues labeled 'ready-for-planning' but not 'ready-for-development'.
+
+        If an issue carries both labels the user has approved the plan, so
+        'ready-for-planning' is removed and the issue is excluded here (the
+        coding agent will pick it up via get_ready_issues).
+        """
+        data = self._gh_json(
+            "issue", "list",
+            "--label", "ready-for-planning",
+            "--state", "open",
+            "--json", "number,title,body,labels",
+        )
+        issues = []
+        for item in data:
+            labels = [label["name"] for label in item.get("labels", [])]
+            if "ready-for-development" in labels:
+                self.remove_label(item["number"], "ready-for-planning")
+            else:
+                issues.append(
+                    Issue(number=item["number"], title=item["title"], body=item.get("body", ""))
+                )
+        return issues
+
+    def get_issue_comments(self, number: int) -> list[Comment]:
+        """Get all comments on an issue, sorted by creation time."""
+        data = self._gh_json("issue", "view", str(number), "--json", "comments")
+        if not isinstance(data, dict):
+            return []
+        comments = []
+        for c in data.get("comments", []):
+            comments.append(Comment(
+                author=c.get("author", {}).get("login", ""),
+                body=c.get("body", ""),
+                created_at=c.get("createdAt", ""),
+            ))
+        comments.sort(key=lambda c: c.created_at)
+        return comments
+
     def get_ready_issues(self) -> list[Issue]:
         """Get issues labeled 'ready-for-development'."""
         data = self._gh_json(

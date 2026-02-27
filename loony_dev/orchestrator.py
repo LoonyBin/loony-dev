@@ -5,12 +5,14 @@ import time
 from typing import TYPE_CHECKING
 
 from loony_dev.tasks.issue_task import IssueTask
+from loony_dev.tasks.planning_task import PlanningTask
 from loony_dev.tasks.pr_review_task import PRReviewTask
 
 if TYPE_CHECKING:
     from loony_dev.agents.base import Agent
     from loony_dev.git import GitRepo
     from loony_dev.github import GitHubClient
+    from loony_dev.models import Comment
     from loony_dev.tasks.base import Task
 
 logger = logging.getLogger(__name__)
@@ -60,18 +62,53 @@ class Orchestrator:
         self.dispatch(agent, task)
 
     def gather_tasks(self) -> list[Task]:
-        """Gather and prioritize tasks. PR reviews first, then issues."""
+        """Gather and prioritize tasks.
+
+        Priority order:
+          1. PR reviews
+          2. Planning (ready-for-planning, no plan yet or new user feedback)
+          3. Development (ready-for-development)
+        """
         tasks: list[Task] = []
 
         # Priority 1: PR reviews
         for pr in self.github.get_prs_needing_review():
             tasks.append(PRReviewTask(pr))
 
-        # Priority 2: Issues
+        # Priority 2: Planning tasks
+        for issue in self.github.get_planning_issues():
+            comments = self.github.get_issue_comments(issue.number)
+            existing_plan, new_comments = self._analyze_planning_comments(comments)
+            if existing_plan is None or new_comments:
+                tasks.append(PlanningTask(issue, existing_plan, new_comments))
+
+        # Priority 3: Development tasks
         for issue in self.github.get_ready_issues():
             tasks.append(IssueTask(issue))
 
         return tasks
+
+    def _analyze_planning_comments(
+        self, comments: list[Comment]
+    ) -> tuple[str | None, list[Comment]]:
+        """Return (existing_bot_plan, new_user_comments_since_last_bot_comment)."""
+        bot_name = self.github.bot_name
+        bot_last_idx = -1
+        bot_last_plan: str | None = None
+
+        for i, c in enumerate(comments):
+            if c.author == bot_name:
+                bot_last_idx = i
+                bot_last_plan = c.body
+
+        if bot_last_idx == -1:
+            new_comments = [c for c in comments if c.author != bot_name]
+        else:
+            new_comments = [
+                c for c in comments[bot_last_idx + 1:] if c.author != bot_name
+            ]
+
+        return bot_last_plan, new_comments
 
     def find_agent(self, task: Task) -> Agent:
         for agent in self.agents:
