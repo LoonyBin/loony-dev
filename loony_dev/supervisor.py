@@ -174,7 +174,6 @@ def _worker_command(repo: str, work_dir: Path, worker_interval: int, bot_name: s
         "--repo", repo,
         "--work-dir", str(work_dir),
         "--interval", str(worker_interval),
-        "--log-file", str(log_file),
     ]
     if bot_name:
         cmd += ["--bot-name", bot_name]
