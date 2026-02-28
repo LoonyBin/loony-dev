@@ -116,6 +116,7 @@ class PRReviewTask(Task):
     def on_start(self, github: GitHubClient) -> None:
         logger.debug("PR #%d: adding 'in-progress'", self.pr.number)
         github.add_label(self.pr.number, "in-progress")
+        github.assign_self(self.pr.number)
 
     def on_complete(self, github: GitHubClient, result: TaskResult) -> None:
         logger.debug("PR #%d: removing 'in-progress', posting completion comment", self.pr.number)

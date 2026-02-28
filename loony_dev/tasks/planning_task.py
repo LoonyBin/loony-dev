@@ -120,6 +120,7 @@ class PlanningTask(Task):
 
     def on_start(self, github: GitHubClient) -> None:
         logger.debug("Issue #%d: starting planning (keeping 'ready-for-planning' label)", self.issue.number)
+        github.assign_self(self.issue.number)
 
     def on_complete(self, github: GitHubClient, result: TaskResult) -> None:
         logger.debug(

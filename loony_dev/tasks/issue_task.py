@@ -73,6 +73,7 @@ class IssueTask(Task):
         logger.debug("Issue #%d: removing 'ready-for-development', adding 'in-progress'", self.issue.number)
         github.remove_label(self.issue.number, "ready-for-development")
         github.add_label(self.issue.number, "in-progress")
+        github.assign_self(self.issue.number)
 
     def on_complete(self, github: GitHubClient, result: TaskResult) -> None:
         logger.debug("Issue #%d: removing 'in-progress', posting completion comment", self.issue.number)

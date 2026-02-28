@@ -157,6 +157,12 @@ class GitHubClient:
         except subprocess.CalledProcessError:
             logger.warning("Failed to remove label '%s' from #%d", label, number)
 
+    def assign_self(self, number: int) -> None:
+        try:
+            self._gh("issue", "edit", str(number), "--add-assignee", "@me")
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to assign self to #%d", number)
+
     # --- Comments ---
 
     def post_comment(self, number: int, body: str) -> None:
