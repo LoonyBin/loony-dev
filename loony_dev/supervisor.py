@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from loony_dev.github import GitHubClient
+
 logger = logging.getLogger(__name__)
 
 
@@ -314,6 +316,12 @@ def run_supervisor(
                     owner, name = repo.split("/", 1)
                     log_path = base_dir / ".logs" / owner / name / "loony-worker.log"
                     log_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    try:
+                        client = GitHubClient(repo, bot_name or "")
+                        client.ensure_required_labels()
+                    except Exception:
+                        logger.warning("Label provisioning failed for %s; continuing to launch worker.", repo)
 
                     try:
                         wp = launch_worker(
