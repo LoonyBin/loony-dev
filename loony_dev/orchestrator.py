@@ -35,13 +35,11 @@ class Orchestrator:
         git: GitRepo,
         agents: list[Agent],
         interval: int = 60,
-        stuck_threshold_hours: int = 12,
     ) -> None:
         self.github = github
         self.git = git
         self.agents = agents
         self.interval = interval
-        self.stuck_threshold_hours = stuck_threshold_hours
         self._shutdown_requested: bool = False
         self._graceful_shutdown: bool = False
         self._active_agent: Agent | None = None
@@ -111,11 +109,7 @@ class Orchestrator:
         for task_class in TASK_CLASSES:
             logger.debug("Checking %s for work...", task_class.__name__)
             found_in_class = 0
-            if task_class is StuckItemCleanupTask:
-                tasks_iter = task_class.discover(self.github, threshold_hours=self.stuck_threshold_hours)
-            else:
-                tasks_iter = task_class.discover(self.github)
-            for task in tasks_iter:
+            for task in task_class.discover(self.github):
                 found_in_class += 1
                 for agent in self.agents:
                     if agent.can_handle(task):

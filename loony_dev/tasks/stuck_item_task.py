@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -31,8 +32,13 @@ class StuckItemCleanupTask(Task):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def discover(github: GitHubClient, threshold_hours: int = 12) -> Iterator[StuckItemCleanupTask]:
-        """Yield cleanup tasks for issues and PRs stuck in-progress past the threshold."""
+    def discover(github: GitHubClient) -> Iterator[StuckItemCleanupTask]:
+        """Yield cleanup tasks for issues and PRs stuck in-progress past the threshold.
+
+        The threshold is read from the ``LOONY_STUCK_THRESHOLD_HOURS`` environment
+        variable (default: 12 hours).
+        """
+        threshold_hours = int(os.environ.get("LOONY_STUCK_THRESHOLD_HOURS", "12"))
         cutoff = datetime.now(timezone.utc) - timedelta(hours=threshold_hours)
 
         for issue, _ in github.list_issues(label="in-progress"):
