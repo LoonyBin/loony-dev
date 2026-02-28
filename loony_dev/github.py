@@ -45,11 +45,16 @@ class GitHubClient:
             "issue", "list",
             "--label", label,
             "--state", "open",
-            "--json", "number,title,body,labels",
+            "--json", "number,title,body,labels,author",
         )
         result = [
             (
-                Issue(number=item["number"], title=item["title"], body=item.get("body", "")),
+                Issue(
+                    number=item["number"],
+                    title=item["title"],
+                    body=item.get("body", ""),
+                    author=item.get("author", {}).get("login", ""),
+                ),
                 [l["name"] for l in item.get("labels", [])],
             )
             for item in data
@@ -106,6 +111,37 @@ class GitHubClient:
         except subprocess.CalledProcessError:
             logger.warning("Failed to fetch inline review comments for PR #%d", pr_number)
         return []
+
+    def find_pr_for_issue(self, issue_number: int) -> int | None:
+        """Return the PR number for a PR that references the given issue, or None."""
+        for search_args in [
+            ["--search", f"#{issue_number} in:title"],
+            ["--search", f"#{issue_number}"],
+        ]:
+            try:
+                data = self._gh_json(
+                    "pr", "list",
+                    "--state", "open",
+                    *search_args,
+                    "--json", "number,createdAt",
+                )
+                if data:
+                    sorted_prs = sorted(data, key=lambda p: p.get("createdAt", ""), reverse=True)
+                    return sorted_prs[0]["number"]
+            except subprocess.CalledProcessError:
+                logger.warning("gh pr list search failed for issue #%d", issue_number)
+        return None
+
+    def add_pr_reviewer(self, pr_number: int, reviewer: str) -> None:
+        """Request a review from reviewer on the given PR."""
+        try:
+            self._gh("pr", "edit", str(pr_number), "--add-reviewer", reviewer)
+            logger.debug("add_pr_reviewer(#%d, %r) succeeded", pr_number, reviewer)
+        except subprocess.CalledProcessError as e:
+            logger.warning(
+                "Failed to add reviewer %r to PR #%d: %s", reviewer, pr_number, e
+            )
+            raise
 
     # --- Labels ---
 

@@ -15,6 +15,7 @@ class Issue:
     number: int
     title: str
     body: str
+    author: str = ""
 
 
 @dataclass
