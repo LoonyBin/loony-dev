@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import fnmatch
-import json
 import logging
 import shutil
 import signal
@@ -21,52 +20,29 @@ logger = logging.getLogger(__name__)
 def list_accessible_repos() -> list[str]:
     """Return 'owner/repo' strings for all repos accessible to the authenticated gh user.
 
-    Queries repos directly owned/accessible, plus repos for every org the user
-    belongs to. Deduplicates before returning.
+    Uses the GitHub REST API /user/repos?type=all endpoint, which covers owned repos,
+    org repos (member or collaborator), and external collaborator repos.
     """
-    repos: set[str] = set()
-
-    # Own/directly-accessible repos
     try:
         result = subprocess.run(
-            ["gh", "repo", "list", "--limit", "1000", "--json", "nameWithOwner"],
+            [
+                "gh", "api", "/user/repos",
+                "--paginate",
+                "-X", "GET",
+                "-f", "type=all",
+                "-f", "per_page=100",
+                "--jq", ".[].full_name",
+            ],
             capture_output=True, text=True, check=True,
         )
-        for item in json.loads(result.stdout):
-            repos.add(item["nameWithOwner"])
+        repos = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        return sorted(set(repos))
     except subprocess.CalledProcessError as exc:
-        logger.error("Failed to list own repos via gh: %s", exc.stderr.strip())
+        logger.error("Failed to list accessible repos via gh api /user/repos: %s", exc.stderr.strip())
         return []
     except Exception:
-        logger.exception("Unexpected error listing own repos")
+        logger.exception("Unexpected error listing accessible repos")
         return []
-
-    # Org repos
-    try:
-        orgs_result = subprocess.run(
-            ["gh", "api", "/user/orgs", "--paginate"],
-            capture_output=True, text=True, check=True,
-        )
-        orgs = json.loads(orgs_result.stdout)
-        for org in orgs:
-            login = org.get("login")
-            if not login:
-                continue
-            try:
-                org_result = subprocess.run(
-                    ["gh", "repo", "list", login, "--limit", "1000", "--json", "nameWithOwner"],
-                    capture_output=True, text=True, check=True,
-                )
-                for item in json.loads(org_result.stdout):
-                    repos.add(item["nameWithOwner"])
-            except subprocess.CalledProcessError as exc:
-                logger.warning("Failed to list repos for org %s: %s", login, exc.stderr.strip())
-    except subprocess.CalledProcessError as exc:
-        logger.warning("Failed to list orgs: %s", exc.stderr.strip())
-    except Exception:
-        logger.exception("Unexpected error listing org repos")
-
-    return sorted(repos)
 
 
 # ---------------------------------------------------------------------------
