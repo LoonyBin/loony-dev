@@ -5,7 +5,6 @@ import signal
 import time
 from typing import TYPE_CHECKING
 
-from loony_dev.models import TaskResult
 from loony_dev.tasks.conflict_task import ConflictResolutionTask
 from loony_dev.tasks.issue_task import IssueTask
 from loony_dev.tasks.planning_task import PlanningTask
@@ -24,7 +23,7 @@ logger = logging.getLogger(__name__)
 # The orchestrator iterates these in order, stopping as soon as it finds
 # a task that some configured agent can handle.
 TASK_CLASSES = sorted(
-    [ConflictResolutionTask, PRReviewTask, PlanningTask, IssueTask],
+    [StuckItemCleanupTask, ConflictResolutionTask, PRReviewTask, PlanningTask, IssueTask],
     key=lambda tc: tc.priority,
 )
 
@@ -112,7 +111,11 @@ class Orchestrator:
         for task_class in TASK_CLASSES:
             logger.debug("Checking %s for work...", task_class.__name__)
             found_in_class = 0
-            for task in task_class.discover(self.github):
+            if task_class is StuckItemCleanupTask:
+                tasks_iter = task_class.discover(self.github, threshold_hours=self.stuck_threshold_hours)
+            else:
+                tasks_iter = task_class.discover(self.github)
+            for task in tasks_iter:
                 found_in_class += 1
                 for agent in self.agents:
                     if agent.can_handle(task):

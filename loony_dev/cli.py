@@ -6,6 +6,7 @@ from pathlib import Path
 import click
 
 from loony_dev.agents.coding import CodingAgent
+from loony_dev.agents.null_agent import NullAgent
 from loony_dev.agents.planning import PlanningAgent
 from loony_dev.git import GitRepo
 from loony_dev.github import GitHubClient
@@ -33,7 +34,11 @@ def cli() -> None:
     "--log-file", default=None, type=click.Path(), metavar="PATH",
     help="Write DEBUG logs to a file in addition to stderr (useful for long-running daemon deployments).",
 )
-def worker(repo: str | None, interval: int, work_dir: str, bot_name: str, verbose: bool, log_file: str | None) -> None:
+@click.option(
+    "--stuck-threshold", default=12, show_default=True,
+    help="Hours before an in-progress item is considered stuck and reset.",
+)
+def worker(repo: str | None, interval: int, work_dir: str, bot_name: str, verbose: bool, log_file: str | None, stuck_threshold: int) -> None:
     """Run the orchestrator worker loop for a single repository."""
     log_level = logging.DEBUG if verbose else logging.INFO
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -58,13 +63,14 @@ def worker(repo: str | None, interval: int, work_dir: str, bot_name: str, verbos
 
     github = GitHubClient(repo=repo, bot_name=bot_name)
     git = GitRepo(work_dir=work_path)
-    agents = [CodingAgent(work_dir=work_path), PlanningAgent(work_dir=work_path)]
+    agents = [NullAgent(), CodingAgent(work_dir=work_path), PlanningAgent(work_dir=work_path)]
 
     orchestrator = Orchestrator(
         github=github,
         git=git,
         agents=agents,
         interval=interval,
+        stuck_threshold_hours=stuck_threshold,
     )
 
     click.echo(f"Starting orchestrator for {repo} (polling every {interval}s)")
