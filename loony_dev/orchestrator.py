@@ -40,6 +40,7 @@ class Orchestrator:
         self.agents = agents
         self.interval = interval
         self._shutdown_requested: bool = False
+        self._graceful_shutdown: bool = False
         self._active_agent: Agent | None = None
         self._active_task: Task | None = None
 
@@ -47,6 +48,7 @@ class Orchestrator:
         """Main polling loop."""
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
+        signal.signal(signal.SIGQUIT, self._handle_signal)
 
         logger.info("Orchestrator started. Polling every %ds.", self.interval)
         while not self._shutdown_requested:
@@ -64,16 +66,23 @@ class Orchestrator:
         self._on_shutdown()
 
     def _handle_signal(self, signum: int, frame: object) -> None:
-        logger.info("Signal %s received, shutting down…", signum)
-        self._shutdown_requested = True
-        if self._active_agent is not None:
-            self._active_agent.terminate()
+        if signum == signal.SIGQUIT:
+            logger.info("SIGQUIT received — will shut down after current task completes.")
+            self._shutdown_requested = True
+            self._graceful_shutdown = True
+            # Do NOT terminate the active agent
+        else:
+            logger.info("Signal %s received, shutting down…", signum)
+            self._shutdown_requested = True
+            if self._active_agent is not None:
+                self._active_agent.terminate()
 
     def _on_shutdown(self) -> None:
         """Clean up GitHub state for any task that was interrupted mid-flight."""
         logger.info("Shutting down.")
         task = self._active_task
-        if task is not None:
+        if task is not None and not self._graceful_shutdown:
+            # Only clean up GitHub state if we interrupted the task
             logger.info("Cleaning up GitHub state for interrupted task: %s", task.task_type)
             try:
                 task.on_failure(self.github, RuntimeError("Interrupted by operator"))

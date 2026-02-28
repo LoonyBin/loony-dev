@@ -255,14 +255,21 @@ def run_supervisor(
 
     workers: dict[str, WorkerProcess] = {}
     shutdown_requested = False
+    graceful_shutdown = False
 
     def handle_signal(signum: int, frame: object) -> None:
-        nonlocal shutdown_requested
-        logger.info("Signal %d received; shutting down supervisor…", signum)
-        shutdown_requested = True
+        nonlocal shutdown_requested, graceful_shutdown
+        if signum == signal.SIGQUIT:
+            logger.info("SIGQUIT received — supervisor will shut down after current tasks complete.")
+            shutdown_requested = True
+            graceful_shutdown = True
+        else:
+            logger.info("Signal %d received; shutting down supervisor…", signum)
+            shutdown_requested = True
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGQUIT, handle_signal)
 
     last_discovery: float = 0.0  # Force discovery on first iteration
 
@@ -360,6 +367,12 @@ def run_supervisor(
             if rc is None:
                 continue  # Still running
 
+            if graceful_shutdown:
+                # Worker finished naturally during graceful shutdown; don't restart
+                logger.info("Worker for %s has exited during graceful shutdown.", repo)
+                workers.pop(repo)
+                continue
+
             logger.warning(
                 "Worker for %s exited with code %d (restart #%d).",
                 repo, rc, wp.restart_count + 1,
@@ -399,10 +412,23 @@ def run_supervisor(
             time.sleep(min(1.0, sleep_deadline - time.monotonic()))
 
     # ---------------------------------------------------------------------- #
-    # Graceful shutdown
+    # Shutdown
     # ---------------------------------------------------------------------- #
     logger.info("Stopping all workers…")
     for repo, wp in workers.items():
         logger.info("Stopping worker for %s", repo)
-        _terminate_worker(wp)
+        if graceful_shutdown:
+            try:
+                wp.process.send_signal(signal.SIGQUIT)
+            except OSError:
+                pass
+        else:
+            _terminate_worker(wp)
+
+    if graceful_shutdown:
+        logger.info("Waiting for all workers to finish current tasks…")
+        for repo, wp in workers.items():
+            wp.process.wait()
+            logger.info("Worker %s has exited.", repo)
+
     logger.info("Supervisor stopped.")
