@@ -207,3 +207,37 @@ Create these labels in your repository:
 
 - `ready-for-development` — marks issues ready for the bot to pick up
 - `in-progress` — applied while the bot works on an issue/PR
+
+## Dev Mode (Auto-Reload)
+
+To run loony-dev in a mode that automatically pulls upstream changes and restarts, use [gitmon](https://github.com/TMaYaD/gitmon).
+
+### Basic usage
+
+```bash
+gitmon uv run loony-dev supervisor --base-dir ./workspace
+```
+
+gitmon starts the supervisor immediately, then polls `git fetch` every 30 seconds. When new commits appear on the upstream branch, it runs `git pull` and restarts the supervisor.
+
+### Dog-fooding setup
+
+This is how to run loony-dev on itself — having the bot work on its own source repo:
+
+```bash
+cd ~/LoonyBin/loony-dev
+gitmon -i 60 uv run loony-dev supervisor --base-dir ./workspace
+```
+
+**Topology:**
+
+```
+~/LoonyBin/loony-dev/           ← Running copy (monitored by gitmon, always on main)
+~/LoonyBin/loony-dev/workspace/ ← Worker clones (git-ignored, invisible to outer repo)
+```
+
+**How it stays safe:**
+
+- gitmon only restarts the supervisor process — gitmon itself remains alive through bad deployments
+- If a merged PR introduces a bug that crashes the supervisor, gitmon waits for the next commit, pulls the fix, and restarts automatically — fully self-recovering
+- Worker clones live under `workspace/`, which is listed in `.gitignore`, so they never dirty the outer repo's working tree or cause `git pull` to fail
