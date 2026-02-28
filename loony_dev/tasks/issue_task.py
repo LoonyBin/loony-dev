@@ -83,6 +83,26 @@ class IssueTask(Task):
             f"Implementation complete.\n\n{result.summary}",
         )
 
+        author = self.issue.author
+        if not author or author == github.bot_name:
+            return
+
+        pr_number = github.find_pr_for_issue(self.issue.number)
+        if pr_number is None:
+            logger.warning(
+                "Could not find PR for issue #%d; skipping reviewer assignment",
+                self.issue.number,
+            )
+            return
+
+        try:
+            github.add_pr_reviewer(pr_number, author)
+            logger.info("Assigned %s as reviewer on PR #%d", author, pr_number)
+        except Exception as e:
+            logger.warning(
+                "Failed to assign reviewer %s on PR #%d: %s", author, pr_number, e
+            )
+
     def on_failure(self, github: GitHubClient, error: Exception) -> None:
         logger.debug(
             "Issue #%d: task failed (%s), restoring 'ready-for-development'",
