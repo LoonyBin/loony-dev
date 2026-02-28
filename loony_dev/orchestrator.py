@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import signal
 import time
 from typing import TYPE_CHECKING
 
@@ -38,19 +39,46 @@ class Orchestrator:
         self.git = git
         self.agents = agents
         self.interval = interval
+        self._shutdown_requested: bool = False
+        self._active_agent: Agent | None = None
+        self._active_task: Task | None = None
 
     def run(self) -> None:
         """Main polling loop."""
+        signal.signal(signal.SIGINT, self._handle_signal)
+        signal.signal(signal.SIGTERM, self._handle_signal)
+
         logger.info("Orchestrator started. Polling every %ds.", self.interval)
-        while True:
+        while not self._shutdown_requested:
             try:
                 self._tick()
-            except KeyboardInterrupt:
-                logger.info("Shutting down.")
-                break
             except Exception:
                 logger.exception("Error during tick")
-            time.sleep(self.interval)
+
+            # Interruptible sleep: check shutdown flag each second.
+            for _ in range(self.interval):
+                if self._shutdown_requested:
+                    break
+                time.sleep(1)
+
+        self._on_shutdown()
+
+    def _handle_signal(self, signum: int, frame: object) -> None:
+        logger.info("Signal %s received, shutting down…", signum)
+        self._shutdown_requested = True
+        if self._active_agent is not None:
+            self._active_agent.terminate()
+
+    def _on_shutdown(self) -> None:
+        """Clean up GitHub state for any task that was interrupted mid-flight."""
+        logger.info("Shutting down.")
+        task = self._active_task
+        if task is not None:
+            logger.info("Cleaning up GitHub state for interrupted task: %s", task.task_type)
+            try:
+                task.on_failure(self.github, RuntimeError("Interrupted by operator"))
+            except Exception:
+                logger.exception("Failed to clean up GitHub state on shutdown")
 
     def _tick(self) -> None:
         result = self._find_work()
@@ -94,6 +122,9 @@ class Orchestrator:
         has_changes = self.git.has_uncommitted_changes()
         logger.debug("Uncommitted changes before sync: %s", has_changes)
         self.git.ensure_main_up_to_date()
+
+        self._active_agent = agent
+        self._active_task = task
         try:
             result = agent.execute(task)
             self._cleanup()
@@ -104,6 +135,9 @@ class Orchestrator:
         except Exception as e:
             self._cleanup()
             task.on_failure(self.github, e)
+        finally:
+            self._active_agent = None
+            self._active_task = None
 
     def _cleanup(self) -> None:
         """Ensure working directory is clean and on main."""
