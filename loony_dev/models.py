@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 
 def truncate_for_log(text: str, head: int = 300, tail: int = 200) -> str:
@@ -16,6 +17,7 @@ class Issue:
     title: str
     body: str
     author: str = ""
+    updated_at: datetime | None = None
 
 
 @dataclass
@@ -34,6 +36,7 @@ class PullRequest:
     title: str
     new_comments: list[Comment] = field(default_factory=list)
     mergeable: str | None = None
+    updated_at: datetime | None = None
 
 
 @dataclass

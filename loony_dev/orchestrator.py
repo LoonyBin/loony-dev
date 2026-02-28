@@ -5,10 +5,12 @@ import signal
 import time
 from typing import TYPE_CHECKING
 
+from loony_dev.models import TaskResult
 from loony_dev.tasks.conflict_task import ConflictResolutionTask
 from loony_dev.tasks.issue_task import IssueTask
 from loony_dev.tasks.planning_task import PlanningTask
 from loony_dev.tasks.pr_review_task import PRReviewTask
+from loony_dev.tasks.stuck_item_task import StuckItemCleanupTask
 
 if TYPE_CHECKING:
     from loony_dev.agents.base import Agent
@@ -34,11 +36,13 @@ class Orchestrator:
         git: GitRepo,
         agents: list[Agent],
         interval: int = 60,
+        stuck_threshold_hours: int = 12,
     ) -> None:
         self.github = github
         self.git = git
         self.agents = agents
         self.interval = interval
+        self.stuck_threshold_hours = stuck_threshold_hours
         self._shutdown_requested: bool = False
         self._graceful_shutdown: bool = False
         self._active_agent: Agent | None = None

@@ -3,10 +3,20 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+from datetime import datetime, timezone
 
 from loony_dev.models import Comment, Issue, truncate_for_log
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    """Parse an ISO 8601 datetime string from the GitHub API into a UTC-aware datetime."""
+    if not value:
+        return None
+    # GitHub returns strings like "2024-01-15T10:30:00Z"; replace Z for Python 3.10 compat.
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
 
 REQUIRED_LABELS = [
     {"name": "ready-for-development", "color": "0075ca", "description": "Issue is ready for implementation"},
@@ -51,7 +61,7 @@ class GitHubClient:
             "issue", "list",
             "--label", label,
             "--state", "open",
-            "--json", "number,title,body,labels,author",
+            "--json", "number,title,body,labels,author,updatedAt",
         )
         result = [
             (
@@ -60,6 +70,7 @@ class GitHubClient:
                     title=item["title"],
                     body=item.get("body", ""),
                     author=item.get("author", {}).get("login", ""),
+                    updated_at=_parse_datetime(item.get("updatedAt")),
                 ),
                 [l["name"] for l in item.get("labels", [])],
             )
@@ -92,7 +103,7 @@ class GitHubClient:
         result = self._gh_json(
             "pr", "list",
             "--state", "open",
-            "--json", "number,headRefName,title,comments,reviews,labels,mergeable",
+            "--json", "number,headRefName,title,comments,reviews,labels,mergeable,updatedAt",
         )
         logger.debug("list_open_prs() returned %d open PR(s)", len(result))
         return result
