@@ -313,6 +313,8 @@ def run_supervisor(
                         logger.error("Skipping %s this cycle due to clone failure.", repo)
                         continue
 
+                    GitHubClient(repo, bot_name or "").ensure_required_labels()
+
                     owner, name = repo.split("/", 1)
                     log_path = base_dir / ".logs" / owner / name / "loony-worker.log"
                     log_path.parent.mkdir(parents=True, exist_ok=True)

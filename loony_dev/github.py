@@ -163,6 +163,44 @@ class GitHubClient:
         except subprocess.CalledProcessError:
             logger.warning("Failed to remove label '%s' from #%d", label, number)
 
+    def ensure_label(self, name: str, color: str, description: str) -> None:
+        """Create label if it doesn't exist. Silently ignores conflicts (422)."""
+        try:
+            result = subprocess.run(
+                [
+                    "gh", "api", f"repos/{self.repo}/labels",
+                    "--method", "POST",
+                    "-f", f"name={name}",
+                    "-f", f"color={color}",
+                    "-f", f"description={description}",
+                ],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                logger.debug("Created label %r in %s", name, self.repo)
+                return
+            # A 422 response means the label already exists — parse to confirm.
+            try:
+                body = json.loads(result.stdout)
+                errors = body.get("errors", [])
+                if any(e.get("code") == "already_exists" for e in errors):
+                    logger.debug("Label %r already exists in %s", name, self.repo)
+                    return
+            except (ValueError, AttributeError):
+                pass
+            logger.warning(
+                "Failed to provision label %r in %s: %s",
+                name, self.repo, (result.stderr or result.stdout).strip(),
+            )
+        except Exception as exc:
+            logger.warning("Failed to provision label %r in %s: %s", name, self.repo, exc)
+
+    def ensure_required_labels(self) -> None:
+        """Provision all labels required by loony-dev into this repo."""
+        logger.info("Provisioning required labels for %s", self.repo)
+        for label in REQUIRED_LABELS:
+            self.ensure_label(**label)
+
     def assign_self(self, number: int) -> None:
         try:
             self._gh("issue", "edit", str(number), "--add-assignee", "@me")
