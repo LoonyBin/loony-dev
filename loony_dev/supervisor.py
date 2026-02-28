@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from loony_dev.github import GitHubClient
+
 logger = logging.getLogger(__name__)
 
 
@@ -310,6 +312,8 @@ def run_supervisor(
                     except Exception:
                         logger.error("Skipping %s this cycle due to clone failure.", repo)
                         continue
+
+                    GitHubClient(repo, bot_name or "").ensure_required_labels()
 
                     owner, name = repo.split("/", 1)
                     log_path = base_dir / ".logs" / owner / name / "loony-worker.log"

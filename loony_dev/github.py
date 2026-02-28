@@ -8,6 +8,12 @@ from loony_dev.models import Comment, Issue, truncate_for_log
 
 logger = logging.getLogger(__name__)
 
+REQUIRED_LABELS = [
+    {"name": "ready-for-development", "color": "0075ca", "description": "Issue is ready for implementation"},
+    {"name": "ready-for-planning",    "color": "e4e669", "description": "Issue needs planning/triage"},
+    {"name": "in-progress",           "color": "d93f0b", "description": "Bot is actively working on this"},
+]
+
 
 class GitHubClient:
     def __init__(self, repo: str, bot_name: str) -> None:
@@ -156,6 +162,44 @@ class GitHubClient:
             self._gh("issue", "edit", str(number), "--remove-label", label)
         except subprocess.CalledProcessError:
             logger.warning("Failed to remove label '%s' from #%d", label, number)
+
+    def ensure_label(self, name: str, color: str, description: str) -> None:
+        """Create label if it doesn't exist. Silently ignores conflicts (422)."""
+        try:
+            result = subprocess.run(
+                [
+                    "gh", "api", f"repos/{self.repo}/labels",
+                    "--method", "POST",
+                    "-f", f"name={name}",
+                    "-f", f"color={color}",
+                    "-f", f"description={description}",
+                ],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                logger.debug("Created label %r in %s", name, self.repo)
+                return
+            # A 422 response means the label already exists — parse to confirm.
+            try:
+                body = json.loads(result.stdout)
+                errors = body.get("errors", [])
+                if any(e.get("code") == "already_exists" for e in errors):
+                    logger.debug("Label %r already exists in %s", name, self.repo)
+                    return
+            except (ValueError, AttributeError):
+                pass
+            logger.warning(
+                "Failed to provision label %r in %s: %s",
+                name, self.repo, (result.stderr or result.stdout).strip(),
+            )
+        except Exception as exc:
+            logger.warning("Failed to provision label %r in %s: %s", name, self.repo, exc)
+
+    def ensure_required_labels(self) -> None:
+        """Provision all labels required by loony-dev into this repo."""
+        logger.info("Provisioning required labels for %s", self.repo)
+        for label in REQUIRED_LABELS:
+            self.ensure_label(**label)
 
     def assign_self(self, number: int) -> None:
         try:
