@@ -8,6 +8,12 @@ from loony_dev.models import Comment, Issue, truncate_for_log
 
 logger = logging.getLogger(__name__)
 
+REQUIRED_LABELS = [
+    {"name": "ready-for-development", "color": "0075ca", "description": "Issue is ready for implementation"},
+    {"name": "ready-for-planning",    "color": "e4e669", "description": "Issue needs planning/triage"},
+    {"name": "in-progress",           "color": "d93f0b", "description": "Bot is actively working on this"},
+]
+
 
 class GitHubClient:
     def __init__(self, repo: str, bot_name: str) -> None:
@@ -162,6 +168,33 @@ class GitHubClient:
             self._gh("issue", "edit", str(number), "--add-assignee", "@me")
         except subprocess.CalledProcessError:
             logger.warning("Failed to assign self to #%d", number)
+
+    def ensure_label(self, name: str, color: str, description: str) -> None:
+        """Create label if it doesn't exist. Silently ignores conflicts (422)."""
+        try:
+            self._gh(
+                "api", f"repos/{self.repo}/labels",
+                "--method", "POST",
+                "-f", f"name={name}",
+                "-f", f"color={color}",
+                "-f", f"description={description}",
+            )
+            logger.debug("Created label %r in %s", name, self.repo)
+        except subprocess.CalledProcessError as e:
+            output = (e.stderr or "") + (e.stdout or "")
+            if "already_exists" in output or "422" in output:
+                logger.debug("Label %r already exists in %s", name, self.repo)
+            else:
+                logger.warning(
+                    "Failed to provision label %r in %s: %s",
+                    name, self.repo, (e.stderr or "").strip(),
+                )
+
+    def ensure_required_labels(self) -> None:
+        """Provision all labels required by loony-dev into this repo."""
+        logger.info("Provisioning required labels for %s", self.repo)
+        for label in REQUIRED_LABELS:
+            self.ensure_label(**label)
 
     # --- Comments ---
 
