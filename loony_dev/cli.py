@@ -6,6 +6,7 @@ from pathlib import Path
 import click
 
 from loony_dev.agents.coding import CodingAgent
+from loony_dev.agents.null_agent import NullAgent
 from loony_dev.agents.planning import PlanningAgent
 from loony_dev.git import GitRepo
 from loony_dev.github import GitHubClient
@@ -58,7 +59,7 @@ def worker(repo: str | None, interval: int, work_dir: str, bot_name: str, verbos
 
     github = GitHubClient(repo=repo, bot_name=bot_name)
     git = GitRepo(work_dir=work_path)
-    agents = [CodingAgent(work_dir=work_path), PlanningAgent(work_dir=work_path)]
+    agents = [NullAgent(), CodingAgent(work_dir=work_path), PlanningAgent(work_dir=work_path)]
 
     orchestrator = Orchestrator(
         github=github,
