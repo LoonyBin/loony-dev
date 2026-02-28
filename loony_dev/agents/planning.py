@@ -30,24 +30,30 @@ class PlanningAgent(Agent):
         logger.debug("Running planning Claude CLI (cwd=%s)", self.work_dir)
         logger.debug("Planning prompt: %s", truncate_for_log(prompt))
 
-        result = subprocess.run(
+        with subprocess.Popen(
             ["claude", "-p", "--dangerously-skip-permissions", prompt],
             cwd=self.work_dir,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-        )
+        ) as proc:
+            self._active_process = proc
+            try:
+                stdout, stderr = proc.communicate()
+            finally:
+                self._active_process = None
 
-        logger.debug("Planning Claude CLI exited with code %d", result.returncode)
-        if result.stdout:
-            logger.debug("Planning output (%d chars): %s", len(result.stdout), truncate_for_log(result.stdout))
-        if result.stderr:
-            logger.debug("Planning stderr: %s", truncate_for_log(result.stderr))
+        logger.debug("Planning Claude CLI exited with code %d", proc.returncode)
+        if stdout:
+            logger.debug("Planning output (%d chars): %s", len(stdout), truncate_for_log(stdout))
+        if stderr:
+            logger.debug("Planning stderr: %s", truncate_for_log(stderr))
 
-        success = result.returncode == 0
-        output = result.stdout if success else f"{result.stdout}\n{result.stderr}"
+        success = proc.returncode == 0
+        output = stdout if success else f"{stdout}\n{stderr}"
 
         # The raw output IS the plan; use it directly as the summary so
         # PlanningTask.on_complete can post it as a GitHub comment.
-        summary = output.strip() if success else f"Agent exited with code {result.returncode}"
+        summary = output.strip() if success else f"Agent exited with code {proc.returncode}"
 
         return TaskResult(success=success, output=output, summary=summary)

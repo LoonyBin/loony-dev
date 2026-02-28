@@ -54,32 +54,39 @@ class CodingAgent(Agent):
         logger.debug("Claude prompt: %s", truncate_for_log(prompt))
 
         while True:
-            result = subprocess.run(
+            with subprocess.Popen(
                 cmd,
                 cwd=self.work_dir,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-            )
+            ) as proc:
+                self._active_process = proc
+                try:
+                    stdout, stderr = proc.communicate()
+                finally:
+                    self._active_process = None
 
-            logger.debug("Claude CLI exited with code %d", result.returncode)
-            if result.stdout:
-                logger.debug("Claude stdout: %s", truncate_for_log(result.stdout))
-            if result.stderr:
-                logger.debug("Claude stderr: %s", truncate_for_log(result.stderr))
+            returncode = proc.returncode
+            logger.debug("Claude CLI exited with code %d", returncode)
+            if stdout:
+                logger.debug("Claude stdout: %s", truncate_for_log(stdout))
+            if stderr:
+                logger.debug("Claude stderr: %s", truncate_for_log(stderr))
 
-            if result.returncode != 0:
-                combined = f"{result.stdout}\n{result.stderr}"
+            if returncode != 0:
+                combined = f"{stdout}\n{stderr}"
                 if self._is_quota_error(combined):
                     self._wait_for_quota_reset(combined)
                     continue
                 return TaskResult(
                     success=False,
                     output=combined,
-                    summary=f"Agent exited with code {result.returncode}",
+                    summary=f"Agent exited with code {returncode}",
                 )
 
-            summary = self._generate_summary(result.stdout)
-            return TaskResult(success=True, output=result.stdout, summary=summary)
+            summary = self._generate_summary(stdout)
+            return TaskResult(success=True, output=stdout, summary=summary)
 
     def _wait_for_quota_reset(self, output: str) -> None:
         """Parse the reset time from Claude's output and sleep until then."""
@@ -147,14 +154,20 @@ class CodingAgent(Agent):
         summary_prompt = f"Summarize what was done in 2-3 sentences based on this output:\n\n{output[-3000:]}"
         logger.debug("Running summary Claude call")
         logger.debug("Summary prompt: %s", truncate_for_log(summary_prompt))
-        result = subprocess.run(
+        with subprocess.Popen(
             ["claude", "-p", "--dangerously-skip-permissions", summary_prompt],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-        )
-        logger.debug("Summary Claude call exited with code %d", result.returncode)
-        if result.stdout:
-            logger.debug("Summary output: %s", truncate_for_log(result.stdout))
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
+        ) as proc:
+            self._active_process = proc
+            try:
+                stdout, _ = proc.communicate()
+            finally:
+                self._active_process = None
+        logger.debug("Summary Claude call exited with code %d", proc.returncode)
+        if stdout:
+            logger.debug("Summary output: %s", truncate_for_log(stdout))
+        if proc.returncode == 0 and stdout.strip():
+            return stdout.strip()
         return "Changes were made successfully."

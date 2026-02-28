@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
@@ -12,6 +14,7 @@ class Agent(ABC):
     """Base class for all agents. Different agents use different tools."""
 
     name: str
+    _active_process: subprocess.Popen | None = None
 
     @abstractmethod
     def can_handle(self, task: Task) -> bool:
@@ -29,3 +32,17 @@ class Agent(ABC):
     def execute(self, task: Task) -> TaskResult:
         """Execute a task. Blocking. Returns result."""
         ...
+
+    def terminate(self) -> None:
+        """Terminate the currently active subprocess, if any."""
+        proc = self._active_process
+        if proc is None:
+            return
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        except OSError:
+            pass
