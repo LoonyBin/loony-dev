@@ -60,6 +60,7 @@ class ConflictResolutionTask(Task):
 
     def on_start(self, github: GitHubClient) -> None:
         github.add_label(self.pr.number, "in-progress")
+        github.assign_self(self.pr.number)
 
     def on_complete(self, github: GitHubClient, result: TaskResult) -> None:
         github.remove_label(self.pr.number, "in-progress")
