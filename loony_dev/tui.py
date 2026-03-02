@@ -20,6 +20,8 @@ from textual.widgets import Header, RichLog, Static, Tab, Tabs
 
 
 MAX_BUFFER_LINES = 5000
+TAIL_LINES = 100  # Lines to load into RichLog initially; rest loaded on scroll-up
+
 
 # ---------------------------------------------------------------------------
 # inotify helpers (Linux only; graceful no-op on other platforms)
@@ -39,31 +41,6 @@ except OSError:
     _INOTIFY_AVAILABLE = False
 
 
-# ---------------------------------------------------------------------------
-# PID file helpers
-# ---------------------------------------------------------------------------
-
-def is_running(pid_path: Path | None) -> bool | None:
-    """Check whether the process recorded in *pid_path* is alive.
-
-    Returns:
-        True  — pid file exists, PID is valid, os.kill(pid, 0) succeeds.
-        None  — os.kill raised PermissionError (process exists but unknown ownership).
-        False — pid file missing, invalid content, or ProcessLookupError.
-    """
-    if pid_path is None:
-        return False
-    try:
-        pid = int(pid_path.read_text().strip())
-    except (FileNotFoundError, ValueError, OSError):
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -185,23 +162,53 @@ class LogWatcher:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _tab_id(label: str) -> str:
-    """Convert a worker label to a valid CSS identifier for use as a tab ID."""
-    return label.replace("/", "-").replace(" ", "-")
-
-
-# ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
 
 @dataclass
-class SidebarEntry:
+class TabBarEntry:
     label: str
     log_path: Path
     pid_path: Path | None = None
+
+    @property
+    def tab_id(self) -> str:
+        """Convert the worker label to a valid CSS identifier for use as a tab ID."""
+        return self.label.replace("/", "-").replace(" ", "-")
+
+    def _is_running(self) -> bool | None:
+        """Check whether the process recorded in *pid_path* is alive.
+
+        Returns:
+            True  — pid file exists, PID is valid, os.kill(pid, 0) succeeds.
+            None  — os.kill raised PermissionError (process exists but unknown ownership).
+            False — pid file missing, invalid content, or ProcessLookupError.
+        """
+        if self.pid_path is None:
+            return False
+        try:
+            pid = int(self.pid_path.read_text().strip())
+        except (FileNotFoundError, ValueError, OSError):
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return None
+
+    @property
+    def tab_label(self) -> str:
+        """Return the Rich-markup label shown on the tab (badge + name)."""
+        running = self._is_running()
+        if running is True:
+            badge = "[green]\u25cf[/green]"
+        elif running is None:
+            badge = "[yellow]\u25cf[/yellow]"
+        else:
+            badge = "[dim]\u25cb[/dim]"
+        return f"{badge} {self.label}"
 
 
 # ---------------------------------------------------------------------------
@@ -231,10 +238,10 @@ class WorkerTabBar(Widget):
         self._base_dir = base_dir
         self._supervisor_log = supervisor_log
         self._scan_interval = scan_interval
-        self._entries: list[SidebarEntry] = []
+        self._entries: list[TabBarEntry] = []
 
     @property
-    def entries(self) -> list[SidebarEntry]:
+    def entries(self) -> list[TabBarEntry]:
         return self._entries
 
     def compose(self) -> ComposeResult:
@@ -245,17 +252,13 @@ class WorkerTabBar(Widget):
         await self._scan()
         self.set_interval(self._scan_interval, self._scan)
 
-    async def _scan(self) -> None:
-        """Re-discover worker log directories and rebuild the tab bar."""
-        tabs = self.query_one(Tabs)
+    def _discover_entries(self) -> list[TabBarEntry]:
+        """Build the list of tab-bar entries by scanning the logs directory."""
         logs_dir = self._base_dir / ".logs"
 
-        # Preserve the active tab across rebuilds
-        old_active = tabs.active
-
         # Supervisor is always first
-        entries: list[SidebarEntry] = [
-            SidebarEntry(
+        entries: list[TabBarEntry] = [
+            TabBarEntry(
                 label="Supervisor",
                 log_path=self._supervisor_log,
                 pid_path=logs_dir / "supervisor.pid",
@@ -270,36 +273,31 @@ class WorkerTabBar(Widget):
                 for repo_dir in sorted(owner_dir.iterdir()):
                     if not repo_dir.is_dir():
                         continue
-                    entries.append(SidebarEntry(
+                    entries.append(TabBarEntry(
                         label=f"{owner_dir.name}/{repo_dir.name}",
                         log_path=repo_dir / "loony-worker.log",
                         pid_path=repo_dir / "loony-worker.pid",
                     ))
 
-        self._entries = entries
+        return entries
 
-        # Rebuild tabs, preserving the previously active tab.
-        # Must await clear() — it returns an AwaitComplete wrapping an async
-        # DOM removal; not awaiting it leaves old tabs in the NodeList so that
-        # the subsequent add_tab calls raise DuplicateIds.
+    async def _scan(self) -> None:
+        """Re-discover worker log directories and rebuild the tab bar."""
+        tabs = self.query_one(Tabs)
+        old_active = tabs.active
+
+        self._entries = self._discover_entries()
+
         await tabs.clear()
         new_active = old_active if old_active else ""
         valid_ids = set()
-        for entry in entries:
-            running = is_running(entry.pid_path)
-            if running is True:
-                badge = "[green]●[/green]"
-            elif running is None:
-                badge = "[yellow]●[/yellow]"
-            else:
-                badge = "[dim]○[/dim]"
-            tid = _tab_id(entry.label)
+        for entry in self._entries:
+            tid = entry.tab_id
             valid_ids.add(tid)
-            tabs.add_tab(Tab(f"{badge} {entry.label}", id=tid))
+            tabs.add_tab(Tab(entry.tab_label, id=tid))
 
-        # Restore active tab after DOM refresh; fall back to first tab
         if new_active not in valid_ids:
-            new_active = _tab_id(entries[0].label) if entries else ""
+            new_active = self._entries[0].tab_id if self._entries else ""
         if new_active:
             self.call_after_refresh(setattr, tabs, "active", new_active)
 
@@ -309,7 +307,13 @@ class WorkerTabBar(Widget):
 # ---------------------------------------------------------------------------
 
 class LogPane(Widget):
-    """Right pane that tails and displays log lines for the selected sidebar item."""
+    """Right pane that tails and displays log lines for the selected TabBar item.
+
+    Maintains one RichLog per tab and toggles visibility, so tab switches are
+    instantaneous instead of replaying the entire buffer.  Only the last
+    TAIL_LINES are written initially; the full buffer is loaded lazily when
+    the user scrolls to the top.
+    """
 
     DEFAULT_CSS = """
     LogPane {
@@ -318,6 +322,7 @@ class LogPane(Widget):
     }
     LogPane > RichLog {
         height: 1fr;
+        display: none;
     }
     LogPane > #follow-banner {
         height: 1;
@@ -333,36 +338,86 @@ class LogPane(Widget):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._watcher: LogWatcher | None = None
+        self._logs: dict[str, RichLog] = {}
+        self._watchers: dict[str, LogWatcher] = {}  # key -> watcher for lazy load
+        self._fully_loaded: set[str] = set()
+        self._active_key: str | None = None
 
     def compose(self) -> ComposeResult:
-        yield RichLog(highlight=False, markup=False, wrap=True)
-        yield Static("Follow paused — press [f] to resume", id="follow-banner")
+        yield Static("Follow paused \u2014 press [f] to resume", id="follow-banner")
 
     def on_mount(self) -> None:
         self.set_interval(0.5, self._poll)
+        self.set_interval(0.25, self._check_scroll)
 
     def watch_follow(self, follow: bool) -> None:
         self.query_one("#follow-banner").display = not follow
-        if follow:
-            self.query_one(RichLog).scroll_end(animate=False)
+        if follow and self._active_key and self._active_key in self._logs:
+            self._logs[self._active_key].scroll_end(animate=False)
 
-    def switch_watcher(self, watcher: LogWatcher) -> None:
-        """Switch to *watcher* and display its accumulated buffer."""
-        self._watcher = watcher
-        log = self.query_one(RichLog)
-        log.clear()
-        for line in watcher.buffer:
+    def preload(self, key: str, watcher: LogWatcher) -> None:
+        """Create a hidden RichLog for *key* with the tail of the buffer."""
+        if key in self._logs:
+            return
+        log = RichLog(highlight=False, markup=False, wrap=True)
+        self._logs[key] = log
+        self._watchers[key] = watcher
+        self.mount(log, before=self.query_one("#follow-banner"))
+        tail = watcher.buffer[-TAIL_LINES:] if len(watcher.buffer) > TAIL_LINES else watcher.buffer
+        for line in tail:
             log.write(line)
+        if len(watcher.buffer) <= TAIL_LINES:
+            self._fully_loaded.add(key)
+
+    def switch_watcher(self, key: str, watcher: LogWatcher) -> None:
+        """Switch to the log for *key*."""
+        # Hide the currently visible log
+        if self._active_key and self._active_key in self._logs:
+            self._logs[self._active_key].display = False
+
+        self._watcher = watcher
+        self._active_key = key
+        self._watchers[key] = watcher
+
+        if key not in self._logs:
+            self.preload(key, watcher)
+
+        log = self._logs[key]
+        log.display = True
         log.scroll_end(animate=False)
         log.focus()
 
+    def _check_scroll(self) -> None:
+        """If the active log is scrolled to the top and not fully loaded, load all lines."""
+        if self._active_key is None or self._active_key in self._fully_loaded:
+            return
+        log = self._logs.get(self._active_key)
+        if log is None:
+            return
+        if log.scroll_offset.y > 0:
+            return
+        # Scrolled to top — load the full buffer
+        watcher = self._watchers.get(self._active_key)
+        if watcher is None:
+            return
+        # The tail that was loaded starts at this offset in the full buffer
+        prepended = max(0, len(watcher.buffer) - TAIL_LINES)
+        log.clear()
+        for line in watcher.buffer:
+            log.write(line)
+        # Restore scroll so the view stays on the same content
+        log.scroll_to(y=prepended, animate=False)
+        self._fully_loaded.add(self._active_key)
+
     def _poll(self) -> None:
-        if self._watcher is None:
+        if self._watcher is None or self._active_key is None:
             return
         new_lines = self._watcher.poll()
         if not new_lines:
             return
-        log = self.query_one(RichLog)
+        log = self._logs.get(self._active_key)
+        if log is None:
+            return
         for line in new_lines:
             log.write(line)
         if self.follow:
@@ -425,10 +480,15 @@ class SupervisorApp(App):
         )
 
     def on_mount(self) -> None:
-        self.query_one(RichLog).focus()
+        # Pre-load all tabs so even the first switch is instant
+        log_pane = self.query_one(LogPane)
+        tab_bar = self.query_one(WorkerTabBar)
+        for entry in tab_bar.entries:
+            watcher = self._get_watcher(entry)
+            log_pane.preload(entry.label, watcher)
         self._select_by_index(0)
 
-    def _get_watcher(self, entry: SidebarEntry) -> LogWatcher:
+    def _get_watcher(self, entry: TabBarEntry) -> LogWatcher:
         """Get or create a persistent LogWatcher for the given entry."""
         if entry.label not in self._watchers:
             w = LogWatcher(entry.log_path)
@@ -446,7 +506,7 @@ class SupervisorApp(App):
             return  # Same item — no need to reset the pane
         self._current_label = entry.label
         watcher = self._get_watcher(entry)
-        self.query_one(LogPane).switch_watcher(watcher)
+        self.query_one(LogPane).switch_watcher(entry.label, watcher)
 
     def on_tabs_tab_activated(self, event: Tabs.TabActivated) -> None:
         if event.tab is None:
@@ -454,7 +514,7 @@ class SupervisorApp(App):
         tab_bar = self.query_one(WorkerTabBar)
         activated_id = event.tab.id
         for i, entry in enumerate(tab_bar.entries):
-            if _tab_id(entry.label) == activated_id:
+            if entry.tab_id == activated_id:
                 self._select_by_index(i)
                 return
 
@@ -468,7 +528,7 @@ class SupervisorApp(App):
         )
         new_index = (current - 1) % len(entries)
         new_entry = entries[new_index]
-        self.query_one(Tabs).active = _tab_id(new_entry.label)
+        self.query_one(Tabs).active = new_entry.tab_id
         self._select_by_index(new_index)
 
     def action_next_tab(self) -> None:
@@ -481,7 +541,7 @@ class SupervisorApp(App):
         )
         new_index = (current + 1) % len(entries)
         new_entry = entries[new_index]
-        self.query_one(Tabs).active = _tab_id(new_entry.label)
+        self.query_one(Tabs).active = new_entry.tab_id
         self._select_by_index(new_index)
 
     def action_toggle_follow(self) -> None:
