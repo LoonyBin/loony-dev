@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import os
 import shutil
 import signal
 import subprocess
@@ -13,6 +14,27 @@ from pathlib import Path
 from loony_dev.github import GitHubClient
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# PID file helpers
+# ---------------------------------------------------------------------------
+
+def _write_pid_file(path: Path, pid: int) -> None:
+    """Write *pid* to *path*, creating parent directories as needed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.write_text(str(pid))
+    except OSError as exc:
+        logger.warning("Failed to write PID file %s: %s", path, exc)
+
+
+def _remove_pid_file(path: Path) -> None:
+    """Remove the PID file at *path* if it exists."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("Failed to remove PID file %s: %s", path, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +177,7 @@ class WorkerProcess:
     repo: str
     work_dir: Path
     log_file: Path
+    pid_file: Path
     process: subprocess.Popen
     started_at: float
     restart_count: int = field(default=0)
@@ -186,6 +209,7 @@ def launch_worker(
     repo: str,
     work_dir: Path,
     log_file: Path,
+    pid_file: Path,
     worker_interval: int,
     bot_name: str | None,
     verbose: bool,
@@ -200,10 +224,13 @@ def launch_worker(
     process = subprocess.Popen(cmd, stdout=log_fh, stderr=log_fh)
     log_fh.close()  # Popen inherits the fd; close our copy
 
+    _write_pid_file(pid_file, process.pid)
+
     return WorkerProcess(
         repo=repo,
         work_dir=work_dir,
         log_file=log_file,
+        pid_file=pid_file,
         process=process,
         started_at=time.monotonic(),
     )
@@ -218,6 +245,7 @@ def _terminate_worker(wp: WorkerProcess, timeout: float = 10.0) -> None:
     try:
         wp.process.terminate()
     except OSError:
+        _remove_pid_file(wp.pid_file)
         return
     try:
         wp.process.wait(timeout=timeout)
@@ -231,6 +259,7 @@ def _terminate_worker(wp: WorkerProcess, timeout: float = 10.0) -> None:
             wp.process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             pass
+    _remove_pid_file(wp.pid_file)
 
 
 def run_supervisor(
@@ -251,6 +280,11 @@ def run_supervisor(
     Runs until interrupted by SIGINT or SIGTERM.
     """
     base_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir = base_dir / ".logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    supervisor_pid_file = logs_dir / "supervisor.pid"
+    _write_pid_file(supervisor_pid_file, os.getpid())
 
     workers: dict[str, WorkerProcess] = {}
     shutdown_requested = False
@@ -323,6 +357,7 @@ def run_supervisor(
 
                     owner, name = repo.split("/", 1)
                     log_path = base_dir / ".logs" / owner / name / "loony-worker.log"
+                    pid_path = base_dir / ".logs" / owner / name / "loony-worker.pid"
                     log_path.parent.mkdir(parents=True, exist_ok=True)
 
                     try:
@@ -336,6 +371,7 @@ def run_supervisor(
                             repo=repo,
                             work_dir=work_dir,
                             log_file=log_path,
+                            pid_file=pid_path,
                             worker_interval=worker_interval,
                             bot_name=bot_name,
                             verbose=verbose,
@@ -370,12 +406,14 @@ def run_supervisor(
                 # Worker finished naturally during graceful shutdown; don't restart
                 logger.info("Worker for %s has exited during graceful shutdown.", repo)
                 workers.pop(repo)
+                _remove_pid_file(wp.pid_file)
                 continue
 
             logger.warning(
                 "Worker for %s exited with code %d (restart #%d).",
                 repo, rc, wp.restart_count + 1,
             )
+            _remove_pid_file(wp.pid_file)
 
             delay = min(min_restart_delay * (2 ** wp.restart_count), max_restart_delay)
             logger.info("Restarting worker for %s in %.1fs…", repo, delay)
@@ -393,6 +431,7 @@ def run_supervisor(
                     repo=repo,
                     work_dir=wp.work_dir,
                     log_file=wp.log_file,
+                    pid_file=wp.pid_file,
                     worker_interval=worker_interval,
                     bot_name=bot_name,
                     verbose=verbose,
@@ -429,5 +468,7 @@ def run_supervisor(
         for repo, wp in workers.items():
             wp.process.wait()
             logger.info("Worker %s has exited.", repo)
+            _remove_pid_file(wp.pid_file)
 
+    _remove_pid_file(supervisor_pid_file)
     logger.info("Supervisor stopped.")
