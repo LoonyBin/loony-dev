@@ -315,7 +315,7 @@ class LogPane(Widget):
     LogPane > #follow-banner {
         height: 1;
         background: $warning;
-        color: $warning-text;
+        color: $warning-muted;
         text-align: center;
         display: none;
     }
