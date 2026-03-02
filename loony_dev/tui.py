@@ -291,7 +291,7 @@ class WorkerSidebar(Widget):
                 new_selected_index = i
 
         if entries:
-            lv.index = new_selected_index
+            self.call_after_refresh(setattr, lv, "index", new_selected_index)
 
 
 # ---------------------------------------------------------------------------
