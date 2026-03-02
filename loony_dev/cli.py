@@ -116,13 +116,18 @@ def supervisor_cmd(
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     logging.basicConfig(level=log_level, format=log_format)
 
+    base_path = Path(base_dir).resolve()
+    logs_dir = base_path / ".logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    if log_file is None:
+        log_file = str(logs_dir / "supervisor.log")
+
     if log_file:
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(logging.Formatter(log_format))
         logging.getLogger().addHandler(file_handler)
-
-    base_path = Path(base_dir).resolve()
 
     if bot_name is None:
         bot_name = GitHubClient.detect_bot_name()
@@ -144,6 +149,34 @@ def supervisor_cmd(
         exclude=exclude,
         refresh_interval=refresh_interval,
     )
+
+
+@cli.command("ui")
+@click.option(
+    "--base-dir", default=".", show_default=True,
+    help="Base directory for log/PID discovery (same default as supervisor)",
+)
+@click.option(
+    "--supervisor-log", default=None, type=click.Path(), metavar="PATH",
+    help="Path to supervisor log file (default: <base-dir>/.logs/supervisor.log)",
+)
+@click.option(
+    "--scan-interval", default=5, show_default=True,
+    help="How often (seconds) to re-scan for new/removed workers",
+)
+def ui_cmd(base_dir: str, supervisor_log: str | None, scan_interval: int) -> None:
+    """Launch the terminal UI to monitor the supervisor and workers."""
+    from loony_dev.tui import SupervisorApp
+
+    base_path = Path(base_dir).resolve()
+    sup_log = Path(supervisor_log) if supervisor_log else base_path / ".logs" / "supervisor.log"
+
+    app = SupervisorApp(
+        base_dir=base_path,
+        supervisor_log=sup_log,
+        scan_interval=float(scan_interval),
+    )
+    app.run()
 
 
 # Keep 'main' as an alias so existing scripts that imported it continue to work.
