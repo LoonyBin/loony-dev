@@ -123,11 +123,11 @@ def supervisor_cmd(
     if log_file is None:
         log_file = str(logs_dir / "supervisor.log")
 
-    if log_file:
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(logging.Formatter(log_format))
-        logging.getLogger().addHandler(file_handler)
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter(log_format))
+    logging.getLogger().addHandler(file_handler)
+    logging.getLogger().info("Also writing DEBUG logs to %s", log_file)
 
     if bot_name is None:
         bot_name = GitHubClient.detect_bot_name()

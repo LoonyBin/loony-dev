@@ -5,7 +5,10 @@ Run with: loony-dev ui [--base-dir PATH]
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import os
+import select
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +21,23 @@ from textual.widgets import Header, Label, ListItem, ListView, RichLog, Static
 
 
 MAX_BUFFER_LINES = 5000
+
+# ---------------------------------------------------------------------------
+# inotify helpers (Linux only; graceful no-op on other platforms)
+# ---------------------------------------------------------------------------
+
+_IN_MODIFY = 0x00000002  # File was modified
+_IN_CLOSE_WRITE = 0x00000008  # Writable file was closed
+
+try:
+    _libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+    _INOTIFY_AVAILABLE = (
+        hasattr(_libc, "inotify_init1")
+        and hasattr(_libc, "inotify_add_watch")
+        and hasattr(_libc, "inotify_rm_watch")
+    )
+except OSError:
+    _INOTIFY_AVAILABLE = False
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +77,9 @@ class LogWatcher:
     On the first successful open, seeks to end-of-file so that historical
     content is skipped. Handles missing files gracefully until they appear.
     Accumulates received lines in ``self.buffer`` (capped at MAX_BUFFER_LINES).
+
+    Uses inotify on Linux to detect modifications without spinning; falls back
+    to unconditional polling on platforms where inotify is unavailable.
     """
 
     def __init__(self, log_path: Path) -> None:
@@ -64,9 +87,53 @@ class LogWatcher:
         self._file = None
         self._seeked = False
         self.buffer: list[str] = []
+        # inotify state (-1 means not in use)
+        self._inotify_fd: int = -1
+        self._inotify_wd: int = -1
+        if _INOTIFY_AVAILABLE:
+            try:
+                fd = _libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+                if fd >= 0:
+                    self._inotify_fd = fd
+            except OSError:
+                pass
+
+    def _inotify_add_watch(self) -> None:
+        """Register an inotify watch on the log file (called once it exists)."""
+        if self._inotify_fd < 0 or self._inotify_wd >= 0:
+            return
+        try:
+            wd = _libc.inotify_add_watch(
+                self._inotify_fd,
+                str(self._path).encode(),
+                _IN_MODIFY | _IN_CLOSE_WRITE,
+            )
+            if wd >= 0:
+                self._inotify_wd = wd
+        except OSError:
+            pass
+
+    def _inotify_has_events(self) -> bool:
+        """Return True if inotify reports the file was modified; drain the fd."""
+        if self._inotify_fd < 0 or self._inotify_wd < 0:
+            return False
+        try:
+            r, _, _ = select.select([self._inotify_fd], [], [], 0)
+            if r:
+                os.read(self._inotify_fd, 4096)  # drain pending events
+                return True
+        except OSError:
+            pass
+        return False
 
     def poll(self) -> list[str]:
-        """Return new lines appended to the file since the last call."""
+        """Return new lines appended to the file since the last call.
+
+        When inotify is available the read is skipped entirely if no
+        IN_MODIFY / IN_CLOSE_WRITE event has been received, avoiding a
+        tight-polling loop. On platforms without inotify the method always
+        attempts a read (original polling behaviour).
+        """
         if self._file is None:
             if not self._path.exists():
                 return []
@@ -75,7 +142,12 @@ class LogWatcher:
                 if not self._seeked:
                     self._file.seek(0, 2)  # Seek to end on first open
                     self._seeked = True
+                self._inotify_add_watch()
             except OSError:
+                return []
+        elif self._inotify_fd >= 0 and self._inotify_wd >= 0:
+            # inotify is active — skip the read if nothing has changed
+            if not self._inotify_has_events():
                 return []
 
         new_lines: list[str] = []
@@ -107,6 +179,13 @@ class LogWatcher:
             except OSError:
                 pass
             self._file = None
+        if self._inotify_fd >= 0:
+            try:
+                os.close(self._inotify_fd)
+            except OSError:
+                pass
+            self._inotify_fd = -1
+            self._inotify_wd = -1
 
 
 # ---------------------------------------------------------------------------
