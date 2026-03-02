@@ -14,10 +14,9 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Header, Label, ListItem, ListView, RichLog, Static
+from textual.widgets import Header, RichLog, Static, Tab, Tabs
 
 
 MAX_BUFFER_LINES = 5000
@@ -186,6 +185,15 @@ class LogWatcher:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _tab_id(label: str) -> str:
+    """Convert a worker label to a valid CSS identifier for use as a tab ID."""
+    return label.replace("/", "-").replace(" ", "-")
+
+
+# ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
 
@@ -197,23 +205,20 @@ class SidebarEntry:
 
 
 # ---------------------------------------------------------------------------
-# Sidebar widget
+# Tab bar widget
 # ---------------------------------------------------------------------------
 
-class WorkerSidebar(Widget):
-    """Left sidebar listing Supervisor and all discovered worker repos."""
+class WorkerTabBar(Widget):
+    """Horizontal tab bar listing Supervisor and all discovered worker repos."""
 
     DEFAULT_CSS = """
-    WorkerSidebar {
-        width: 30;
-        height: 100%;
-        border-right: solid $panel-lighten-1;
-    }
-    WorkerSidebar > ListView {
-        height: 1fr;
-        background: transparent;
+    WorkerTabBar {
+        height: auto;
+        border-top: solid $panel-lighten-1;
     }
     """
+
+    can_focus = False
 
     def __init__(
         self,
@@ -233,22 +238,20 @@ class WorkerSidebar(Widget):
         return self._entries
 
     def compose(self) -> ComposeResult:
-        yield ListView()
+        yield Tabs()
 
     def on_mount(self) -> None:
+        self.query_one(Tabs).can_focus = False
         self._scan()
         self.set_interval(self._scan_interval, self._scan)
 
     def _scan(self) -> None:
-        """Re-discover worker log directories and rebuild the list."""
-        lv = self.query_one(ListView)
+        """Re-discover worker log directories and rebuild the tab bar."""
+        tabs = self.query_one(Tabs)
         logs_dir = self._base_dir / ".logs"
 
-        # Preserve selected item by label across rebuilds
-        old_index = lv.index
-        old_label: str | None = None
-        if old_index is not None and old_index < len(self._entries):
-            old_label = self._entries[old_index].label
+        # Preserve the active tab across rebuilds
+        old_active = tabs.active
 
         # Supervisor is always first
         entries: list[SidebarEntry] = [
@@ -275,10 +278,11 @@ class WorkerSidebar(Widget):
 
         self._entries = entries
 
-        # Rebuild ListView, preserving the previously selected item
-        lv.clear()
-        new_selected_index = 0
-        for i, entry in enumerate(entries):
+        # Rebuild tabs, preserving the previously active tab
+        tabs.clear()
+        new_active = old_active if old_active else ""
+        valid_ids = set()
+        for entry in entries:
             running = is_running(entry.pid_path)
             if running is True:
                 badge = "[green]●[/green]"
@@ -286,12 +290,15 @@ class WorkerSidebar(Widget):
                 badge = "[yellow]●[/yellow]"
             else:
                 badge = "[dim]○[/dim]"
-            lv.append(ListItem(Label(f"{badge} {entry.label}", markup=True)))
-            if entry.label == old_label:
-                new_selected_index = i
+            tid = _tab_id(entry.label)
+            valid_ids.add(tid)
+            tabs.add_tab(Tab(f"{badge} {entry.label}", id=tid))
 
-        if entries:
-            self.call_after_refresh(setattr, lv, "index", new_selected_index)
+        # Restore active tab after DOM refresh; fall back to first tab
+        if new_active not in valid_ids:
+            new_active = _tab_id(entries[0].label) if entries else ""
+        if new_active:
+            self.call_after_refresh(setattr, tabs, "active", new_active)
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +311,7 @@ class LogPane(Widget):
     DEFAULT_CSS = """
     LogPane {
         width: 1fr;
-        height: 100%;
+        height: 1fr;
     }
     LogPane > RichLog {
         height: 1fr;
@@ -344,6 +351,7 @@ class LogPane(Widget):
         for line in watcher.buffer:
             log.write(line)
         log.scroll_end(animate=False)
+        log.focus()
 
     def _poll(self) -> None:
         if self._watcher is None:
@@ -371,10 +379,6 @@ class SupervisorApp(App):
     Screen {
         layout: vertical;
     }
-    #main-area {
-        layout: horizontal;
-        height: 1fr;
-    }
     #hint-bar {
         height: 1;
         background: $panel;
@@ -384,8 +388,10 @@ class SupervisorApp(App):
     """
 
     BINDINGS = [
-        Binding("f", "toggle_follow", "Toggle follow"),
-        Binding("q", "quit", "Quit"),
+        Binding("left",  "prev_tab",      "Prev tab"),
+        Binding("right", "next_tab",      "Next tab"),
+        Binding("f",     "toggle_follow", "Toggle follow"),
+        Binding("q",     "quit",          "Quit"),
     ]
 
     def __init__(
@@ -404,19 +410,19 @@ class SupervisorApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal(id="main-area"):
-            yield WorkerSidebar(
-                base_dir=self._base_dir,
-                supervisor_log=self._supervisor_log,
-                scan_interval=self._scan_interval,
-            )
-            yield LogPane()
+        yield LogPane()
+        yield WorkerTabBar(
+            base_dir=self._base_dir,
+            supervisor_log=self._supervisor_log,
+            scan_interval=self._scan_interval,
+        )
         yield Static(
-            "[b]↑/↓[/b] navigate  [b]j/k[/b] vi-nav  [b]f[/b] toggle follow  [b]q[/b] quit",
+            "[b]←/→[/b] switch tab  [b]↑/↓/PgUp/PgDn[/b] scroll  [b]f[/b] follow  [b]q[/b] quit",
             id="hint-bar",
         )
 
     def on_mount(self) -> None:
+        self.query_one(RichLog).focus()
         self._select_by_index(0)
 
     def _get_watcher(self, entry: SidebarEntry) -> LogWatcher:
@@ -428,21 +434,52 @@ class SupervisorApp(App):
         return self._watchers[entry.label]
 
     def _select_by_index(self, index: int) -> None:
-        """Switch the log pane to the sidebar item at *index*."""
-        sidebar = self.query_one(WorkerSidebar)
-        if not sidebar.entries or index >= len(sidebar.entries):
+        """Switch the log pane to the tab bar item at *index*."""
+        tab_bar = self.query_one(WorkerTabBar)
+        if not tab_bar.entries or index >= len(tab_bar.entries):
             return
-        entry = sidebar.entries[index]
+        entry = tab_bar.entries[index]
         if entry.label == self._current_label:
             return  # Same item — no need to reset the pane
         self._current_label = entry.label
         watcher = self._get_watcher(entry)
         self.query_one(LogPane).switch_watcher(watcher)
 
-    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        if event.item is None or event.list_view.index is None:
+    def on_tabs_tab_activated(self, event: Tabs.TabActivated) -> None:
+        if event.tab is None:
             return
-        self._select_by_index(event.list_view.index)
+        tab_bar = self.query_one(WorkerTabBar)
+        activated_id = event.tab.id
+        for i, entry in enumerate(tab_bar.entries):
+            if _tab_id(entry.label) == activated_id:
+                self._select_by_index(i)
+                return
+
+    def action_prev_tab(self) -> None:
+        tab_bar = self.query_one(WorkerTabBar)
+        entries = tab_bar.entries
+        if not entries:
+            return
+        current = next(
+            (i for i, e in enumerate(entries) if e.label == self._current_label), 0
+        )
+        new_index = (current - 1) % len(entries)
+        new_entry = entries[new_index]
+        self.query_one(Tabs).active = _tab_id(new_entry.label)
+        self._select_by_index(new_index)
+
+    def action_next_tab(self) -> None:
+        tab_bar = self.query_one(WorkerTabBar)
+        entries = tab_bar.entries
+        if not entries:
+            return
+        current = next(
+            (i for i, e in enumerate(entries) if e.label == self._current_label), 0
+        )
+        new_index = (current + 1) % len(entries)
+        new_entry = entries[new_index]
+        self.query_one(Tabs).active = _tab_id(new_entry.label)
+        self._select_by_index(new_index)
 
     def action_toggle_follow(self) -> None:
         log_pane = self.query_one(LogPane)
