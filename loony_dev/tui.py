@@ -72,11 +72,12 @@ def is_running(pid_path: Path | None) -> bool | None:
 # ---------------------------------------------------------------------------
 
 class LogWatcher:
-    """Tails a single log file, returning only lines written after creation.
+    """Tails a single log file, returning lines from the beginning on first open.
 
-    On the first successful open, seeks to end-of-file so that historical
-    content is skipped. Handles missing files gracefully until they appear.
-    Accumulates received lines in ``self.buffer`` (capped at MAX_BUFFER_LINES).
+    On the first successful open, reads from the beginning of the file so that
+    existing log content is loaded into the buffer. Handles missing files
+    gracefully until they appear. Accumulates received lines in ``self.buffer``
+    (capped at MAX_BUFFER_LINES).
 
     Uses inotify on Linux to detect modifications without spinning; falls back
     to unconditional polling on platforms where inotify is unavailable.
@@ -85,7 +86,6 @@ class LogWatcher:
     def __init__(self, log_path: Path) -> None:
         self._path = log_path
         self._file = None
-        self._seeked = False
         self.buffer: list[str] = []
         # inotify state (-1 means not in use)
         self._inotify_fd: int = -1
@@ -139,9 +139,6 @@ class LogWatcher:
                 return []
             try:
                 self._file = open(self._path, "r", encoding="utf-8", errors="replace")  # noqa: SIM115
-                if not self._seeked:
-                    self._file.seek(0, 2)  # Seek to end on first open
-                    self._seeked = True
                 self._inotify_add_watch()
             except OSError:
                 return []
@@ -346,8 +343,7 @@ class LogPane(Widget):
         log.clear()
         for line in watcher.buffer:
             log.write(line)
-        if self.follow:
-            log.scroll_end(animate=False)
+        log.scroll_end(animate=False)
 
     def _poll(self) -> None:
         if self._watcher is None:
@@ -426,7 +422,9 @@ class SupervisorApp(App):
     def _get_watcher(self, entry: SidebarEntry) -> LogWatcher:
         """Get or create a persistent LogWatcher for the given entry."""
         if entry.label not in self._watchers:
-            self._watchers[entry.label] = LogWatcher(entry.log_path)
+            w = LogWatcher(entry.log_path)
+            w.poll()  # pre-load buffer before first display
+            self._watchers[entry.label] = w
         return self._watchers[entry.label]
 
     def _select_by_index(self, index: int) -> None:
