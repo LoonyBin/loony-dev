@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loony_dev.agents.base import Agent
+from loony_dev.agents.claude_quota import ClaudeQuotaMixin
 from loony_dev.models import TaskResult, truncate_for_log
 
 if TYPE_CHECKING:
@@ -14,7 +15,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class PlanningAgent(Agent):
+class PlanningAgent(ClaudeQuotaMixin, Agent):
     """Uses Claude to generate or update an implementation plan for an issue."""
 
     name = "planning"
@@ -22,16 +23,17 @@ class PlanningAgent(Agent):
     def __init__(self, work_dir: Path) -> None:
         self.work_dir = work_dir
 
-    def can_handle(self, task: Task) -> bool:
+    def _can_handle_task(self, task: Task) -> bool:
         return task.task_type == "plan_issue"
 
     def execute(self, task: Task) -> TaskResult:
         prompt = task.describe()
+        cmd = ["claude", "-p", "--dangerously-skip-permissions", prompt]
         logger.debug("Running planning Claude CLI (cwd=%s)", self.work_dir)
         logger.debug("Planning prompt: %s", truncate_for_log(prompt))
 
         with subprocess.Popen(
-            ["claude", "-p", "--dangerously-skip-permissions", prompt],
+            cmd,
             cwd=self.work_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -50,11 +52,21 @@ class PlanningAgent(Agent):
         if stderr:
             logger.debug("Planning stderr: %s", truncate_for_log(stderr))
 
-        success = proc.returncode == 0
-        output = stdout if success else f"{stdout}\n{stderr}"
+        if proc.returncode != 0:
+            combined = f"{stdout}\n{stderr}"
+            if self._is_quota_error(combined):
+                self._handle_quota_error(combined)
+            return TaskResult(
+                success=False,
+                output=combined,
+                summary=f"Agent exited with code {proc.returncode}",
+            )
 
         # The raw output IS the plan; use it directly as the summary so
         # PlanningTask.on_complete can post it as a GitHub comment.
-        summary = output.strip() if success else f"Agent exited with code {proc.returncode}"
+        return TaskResult(
+            success=True,
+            output=stdout,
+            summary=stdout.strip(),
+        )
 
-        return TaskResult(success=success, output=output, summary=summary)
