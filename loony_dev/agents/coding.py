@@ -60,6 +60,7 @@ class CodingAgent(Agent):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                start_new_session=True,
             ) as proc:
                 self._active_process = proc
                 try:
@@ -159,6 +160,7 @@ class CodingAgent(Agent):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            start_new_session=True,
         ) as proc:
             self._active_process = proc
             try:
