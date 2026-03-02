@@ -240,12 +240,12 @@ class WorkerTabBar(Widget):
     def compose(self) -> ComposeResult:
         yield Tabs()
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         self.query_one(Tabs).can_focus = False
-        self._scan()
+        await self._scan()
         self.set_interval(self._scan_interval, self._scan)
 
-    def _scan(self) -> None:
+    async def _scan(self) -> None:
         """Re-discover worker log directories and rebuild the tab bar."""
         tabs = self.query_one(Tabs)
         logs_dir = self._base_dir / ".logs"
@@ -278,8 +278,11 @@ class WorkerTabBar(Widget):
 
         self._entries = entries
 
-        # Rebuild tabs, preserving the previously active tab
-        tabs.clear()
+        # Rebuild tabs, preserving the previously active tab.
+        # Must await clear() — it returns an AwaitComplete wrapping an async
+        # DOM removal; not awaiting it leaves old tabs in the NodeList so that
+        # the subsequent add_tab calls raise DuplicateIds.
+        await tabs.clear()
         new_active = old_active if old_active else ""
         valid_ids = set()
         for entry in entries:
