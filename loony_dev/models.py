@@ -44,3 +44,4 @@ class TaskResult:
     success: bool
     output: str
     summary: str
+    post_summary: bool = True
