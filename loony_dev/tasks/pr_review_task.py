@@ -119,13 +119,16 @@ class PRReviewTask(Task):
         github.assign_self(self.pr.number)
 
     def on_complete(self, github: GitHubClient, result: TaskResult) -> None:
-        logger.debug("PR #%d: removing 'in-progress', posting completion comment", self.pr.number)
-        logger.debug("Completion comment body: %s", truncate_for_log(result.summary))
+        logger.debug("PR #%d: removing 'in-progress'", self.pr.number)
         github.remove_label(self.pr.number, "in-progress")
-        github.post_comment(
-            self.pr.number,
-            f"Review comments addressed.\n\n{result.summary}",
-        )
+        if result.post_summary:
+            logger.debug("Completion comment body: %s", truncate_for_log(result.summary))
+            github.post_comment(
+                self.pr.number,
+                f"Review comments addressed.\n\n{result.summary}",
+            )
+        else:
+            logger.debug("PR #%d: no code changes detected — skipping summary comment", self.pr.number)
 
     def on_failure(self, github: GitHubClient, error: Exception) -> None:
         logger.debug("PR #%d: task failed (%s), removing 'in-progress'", self.pr.number, error)

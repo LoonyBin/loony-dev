@@ -32,6 +32,8 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         logger.debug("Running Claude CLI (cwd=%s): claude -p --dangerously-skip-permissions <prompt>", self.work_dir)
         logger.debug("Claude prompt: %s", truncate_for_log(prompt))
 
+        baseline_commit = self._get_head_commit()
+
         with subprocess.Popen(
             cmd,
             cwd=self.work_dir,
@@ -64,7 +66,46 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             )
 
         summary = self._generate_summary(stdout)
-        return TaskResult(success=True, output=stdout, summary=summary)
+        has_changes = self._has_code_changes(baseline_commit)
+        return TaskResult(success=True, output=stdout, summary=summary, post_summary=has_changes)
+
+    def _get_head_commit(self) -> str | None:
+        """Return the current HEAD commit hash, or None if git is unavailable."""
+        try:
+            return subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                cwd=self.work_dir,
+                stderr=subprocess.DEVNULL,
+            ).decode().strip()
+        except Exception:
+            return None
+
+    def _has_code_changes(self, baseline_commit: str | None) -> bool:
+        """Return True if commits were added or files are staged/modified since baseline."""
+        try:
+            # Check for uncommitted changes (staged or unstaged)
+            result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=self.work_dir,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return True
+
+            # Check for new commits since baseline
+            if baseline_commit:
+                current = subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=self.work_dir,
+                    stderr=subprocess.DEVNULL,
+                ).decode().strip()
+                return current != baseline_commit
+
+        except Exception:
+            pass
+
+        return True  # safe default: post summary if we can't determine
 
     def _generate_summary(self, output: str) -> str:
         """Use Claude to generate a brief summary of the work done."""
