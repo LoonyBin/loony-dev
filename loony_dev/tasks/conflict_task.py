@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from loony_dev.models import PullRequest
-from loony_dev.tasks.base import Task
+from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, Task
 
 if TYPE_CHECKING:
     from loony_dev.github import GitHubClient
@@ -66,12 +66,12 @@ class ConflictResolutionTask(Task):
         github.remove_label(self.pr.number, "in-progress")
         github.post_comment(
             self.pr.number,
-            f"Merge conflicts resolved.\n\n{result.summary}",
+            f"{SUCCESS_MARKER}\n\nMerge conflicts resolved.\n\n{result.summary}",
         )
 
     def on_failure(self, github: GitHubClient, error: Exception) -> None:
         github.remove_label(self.pr.number, "in-progress")
         github.post_comment(
             self.pr.number,
-            f"Failed to resolve merge conflicts: {error}\n\nManual intervention is required.",
+            f"{FAILURE_MARKER}\n\nFailed to resolve merge conflicts: {error}\n\nManual intervention is required.",
         )
