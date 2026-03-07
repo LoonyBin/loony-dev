@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from loony_dev.models import Comment, truncate_for_log
-from loony_dev.tasks.base import Task
+from loony_dev.tasks.base import FAILURE_MARKER, Task
 
 if TYPE_CHECKING:
     from loony_dev.github import GitHubClient
@@ -133,5 +133,5 @@ class PlanningTask(Task):
         logger.debug("Issue #%d: planning failed (%s)", self.issue.number, error)
         github.post_comment(
             self.issue.number,
-            f"Planning failed: {error}",
+            f"{FAILURE_MARKER}\n\nPlanning failed: {error}",
         )

@@ -9,6 +9,10 @@ if TYPE_CHECKING:
     from loony_dev.models import TaskResult
 
 
+FAILURE_MARKER = "<!-- loony-failure -->"
+SUCCESS_MARKER = "<!-- loony-success -->"
+
+
 class Task(ABC):
     """A unit of work dispatched to an agent."""
 

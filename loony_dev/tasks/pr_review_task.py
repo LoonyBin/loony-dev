@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from loony_dev.models import Comment, PullRequest, truncate_for_log
-from loony_dev.tasks.base import Task
+from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, Task
 
 if TYPE_CHECKING:
     from loony_dev.github import GitHubClient
@@ -76,15 +76,15 @@ class PRReviewTask(Task):
 
     @staticmethod
     def _new_since_bot(comments: list[Comment], bot_name: str) -> list[Comment]:
-        """Return non-bot comments that appear after the bot's last comment."""
-        bot_last_idx = -1
+        """Return non-bot comments after the bot's last *successful* response."""
+        bot_last_success_idx = -1
         for i, c in enumerate(comments):
-            if c.author == bot_name:
-                bot_last_idx = i
+            if c.author == bot_name and c.body.startswith(SUCCESS_MARKER):
+                bot_last_success_idx = i
 
-        if bot_last_idx == -1:
+        if bot_last_success_idx == -1:
             return [c for c in comments if c.author != bot_name]
-        return [c for c in comments[bot_last_idx + 1:] if c.author != bot_name]
+        return [c for c in comments[bot_last_success_idx + 1:] if c.author != bot_name]
 
     # ------------------------------------------------------------------
     # Task interface
@@ -125,7 +125,7 @@ class PRReviewTask(Task):
             logger.debug("Completion comment body: %s", truncate_for_log(result.summary))
             github.post_comment(
                 self.pr.number,
-                f"Review comments addressed.\n\n{result.summary}",
+                f"{SUCCESS_MARKER}\n\nReview comments addressed.\n\n{result.summary}",
             )
         else:
             logger.debug("PR #%d: no code changes detected — skipping summary comment", self.pr.number)
@@ -135,5 +135,5 @@ class PRReviewTask(Task):
         github.remove_label(self.pr.number, "in-progress")
         github.post_comment(
             self.pr.number,
-            f"Failed to address review comments: {error}",
+            f"{FAILURE_MARKER}\n\nFailed to address review comments: {error}",
         )
