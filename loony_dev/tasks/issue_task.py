@@ -28,8 +28,16 @@ class IssueTask(Task):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def discover(github: GitHubClient) -> Iterator[IssueTask]:
-        """Yield implementation tasks for issues labeled ready-for-development."""
+    def discover(
+        github: GitHubClient,
+        allowed_users: set[str] | None = None,
+        min_role: str = "triage",
+    ) -> Iterator[IssueTask]:
+        """Yield implementation tasks for issues labeled ready-for-development.
+
+        The initial trigger (the label itself) requires triage+ access to apply,
+        so no additional comment-based authorization filter is needed here.
+        """
         for issue, _ in github.list_issues("ready-for-development"):
             logger.debug("Examining issue #%d: %s", issue.number, issue.title)
             comments = github.get_issue_comments(issue.number)
