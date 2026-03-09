@@ -32,11 +32,7 @@ class StuckItemCleanupTask(Task):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def discover(
-        github: GitHubClient,
-        allowed_users: set[str] | None = None,
-        min_role: str = "triage",
-    ) -> Iterator[StuckItemCleanupTask]:
+    def discover(github: GitHubClient) -> Iterator[StuckItemCleanupTask]:
         """Yield cleanup tasks for issues and PRs stuck in-progress past the threshold.
 
         The threshold is read from the ``LOONY_STUCK_THRESHOLD_HOURS`` environment

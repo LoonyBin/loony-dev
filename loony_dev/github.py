@@ -36,18 +36,16 @@ def _roles_at_or_above(min_role: str) -> set[str]:
 def is_authorized(
     github: GitHubClient,
     username: str,
-    allowed_users: set[str],
-    min_role: str = "triage",
 ) -> bool:
     """Return True if *username* is authorized to trigger agent runs.
 
     A user is authorized if they are in the explicit *allowed_users* set or if
     their repository permission level is at or above *min_role*.
     """
-    if username in allowed_users:
+    if username in github.allowed_users:
         return True
     permission = github.get_user_permission(username)
-    return permission in _roles_at_or_above(min_role)
+    return permission in _roles_at_or_above(github.min_role)
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -66,9 +64,17 @@ REQUIRED_LABELS = [
 
 
 class GitHubClient:
-    def __init__(self, repo: str, bot_name: str) -> None:
+    def __init__(
+        self,
+        repo: str,
+        bot_name: str,
+        allowed_users: set[str] | None = None,
+        min_role: str = "triage",
+    ) -> None:
         self.repo = repo
         self.bot_name = bot_name
+        self.allowed_users: set[str] = allowed_users or set()
+        self.min_role = min_role
         # Cache: username -> (permission_level, monotonic_timestamp)
         self._permission_cache: dict[str, tuple[str | None, float]] = {}
 

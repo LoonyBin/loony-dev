@@ -76,7 +76,12 @@ def worker(
         bot_name = GitHubClient.detect_bot_name()
         click.echo(f"Detected bot name: {bot_name}")
 
-    github = GitHubClient(repo=repo, bot_name=bot_name)
+    github = GitHubClient(
+        repo=repo,
+        bot_name=bot_name,
+        allowed_users=set(allowed_users),
+        min_role=min_role,
+    )
     git = GitRepo(work_dir=work_path)
     agents = [NullAgent(), CodingAgent(work_dir=work_path), PlanningAgent(work_dir=work_path)]
 
@@ -85,8 +90,6 @@ def worker(
         git=git,
         agents=agents,
         interval=interval,
-        allowed_users=set(allowed_users),
-        min_role=min_role,
     )
 
     click.echo(f"Starting orchestrator for {repo} (polling every {interval}s)")

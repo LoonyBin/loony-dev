@@ -36,13 +36,8 @@ class PlanningTask(Task):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def discover(
-        github: GitHubClient,
-        allowed_users: set[str] | None = None,
-        min_role: str = "triage",
-    ) -> Iterator[PlanningTask]:
+    def discover(github: GitHubClient) -> Iterator[PlanningTask]:
         """Yield planning tasks for issues that need a new or revised plan."""
-        _allowed = allowed_users or set()
         for issue, labels in github.list_issues("ready-for-planning"):
             logger.debug("Examining issue #%d: %s (labels=%s)", issue.number, issue.title, labels)
             if "ready-for-development" in labels:
@@ -72,7 +67,7 @@ class PlanningTask(Task):
                 # Plan exists; only re-plan if at least one reply is from an authorized user.
                 authorized_new = [
                     c for c in new_comments
-                    if is_authorized(github, c.author, _allowed, min_role)
+                    if is_authorized(github, c.author)
                 ]
                 if authorized_new:
                     yield PlanningTask(issue, existing_plan, authorized_new)

@@ -28,11 +28,7 @@ class IssueTask(Task):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def discover(
-        github: GitHubClient,
-        allowed_users: set[str] | None = None,
-        min_role: str = "triage",
-    ) -> Iterator[IssueTask]:
+    def discover(github: GitHubClient) -> Iterator[IssueTask]:
         """Yield implementation tasks for issues labeled ready-for-development.
 
         The initial trigger (the label itself) requires triage+ access to apply,

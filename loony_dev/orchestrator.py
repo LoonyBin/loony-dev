@@ -35,15 +35,11 @@ class Orchestrator:
         git: GitRepo,
         agents: list[Agent],
         interval: int = 60,
-        allowed_users: set[str] | None = None,
-        min_role: str = "triage",
     ) -> None:
         self.github = github
         self.git = git
         self.agents = agents
         self.interval = interval
-        self.allowed_users = allowed_users or set()
-        self.min_role = min_role
         self._shutdown_requested: bool = False
         self._graceful_shutdown: bool = False
         self._active_agent: Agent | None = None
@@ -114,7 +110,7 @@ class Orchestrator:
         for task_class in TASK_CLASSES:
             logger.debug("Checking %s for work...", task_class.__name__)
             found_in_class = 0
-            for task in task_class.discover(self.github, self.allowed_users, self.min_role):
+            for task in task_class.discover(self.github):
                 found_in_class += 1
                 for agent in self.agents:
                     if agent.can_handle(task):

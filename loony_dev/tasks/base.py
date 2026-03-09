@@ -21,16 +21,11 @@ class Task(ABC):
 
     @staticmethod
     @abstractmethod
-    def discover(
-        github: GitHubClient,
-        allowed_users: set[str] | None = None,
-        min_role: str = "triage",
-    ) -> Iterator[Task]:
+    def discover(github: GitHubClient) -> Iterator[Task]:
         """Yield tasks of this type discovered from GitHub. Called each tick.
 
-        *allowed_users* is an explicit allowlist of GitHub usernames permitted
-        to trigger agent runs (regardless of their repo role). *min_role* is the
-        minimum collaborator role required; defaults to 'triage'.
+        Authorization settings (allowed_users, min_role) are read from the
+        *github* client instance.
 
         Implementations should yield lazily so the orchestrator can stop
         iterating as soon as a can-perform task is found.

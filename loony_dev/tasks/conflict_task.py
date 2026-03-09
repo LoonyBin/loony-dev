@@ -23,11 +23,7 @@ class ConflictResolutionTask(Task):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def discover(
-        github: GitHubClient,
-        allowed_users: set[str] | None = None,
-        min_role: str = "triage",
-    ) -> Iterator[ConflictResolutionTask]:
+    def discover(github: GitHubClient) -> Iterator[ConflictResolutionTask]:
         """Yield PRs that are in a CONFLICTING state with main."""
         for item in github.list_open_prs():
             labels = [l["name"] for l in item.get("labels", [])]

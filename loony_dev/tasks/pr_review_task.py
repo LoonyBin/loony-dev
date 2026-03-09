@@ -27,13 +27,8 @@ class PRReviewTask(Task):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def discover(
-        github: GitHubClient,
-        allowed_users: set[str] | None = None,
-        min_role: str = "triage",
-    ) -> Iterator[PRReviewTask]:
+    def discover(github: GitHubClient) -> Iterator[PRReviewTask]:
         """Yield PRs that have new review comments from authorized users since the bot last responded."""
-        _allowed = allowed_users or set()
         for item in github.list_open_prs():
             pr_number = item["number"]
             labels = [l["name"] for l in item.get("labels", [])]
@@ -51,7 +46,7 @@ class PRReviewTask(Task):
 
             authorized_comments = [
                 c for c in new_comments
-                if is_authorized(github, c.author, _allowed, min_role)
+                if is_authorized(github, c.author)
             ]
             if not authorized_comments:
                 logger.debug(
