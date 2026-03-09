@@ -183,7 +183,16 @@ class WorkerProcess:
     restart_count: int = field(default=0)
 
 
-def _worker_command(repo: str, work_dir: Path, worker_interval: int, bot_name: str | None, verbose: bool, log_file: Path) -> list[str]:
+def _worker_command(
+    repo: str,
+    work_dir: Path,
+    worker_interval: int,
+    bot_name: str | None,
+    verbose: bool,
+    log_file: Path,
+    allowed_users: list[str] | None = None,
+    min_role: str = "triage",
+) -> list[str]:
     """Build the argv list for a worker subprocess."""
     # Prefer the installed entry point; fall back to running the module directly.
     cmd_prefix: list[str]
@@ -202,6 +211,10 @@ def _worker_command(repo: str, work_dir: Path, worker_interval: int, bot_name: s
         cmd += ["--bot-name", bot_name]
     if verbose:
         cmd += ["--verbose"]
+    for user in (allowed_users or []):
+        cmd += ["--allowed-users", user]
+    if min_role != "triage":
+        cmd += ["--min-role", min_role]
     return cmd
 
 
@@ -213,11 +226,13 @@ def launch_worker(
     worker_interval: int,
     bot_name: str | None,
     verbose: bool,
+    allowed_users: list[str] | None = None,
+    min_role: str = "triage",
 ) -> WorkerProcess:
     """Spawn a worker subprocess; stdout/stderr are redirected to *log_file*."""
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
-    cmd = _worker_command(repo, work_dir, worker_interval, bot_name, verbose, log_file)
+    cmd = _worker_command(repo, work_dir, worker_interval, bot_name, verbose, log_file, allowed_users, min_role)
     logger.info("Launching worker for %s (log: %s)", repo, log_file)
 
     log_fh = open(log_file, "a")  # noqa: SIM115  — intentionally kept open
@@ -274,6 +289,8 @@ def run_supervisor(
     include: list[str] | None,
     exclude: list[str] | None,
     refresh_interval: int,
+    allowed_users: list[str] | None = None,
+    min_role: str = "triage",
 ) -> None:
     """Discover repositories, check them out, and run a worker for each.
 
@@ -375,6 +392,8 @@ def run_supervisor(
                             worker_interval=worker_interval,
                             bot_name=bot_name,
                             verbose=verbose,
+                            allowed_users=allowed_users,
+                            min_role=min_role,
                         )
                         workers[repo] = wp
                     except Exception:
@@ -435,6 +454,8 @@ def run_supervisor(
                     worker_interval=worker_interval,
                     bot_name=bot_name,
                     verbose=verbose,
+                    allowed_users=allowed_users,
+                    min_role=min_role,
                 )
                 new_wp.restart_count = wp.restart_count + 1
                 workers[repo] = new_wp

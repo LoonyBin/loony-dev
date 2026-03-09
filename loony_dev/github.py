@@ -3,11 +3,49 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import time
 from datetime import datetime, timezone
 
 from loony_dev.models import Comment, Issue, truncate_for_log
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Authorization helpers
+# ---------------------------------------------------------------------------
+
+# GitHub permission levels from lowest to highest.
+_ROLE_HIERARCHY = ["none", "read", "triage", "write", "admin"]
+
+# Roles that are authorized when min_role="triage" (the default).
+_DEFAULT_AUTHORIZED_ROLES = {"admin", "write", "triage"}
+
+_PERMISSION_CACHE_TTL = 600  # 10 minutes
+
+
+def _roles_at_or_above(min_role: str) -> set[str]:
+    """Return the set of role names that are >= min_role in the hierarchy."""
+    try:
+        idx = _ROLE_HIERARCHY.index(min_role)
+    except ValueError:
+        logger.warning("Unknown min_role %r; defaulting to 'triage'", min_role)
+        idx = _ROLE_HIERARCHY.index("triage")
+    return set(_ROLE_HIERARCHY[idx:])
+
+
+def is_authorized(
+    github: GitHubClient,
+    username: str,
+) -> bool:
+    """Return True if *username* is authorized to trigger agent runs.
+
+    A user is authorized if they are in the explicit *allowed_users* set or if
+    their repository permission level is at or above *min_role*.
+    """
+    if username in github.allowed_users:
+        return True
+    permission = github.get_user_permission(username)
+    return permission in _roles_at_or_above(github.min_role)
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -26,9 +64,19 @@ REQUIRED_LABELS = [
 
 
 class GitHubClient:
-    def __init__(self, repo: str, bot_name: str) -> None:
+    def __init__(
+        self,
+        repo: str,
+        bot_name: str,
+        allowed_users: set[str] | None = None,
+        min_role: str = "triage",
+    ) -> None:
         self.repo = repo
         self.bot_name = bot_name
+        self.allowed_users: set[str] = allowed_users or set()
+        self.min_role = min_role
+        # Cache: username -> (permission_level, monotonic_timestamp)
+        self._permission_cache: dict[str, tuple[str | None, float]] = {}
 
     def _gh(self, *args: str) -> str:
         """Run a gh CLI command and return stdout."""
@@ -52,6 +100,48 @@ class GitHubClient:
         if not output:
             return []
         return json.loads(output)
+
+    # --- Authorization ---
+
+    def get_user_permission(self, username: str) -> str | None:
+        """Return the user's repository permission level, or None if not a collaborator.
+
+        Possible values: 'admin', 'write', 'triage', 'read', 'none'.
+        Results are cached for ``_PERMISSION_CACHE_TTL`` seconds.
+        """
+        now = time.monotonic()
+        if username in self._permission_cache:
+            cached_perm, cached_at = self._permission_cache[username]
+            if now - cached_at < _PERMISSION_CACHE_TTL:
+                logger.debug("Permission cache hit for %r: %r", username, cached_perm)
+                return cached_perm
+
+        try:
+            output = subprocess.run(
+                [
+                    "gh", "api",
+                    f"repos/{self.repo}/collaborators/{username}/permission",
+                    "-q", ".permission",
+                ],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            permission: str | None = output if output else None
+        except subprocess.CalledProcessError:
+            # 404 means the user is not a collaborator.
+            permission = None
+
+        self._permission_cache[username] = (permission, now)
+        logger.debug("Permission for %r in %s: %r (cached)", username, self.repo, permission)
+        return permission
+
+    def evict_stale_permission_cache(self) -> None:
+        """Remove expired entries from the permission cache."""
+        now = time.monotonic()
+        stale = [u for u, (_, ts) in self._permission_cache.items() if now - ts >= _PERMISSION_CACHE_TTL]
+        for u in stale:
+            del self._permission_cache[u]
+        if stale:
+            logger.debug("Evicted %d stale permission cache entries", len(stale))
 
     # --- Issues ---
 

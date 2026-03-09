@@ -4,6 +4,7 @@ import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
+from loony_dev.github import is_authorized
 from loony_dev.models import Comment, PullRequest, truncate_for_log
 from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, Task
 
@@ -27,7 +28,7 @@ class PRReviewTask(Task):
 
     @staticmethod
     def discover(github: GitHubClient) -> Iterator[PRReviewTask]:
-        """Yield PRs that have new review comments since the bot last responded."""
+        """Yield PRs that have new review comments from authorized users since the bot last responded."""
         for item in github.list_open_prs():
             pr_number = item["number"]
             labels = [l["name"] for l in item.get("labels", [])]
@@ -39,16 +40,31 @@ class PRReviewTask(Task):
             all_comments = PRReviewTask._assemble_comments(item, github)
             new_comments = PRReviewTask._new_since_bot(all_comments, github.bot_name)
 
-            if new_comments:
-                logger.debug("PR #%d has %d new comment(s) — yielding task", pr_number, len(new_comments))
-                yield PRReviewTask(PullRequest(
-                    number=pr_number,
-                    branch=item["headRefName"],
-                    title=item["title"],
-                    new_comments=new_comments,
-                ))
-            else:
+            if not new_comments:
                 logger.debug("PR #%d has no new comments — skipping", pr_number)
+                continue
+
+            authorized_comments = [
+                c for c in new_comments
+                if is_authorized(github, c.author)
+            ]
+            if not authorized_comments:
+                logger.debug(
+                    "PR #%d has %d new comment(s) but none from authorized users — skipping",
+                    pr_number, len(new_comments),
+                )
+                continue
+
+            logger.debug(
+                "PR #%d has %d authorized new comment(s) — yielding task",
+                pr_number, len(authorized_comments),
+            )
+            yield PRReviewTask(PullRequest(
+                number=pr_number,
+                branch=item["headRefName"],
+                title=item["title"],
+                new_comments=authorized_comments,
+            ))
 
     @staticmethod
     def _assemble_comments(pr_data: dict, github: GitHubClient) -> list[Comment]:

@@ -4,6 +4,7 @@ import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
+from loony_dev.github import is_authorized
 from loony_dev.models import Comment, truncate_for_log
 from loony_dev.tasks.base import FAILURE_MARKER, Task
 
@@ -58,8 +59,23 @@ class PlanningTask(Task):
                 )
             else:
                 logger.debug("Issue #%d: no existing plan — will create initial plan", issue.number)
-            if existing_plan is None or new_comments:
+
+            if existing_plan is None:
+                # No plan yet: always run the initial planning pass (label already gates this).
                 yield PlanningTask(issue, existing_plan, new_comments)
+            elif new_comments:
+                # Plan exists; only re-plan if at least one reply is from an authorized user.
+                authorized_new = [
+                    c for c in new_comments
+                    if is_authorized(github, c.author)
+                ]
+                if authorized_new:
+                    yield PlanningTask(issue, existing_plan, authorized_new)
+                else:
+                    logger.debug(
+                        "Issue #%d: %d new comment(s) but none from authorized users — skipping",
+                        issue.number, len(new_comments),
+                    )
             else:
                 logger.debug("Issue #%d: plan exists and no new feedback — skipping", issue.number)
 
