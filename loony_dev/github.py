@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timezone
 
 from loony_dev.models import Comment, Issue, truncate_for_log
+from loony_dev.sanitize import InjectionType, sanitize_user_content
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,59 @@ class GitHubClient:
             return []
         return json.loads(output)
 
+    # --- Prompt injection defense ---
+
+    def _sanitize_field(
+        self,
+        value: str | None,
+        field_name: str,
+        item_type: str,
+        item_number: int,
+    ) -> str:
+        """Sanitize a single user-controlled string field.
+
+        If hidden content is detected, a WARNING is logged and a reply comment
+        is posted to the relevant issue/PR so maintainers are alerted.
+        """
+        result = sanitize_user_content(value)
+        if result.has_injections:
+            injection_labels = ", ".join(i.value for i in result.injections)
+            logger.warning(
+                "Potential prompt injection detected in %s #%d field=%r types=[%s] — content stripped",
+                item_type,
+                item_number,
+                field_name,
+                injection_labels,
+            )
+            self._post_injection_warning(item_number, field_name, result.injections)
+        return result.text
+
+    def _post_injection_warning(
+        self,
+        number: int,
+        field_name: str,
+        injections: list[InjectionType],
+    ) -> None:
+        """Post a GitHub comment warning maintainers of detected hidden content."""
+        injection_labels = ", ".join(f"`{i.value}`" for i in injections)
+        body = (
+            "> [!WARNING]\n"
+            "> **Potential prompt injection attempt detected.**\n"
+            ">\n"
+            f"> Hidden content was found in the **{field_name}** field of this item "
+            f"(detected: {injection_labels}).\n"
+            "> The hidden content was stripped before processing and did not reach the AI agent.\n"
+            ">\n"
+            "> This may indicate a malicious actor attempting to hijack the AI agent. "
+            "> A human should review the original content of this item."
+        )
+        try:
+            self.post_comment(number, body)
+        except Exception as exc:
+            logger.warning(
+                "Failed to post injection warning comment on #%d: %s", number, exc
+            )
+
     # --- Authorization ---
 
     def get_user_permission(self, username: str) -> str | None:
@@ -153,19 +207,19 @@ class GitHubClient:
             "--state", "open",
             "--json", "number,title,body,labels,author,updatedAt",
         )
-        result = [
-            (
+        result = []
+        for item in data:
+            number = item["number"]
+            result.append((
                 Issue(
-                    number=item["number"],
-                    title=item["title"],
-                    body=item.get("body", ""),
+                    number=number,
+                    title=self._sanitize_field(item["title"], "title", "issue", number),
+                    body=self._sanitize_field(item.get("body", ""), "body", "issue", number),
                     author=item.get("author", {}).get("login", ""),
                     updated_at=_parse_datetime(item.get("updatedAt")),
                 ),
                 [l["name"] for l in item.get("labels", [])],
-            )
-            for item in data
-        ]
+            ))
         logger.debug("list_issues(label=%r) returned %d issue(s)", label, len(result))
         return result
 
@@ -177,7 +231,7 @@ class GitHubClient:
         comments = [
             Comment(
                 author=c.get("author", {}).get("login", ""),
-                body=c.get("body", ""),
+                body=self._sanitize_field(c.get("body", ""), "body", "issue", number),
                 created_at=c.get("createdAt", ""),
             )
             for c in data.get("comments", [])
@@ -189,14 +243,32 @@ class GitHubClient:
     # --- Pull Requests ---
 
     def list_open_prs(self) -> list[dict]:
-        """Fetch all open PRs with their labels, comments, and reviews."""
-        result = self._gh_json(
+        """Fetch all open PRs with their labels, comments, and reviews.
+
+        User-controlled string fields (title, comment/review bodies) are
+        sanitized for prompt injection before being returned.
+        """
+        items = self._gh_json(
             "pr", "list",
             "--state", "open",
             "--json", "number,headRefName,title,comments,reviews,labels,mergeable,updatedAt",
         )
-        logger.debug("list_open_prs() returned %d open PR(s)", len(result))
-        return result
+        sanitized = []
+        for item in items:
+            pr_number = item["number"]
+            item = dict(item)  # shallow copy so we don't mutate cached data
+            item["title"] = self._sanitize_field(item.get("title", ""), "title", "pr", pr_number)
+            item["comments"] = [
+                {**c, "body": self._sanitize_field(c.get("body", ""), "body", "pr", pr_number)}
+                for c in item.get("comments", [])
+            ]
+            item["reviews"] = [
+                {**r, "body": self._sanitize_field(r.get("body", ""), "body", "pr", pr_number)}
+                for r in item.get("reviews", [])
+            ]
+            sanitized.append(item)
+        logger.debug("list_open_prs() returned %d open PR(s)", len(sanitized))
+        return sanitized
 
     def get_pr_inline_comments(self, pr_number: int) -> list[Comment]:
         """Fetch inline review comments for a PR."""
@@ -206,7 +278,7 @@ class GitHubClient:
                 comments = [
                     Comment(
                         author=c.get("user", {}).get("login", ""),
-                        body=c.get("body", ""),
+                        body=self._sanitize_field(c.get("body", ""), "body", "pr", pr_number),
                         created_at=c.get("created_at", ""),
                         path=c.get("path"),
                         line=c.get("line"),
