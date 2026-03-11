@@ -228,14 +228,13 @@ class GitHubClient:
         data = self._gh_json("issue", "view", str(number), "--json", "comments")
         if not isinstance(data, dict):
             return []
-        comments = [
-            Comment(
-                author=c.get("author", {}).get("login", ""),
-                body=self._sanitize_field(c.get("body", ""), "body", "issue", number),
-                created_at=c.get("createdAt", ""),
-            )
-            for c in data.get("comments", [])
-        ]
+        comments = []
+        for c in data.get("comments", []):
+            author = c.get("author", {}).get("login", "")
+            body = c.get("body", "")
+            if author != self.bot_name:
+                body = self._sanitize_field(body, "body", "issue", number)
+            comments.append(Comment(author=author, body=body, created_at=c.get("createdAt", "")))
         comments.sort(key=lambda c: c.created_at)
         logger.debug("get_issue_comments(#%d) returned %d comment(s)", number, len(comments))
         return comments
@@ -259,11 +258,17 @@ class GitHubClient:
             item = dict(item)  # shallow copy so we don't mutate cached data
             item["title"] = self._sanitize_field(item.get("title", ""), "title", "pr", pr_number)
             item["comments"] = [
-                {**c, "body": self._sanitize_field(c.get("body", ""), "body", "pr", pr_number)}
+                {**c, "body": (
+                    c.get("body", "") if c.get("author", {}).get("login", "") == self.bot_name
+                    else self._sanitize_field(c.get("body", ""), "body", "pr", pr_number)
+                )}
                 for c in item.get("comments", [])
             ]
             item["reviews"] = [
-                {**r, "body": self._sanitize_field(r.get("body", ""), "body", "pr", pr_number)}
+                {**r, "body": (
+                    r.get("body", "") if r.get("author", {}).get("login", "") == self.bot_name
+                    else self._sanitize_field(r.get("body", ""), "body", "pr", pr_number)
+                )}
                 for r in item.get("reviews", [])
             ]
             sanitized.append(item)
@@ -275,16 +280,19 @@ class GitHubClient:
         try:
             data = self._gh_api(f"pulls/{pr_number}/comments")
             if isinstance(data, list):
-                comments = [
-                    Comment(
-                        author=c.get("user", {}).get("login", ""),
-                        body=self._sanitize_field(c.get("body", ""), "body", "pr", pr_number),
+                comments = []
+                for c in data:
+                    author = c.get("user", {}).get("login", "")
+                    body = c.get("body", "")
+                    if author != self.bot_name:
+                        body = self._sanitize_field(body, "body", "pr", pr_number)
+                    comments.append(Comment(
+                        author=author,
+                        body=body,
                         created_at=c.get("created_at", ""),
                         path=c.get("path"),
                         line=c.get("line"),
-                    )
-                    for c in data
-                ]
+                    ))
                 logger.debug("get_pr_inline_comments(#%d) returned %d comment(s)", pr_number, len(comments))
                 return comments
         except subprocess.CalledProcessError:
