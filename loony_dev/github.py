@@ -60,6 +60,7 @@ def _parse_datetime(value: str | None) -> datetime | None:
 REQUIRED_LABELS = [
     {"name": "ready-for-development", "color": "0075ca", "description": "Issue is ready for implementation"},
     {"name": "ready-for-planning",    "color": "e4e669", "description": "Issue needs planning/triage"},
+    {"name": "ready-for-design",      "color": "c5def5", "description": "Issue is ready for UI/UX design"},
     {"name": "in-progress",           "color": "d93f0b", "description": "Bot is actively working on this"},
 ]
 

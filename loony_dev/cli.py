@@ -6,6 +6,7 @@ from pathlib import Path
 import click
 
 from loony_dev.agents.coding import CodingAgent
+from loony_dev.agents.design_agent import DesignAgent
 from loony_dev.agents.null_agent import NullAgent
 from loony_dev.agents.planning import PlanningAgent
 from loony_dev.git import GitRepo
@@ -83,7 +84,7 @@ def worker(
         min_role=min_role,
     )
     git = GitRepo(work_dir=work_path)
-    agents = [NullAgent(), CodingAgent(work_dir=work_path), PlanningAgent(work_dir=work_path)]
+    agents = [NullAgent(), CodingAgent(work_dir=work_path), PlanningAgent(work_dir=work_path), DesignAgent(work_dir=work_path)]
 
     orchestrator = Orchestrator(
         github=github,
