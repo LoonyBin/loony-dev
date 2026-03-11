@@ -13,6 +13,10 @@ from loony_dev.git import GitRepo
 from loony_dev.github import GitHubClient
 from loony_dev.orchestrator import Orchestrator
 
+# Read effective defaults (config files + built-in defaults, no CLI overrides)
+# for use in help text so that --help always shows accurate default values.
+_defaults = config.new_settings()
+
 
 @click.group()
 def cli() -> None:
@@ -21,7 +25,10 @@ def cli() -> None:
 
 @cli.command("worker")
 @click.option("--repo", default=None, help="owner/repo (default: detected from git remote)")
-@click.option("--interval", default=None, type=int, help="Polling interval in seconds", show_default=True)
+@click.option(
+    "--interval", default=None, type=int,
+    help=f"Polling interval in seconds (default: {_defaults.WORKER.INTERVAL})",
+)
 @click.option("--work-dir", default=None, type=click.Path(exists=True), help="Working directory for the agent")
 @click.option("--bot-name", default=None, help="Bot username for watermark detection (default: detected from gh auth)")
 @click.option(
@@ -43,7 +50,7 @@ def cli() -> None:
 @click.option(
     "--min-role", "min_role", default=None,
     type=click.Choice(["triage", "write", "admin"], case_sensitive=False),
-    help="Minimum GitHub collaborator role required to trigger agent runs.",
+    help=f"Minimum GitHub collaborator role required to trigger agent runs (default: {_defaults.MIN_ROLE}).",
 )
 def worker(
     repo: str | None,
@@ -56,17 +63,6 @@ def worker(
     min_role: str | None,
 ) -> None:
     """Run the orchestrator worker loop for a single repository."""
-    # Resolve auto-detected values before initializing config, so they can be
-    # passed as overrides (and the "Detected …" echo is suppressed when the
-    # config file already provides the value).
-    if repo is None and not config.settings.get("WORKER", {}).get("REPO"):
-        repo = GitHubClient.detect_repo()
-        click.echo(f"Detected repo: {repo}")
-
-    if bot_name is None and not config.settings.get("BOT_NAME"):
-        bot_name = GitHubClient.detect_bot_name()
-        click.echo(f"Detected bot name: {bot_name}")
-
     config.initialize({
         "worker.repo": repo,
         "worker.interval": interval,
@@ -107,14 +103,22 @@ def worker(
 
 
 @cli.command("supervisor")
-@click.option("--base-dir", default=None,
-              help="Base directory for repo checkouts (<base-dir>/<owner>/<repo>) and logs (<base-dir>/.logs/<owner>/<repo>/)")
-@click.option("--interval", default=None, type=int,
-              help="Health-check interval in seconds")
-@click.option("--worker-interval", default=None, type=int,
-              help="Polling interval forwarded to each worker")
-@click.option("--refresh-interval", default=None, type=int,
-              help="How often (seconds) to re-discover repos and checkout new ones")
+@click.option(
+    "--base-dir", default=None,
+    help=f"Base directory for repo checkouts and logs (default: {_defaults.SUPERVISOR.BASE_DIR})",
+)
+@click.option(
+    "--interval", default=None, type=int,
+    help=f"Health-check interval in seconds (default: {_defaults.SUPERVISOR.INTERVAL})",
+)
+@click.option(
+    "--worker-interval", default=None, type=int,
+    help=f"Polling interval forwarded to each worker (default: {_defaults.SUPERVISOR.WORKER_INTERVAL})",
+)
+@click.option(
+    "--refresh-interval", default=None, type=int,
+    help=f"How often (seconds) to re-discover repos and checkout new ones (default: {_defaults.SUPERVISOR.REFRESH_INTERVAL})",
+)
 @click.option("--bot-name", default=None,
               help="Bot username forwarded to workers")
 @click.option("--include", "include_patterns", multiple=True, metavar="PATTERN",
@@ -122,10 +126,14 @@ def worker(
                    "Matched against 'owner/repo'; patterns without '/' match repo name only.")
 @click.option("--exclude", "exclude_patterns", multiple=True, metavar="PATTERN",
               help="Skip repos matching this glob pattern (repeatable). Applied after --include.")
-@click.option("--min-restart-delay", default=None, type=float,
-              help="Minimum seconds before restarting a crashed worker")
-@click.option("--max-restart-delay", default=None, type=float,
-              help="Maximum backoff delay (seconds) for restarting a crashed worker")
+@click.option(
+    "--min-restart-delay", default=None, type=float,
+    help=f"Minimum seconds before restarting a crashed worker (default: {_defaults.SUPERVISOR.MIN_RESTART_DELAY})",
+)
+@click.option(
+    "--max-restart-delay", default=None, type=float,
+    help=f"Maximum backoff delay (seconds) for restarting a crashed worker (default: {_defaults.SUPERVISOR.MAX_RESTART_DELAY})",
+)
 @click.option("--verbose", "-v", is_flag=True, default=None,
               help="Enable DEBUG logging in supervisor (workers log to their own files)")
 @click.option("--log-file", default=None,
@@ -137,7 +145,7 @@ def worker(
 @click.option(
     "--min-role", "min_role", default=None,
     type=click.Choice(["triage", "write", "admin"], case_sensitive=False),
-    help="Minimum GitHub collaborator role required to trigger runs. Forwarded to each worker.",
+    help=f"Minimum GitHub collaborator role required to trigger runs. Forwarded to each worker (default: {_defaults.MIN_ROLE}).",
 )
 def supervisor_cmd(
     base_dir: str | None,
@@ -156,10 +164,6 @@ def supervisor_cmd(
 ) -> None:
     """Discover all accessible repositories and run a worker for each in parallel."""
     from loony_dev.supervisor import run_supervisor
-
-    if bot_name is None and not config.settings.get("BOT_NAME"):
-        bot_name = GitHubClient.detect_bot_name()
-        click.echo(f"Detected bot name: {bot_name}")
 
     config.initialize({
         "supervisor.base_dir": base_dir,
@@ -201,7 +205,7 @@ def supervisor_cmd(
 @cli.command("ui")
 @click.option(
     "--base-dir", default=None,
-    help="Base directory for log/PID discovery (same default as supervisor)",
+    help=f"Base directory for log/PID discovery (default: {_defaults.UI.BASE_DIR})",
 )
 @click.option(
     "--supervisor-log", default=None, type=click.Path(), metavar="PATH",
@@ -209,7 +213,7 @@ def supervisor_cmd(
 )
 @click.option(
     "--scan-interval", default=None, type=int,
-    help="How often (seconds) to re-scan for new/removed workers",
+    help=f"How often (seconds) to re-scan for new/removed workers (default: {_defaults.UI.SCAN_INTERVAL})",
 )
 def ui_cmd(base_dir: str | None, supervisor_log: str | None, scan_interval: int | None) -> None:
     """Launch the terminal UI to monitor the supervisor and workers."""

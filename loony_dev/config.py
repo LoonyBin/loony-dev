@@ -6,7 +6,7 @@ Priority (highest wins):
   3. ./.loony-dev.toml   (repo-level / per-checkout)
   4. ~/.config/loony-dev/config.toml
   5. /etc/loony-dev/config.toml
-  6. Built-in defaults   (loony_dev/_defaults.toml)
+  6. Built-in defaults   (hardcoded in this module via Dynaconf Validators)
 
 Usage
 -----
@@ -23,18 +23,56 @@ CLI overrides and lock the settings against further mutation::
 """
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import Path
 
-from dynaconf import Dynaconf
+from dynaconf import Dynaconf, Validator
 
 _THIS_DIR = Path(__file__).parent
+logger = logging.getLogger(__name__)
 
 # Config-file search path (lowest to highest priority among files).
+# Built-in defaults are defined via Validators below, not a separate file.
 _CONFIG_FILES = [
-    str(_THIS_DIR / "_defaults.toml"),       # shipped with the package
     "/etc/loony-dev/config.toml",
     "~/.config/loony-dev/config.toml",
     ".loony-dev.toml",
+]
+
+# ---------------------------------------------------------------------------
+# Built-in defaults (lowest priority; overridden by config files, env vars,
+# and CLI flags).
+# ---------------------------------------------------------------------------
+_DEFAULT_VALIDATORS: list[Validator] = [
+    # Top-level settings
+    Validator("bot_name", default=""),
+    Validator("verbose", default=False),
+    Validator("log_file", default=""),
+    Validator("allowed_users", default=[]),
+    Validator("min_role", default="triage"),
+    Validator("permission_cache_ttl", default=600),
+    Validator("quota_fallback_seconds", default=300),
+    Validator("stuck_threshold_hours", default=12),
+    # Worker settings
+    Validator("worker.repo", default=""),
+    Validator("worker.interval", default=60),
+    Validator("worker.work_dir", default="."),
+    # Supervisor settings
+    Validator("supervisor.base_dir", default="."),
+    Validator("supervisor.interval", default=15),
+    Validator("supervisor.worker_interval", default=60),
+    Validator("supervisor.refresh_interval", default=1800),
+    Validator("supervisor.min_restart_delay", default=5.0),
+    Validator("supervisor.max_restart_delay", default=300.0),
+    Validator("supervisor.include", default=[]),
+    Validator("supervisor.exclude", default=[]),
+    # UI settings
+    Validator("ui.base_dir", default="."),
+    Validator("ui.supervisor_log", default=""),
+    Validator("ui.scan_interval", default=5),
+    Validator("ui.max_buffer_lines", default=5000),
+    Validator("ui.tail_lines", default=100),
 ]
 
 
@@ -84,19 +122,41 @@ class _FrozenSettings:
 
 
 def _make_settings() -> _FrozenSettings:
-    return _FrozenSettings(
-        Dynaconf(
-            envvar_prefix="LOONY_DEV",
-            settings_files=_CONFIG_FILES,
-            environments=False,
-            load_dotenv=False,
-        )
+    inner = Dynaconf(
+        envvar_prefix="LOONY_DEV",
+        settings_files=_CONFIG_FILES,
+        environments=False,
+        load_dotenv=False,
+        validators=_DEFAULT_VALIDATORS,
     )
+    inner.validators.validate_all()
+
+    # Handle legacy env var for backward compatibility.
+    _legacy_env = os.environ.get("LOONY_STUCK_THRESHOLD_HOURS")
+    if _legacy_env is not None:
+        logger.warning(
+            "LOONY_STUCK_THRESHOLD_HOURS is deprecated. "
+            "Use LOONY_DEV_STUCK_THRESHOLD_HOURS or set "
+            "stuck_threshold_hours in your loony-dev config file."
+        )
+        inner.set("stuck_threshold_hours", int(_legacy_env))
+
+    return _FrozenSettings(inner)
+
+
+def new_settings() -> _FrozenSettings:
+    """Return a fresh, uninitialized settings instance (defaults + config files only).
+
+    Useful for reading the effective defaults in CLI help text or for testing.
+    No CLI overrides are applied.
+    """
+    return _make_settings()
 
 
 settings: _FrozenSettings = _make_settings()
 
 _initialized: bool = False
+_cli_overrides: dict[str, object] = {}
 
 
 def initialize(overrides: dict) -> None:
@@ -106,6 +166,11 @@ def initialize(overrides: dict) -> None:
     ``settings``.  After this call, ``settings`` is read-only; any attempt to
     mutate it raises ``ConfigImmutabilityError``.
 
+    Auto-detects ``worker.repo`` (via ``gh repo view``) if the key is present
+    in *overrides* but resolves to empty after applying overrides and config
+    files.  Likewise auto-detects ``bot_name`` (via ``gh api user``) when the
+    key is present in *overrides* but still unset.
+
     Parameters
     ----------
     overrides:
@@ -114,7 +179,7 @@ def initialize(overrides: dict) -> None:
         are silently ignored so that un-provided CLI flags fall through to
         the lower-priority sources.
     """
-    global _initialized
+    global _initialized, _cli_overrides
     if _initialized:
         raise RuntimeError(
             "config.initialize() has already been called. "
@@ -125,8 +190,32 @@ def initialize(overrides: dict) -> None:
     for key, value in overrides.items():
         if value is not None:
             settings.set(key, value)
+            _cli_overrides[key] = value
+
+    # Auto-detect worker.repo when running as a worker and no repo is configured.
+    if "worker.repo" in overrides and not settings.WORKER.REPO:
+        from loony_dev.github import GitHubClient  # lazy to avoid circular import
+        detected_repo = GitHubClient.detect_repo()
+        print(f"Detected repo: {detected_repo}")
+        settings.set("worker.repo", detected_repo)
+
+    # Auto-detect bot_name when running as worker or supervisor and name is unset.
+    if "bot_name" in overrides and not settings.BOT_NAME:
+        from loony_dev.github import GitHubClient  # lazy to avoid circular import
+        detected_name = GitHubClient.detect_bot_name()
+        print(f"Detected bot name: {detected_name}")
+        settings.set("bot_name", detected_name)
 
     settings._freeze()
+
+
+def get_cli_overrides() -> dict[str, object]:
+    """Return the explicit CLI overrides that were passed to ``initialize()``.
+
+    Only non-None values supplied by the caller are included; auto-detected
+    and config-file-sourced values are not.  Returns a copy.
+    """
+    return dict(_cli_overrides)
 
 
 def _reset_for_testing() -> None:
@@ -135,7 +224,8 @@ def _reset_for_testing() -> None:
     NOT for production use.  Call this in test setUp / teardown to get a
     fresh, unlocked settings object between test cases.
     """
-    global settings, _initialized
+    global settings, _initialized, _cli_overrides
 
     _initialized = False
+    _cli_overrides = {}
     settings = _make_settings()

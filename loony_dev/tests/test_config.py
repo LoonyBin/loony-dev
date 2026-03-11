@@ -9,7 +9,7 @@ from loony_dev.config import ConfigImmutabilityError
 
 
 class TestConfigDefaults(unittest.TestCase):
-    """Built-in defaults from _defaults.toml should be readable without calling initialize()."""
+    """Built-in defaults (hardcoded via Validators) should be readable without calling initialize()."""
 
     def setUp(self) -> None:
         config._reset_for_testing()
@@ -55,7 +55,7 @@ class TestInitialize(unittest.TestCase):
     def test_none_values_are_ignored(self) -> None:
         """None values should not override lower-priority sources."""
         config.initialize({"worker.interval": None, "min_role": None})
-        # Falls through to _defaults.toml values
+        # Falls through to hardcoded default values
         self.assertEqual(config.settings.WORKER.INTERVAL, 60)
         self.assertEqual(config.settings.MIN_ROLE, "triage")
 
@@ -115,6 +115,69 @@ class TestResetForTesting(unittest.TestCase):
         config._reset_for_testing()
         config.initialize({"worker.interval": 99})
         self.assertEqual(config.settings.WORKER.INTERVAL, 99)
+
+
+class TestGetCliOverrides(unittest.TestCase):
+    """get_cli_overrides() should return only the non-None CLI values passed to initialize()."""
+
+    def setUp(self) -> None:
+        config._reset_for_testing()
+
+    def test_overrides_stored(self) -> None:
+        config.initialize({"worker.interval": 120, "min_role": "write"})
+        overrides = config.get_cli_overrides()
+        self.assertEqual(overrides["worker.interval"], 120)
+        self.assertEqual(overrides["min_role"], "write")
+
+    def test_none_values_not_stored(self) -> None:
+        config.initialize({"worker.interval": None, "min_role": "write"})
+        overrides = config.get_cli_overrides()
+        self.assertNotIn("worker.interval", overrides)
+        self.assertIn("min_role", overrides)
+
+    def test_returns_copy(self) -> None:
+        config.initialize({"min_role": "admin"})
+        overrides = config.get_cli_overrides()
+        overrides["min_role"] = "mutated"
+        self.assertEqual(config.get_cli_overrides()["min_role"], "admin")
+
+    def test_reset_clears_overrides(self) -> None:
+        config.initialize({"min_role": "admin"})
+        config._reset_for_testing()
+        self.assertEqual(config.get_cli_overrides(), {})
+
+
+class TestNewSettings(unittest.TestCase):
+    """new_settings() should return a fresh instance with defaults, unaffected by initialize()."""
+
+    def setUp(self) -> None:
+        config._reset_for_testing()
+
+    def test_returns_default_values(self) -> None:
+        fresh = config.new_settings()
+        self.assertEqual(fresh.WORKER.INTERVAL, 60)
+        self.assertEqual(fresh.MIN_ROLE, "triage")
+
+    def test_independent_of_initialize(self) -> None:
+        config.initialize({"worker.interval": 999})
+        fresh = config.new_settings()
+        self.assertEqual(fresh.WORKER.INTERVAL, 60)
+
+
+class TestLegacyEnvVar(unittest.TestCase):
+    """LOONY_STUCK_THRESHOLD_HOURS legacy env var should be applied inside config."""
+
+    def setUp(self) -> None:
+        config._reset_for_testing()
+
+    def tearDown(self) -> None:
+        os.environ.pop("LOONY_STUCK_THRESHOLD_HOURS", None)
+        config._reset_for_testing()
+
+    def test_legacy_env_var_applied(self) -> None:
+        os.environ["LOONY_STUCK_THRESHOLD_HOURS"] = "48"
+        config._reset_for_testing()  # reload to pick up env var
+        self.assertEqual(config.settings.STUCK_THRESHOLD_HOURS, 48)
 
 
 if __name__ == "__main__":
