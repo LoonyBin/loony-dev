@@ -13,9 +13,10 @@ from loony_dev.git import GitRepo
 from loony_dev.github import GitHubClient
 from loony_dev.orchestrator import Orchestrator
 
-# Read effective defaults (config files + built-in defaults, no CLI overrides)
-# for use in help text so that --help always shows accurate default values.
-_defaults = config.new_settings()
+# ``config.settings`` is read at import time (before CLI overrides are applied)
+# so it reflects config-file and built-in defaults — the same values that were
+# previously exposed via a separate ``_defaults = config.new_settings()`` call.
+_s = config.settings
 
 
 @click.group()
@@ -27,7 +28,7 @@ def cli() -> None:
 @click.option("--repo", default=None, help="owner/repo (default: detected from git remote)")
 @click.option(
     "--interval", default=None, type=int,
-    help=f"Polling interval in seconds (default: {_defaults.WORKER.INTERVAL})",
+    help=f"Polling interval in seconds (default: {_s.WORKER.INTERVAL})",
 )
 @click.option("--work-dir", default=None, type=click.Path(exists=True), help="Working directory for the agent")
 @click.option("--bot-name", default=None, help="Bot username for watermark detection (default: detected from gh auth)")
@@ -50,7 +51,7 @@ def cli() -> None:
 @click.option(
     "--min-role", "min_role", default=None,
     type=click.Choice(["triage", "write", "admin"], case_sensitive=False),
-    help=f"Minimum GitHub collaborator role required to trigger agent runs (default: {_defaults.MIN_ROLE}).",
+    help=f"Minimum GitHub collaborator role required to trigger agent runs (default: {_s.MIN_ROLE}).",
 )
 def worker(
     repo: str | None,
@@ -105,19 +106,20 @@ def worker(
 @cli.command("supervisor")
 @click.option(
     "--base-dir", default=None,
-    help=f"Base directory for repo checkouts and logs (default: {_defaults.SUPERVISOR.BASE_DIR})",
+    help=f"Base directory for repo checkouts and logs (default: {_s.SUPERVISOR.BASE_DIR})",
 )
 @click.option(
     "--interval", default=None, type=int,
-    help=f"Health-check interval in seconds (default: {_defaults.SUPERVISOR.INTERVAL})",
+    help=f"Health-check interval in seconds (default: {_s.SUPERVISOR.INTERVAL})",
 )
 @click.option(
     "--worker-interval", default=None, type=int,
-    help=f"Polling interval forwarded to each worker (default: {_defaults.SUPERVISOR.WORKER_INTERVAL})",
+    help="Polling interval (seconds) forwarded to each worker. "
+         "When not set, each worker uses its own configuration.",
 )
 @click.option(
     "--refresh-interval", default=None, type=int,
-    help=f"How often (seconds) to re-discover repos and checkout new ones (default: {_defaults.SUPERVISOR.REFRESH_INTERVAL})",
+    help=f"How often (seconds) to re-discover repos and checkout new ones (default: {_s.SUPERVISOR.REFRESH_INTERVAL})",
 )
 @click.option("--bot-name", default=None,
               help="Bot username forwarded to workers")
@@ -128,11 +130,11 @@ def worker(
               help="Skip repos matching this glob pattern (repeatable). Applied after --include.")
 @click.option(
     "--min-restart-delay", default=None, type=float,
-    help=f"Minimum seconds before restarting a crashed worker (default: {_defaults.SUPERVISOR.MIN_RESTART_DELAY})",
+    help=f"Minimum seconds before restarting a crashed worker (default: {_s.SUPERVISOR.MIN_RESTART_DELAY})",
 )
 @click.option(
     "--max-restart-delay", default=None, type=float,
-    help=f"Maximum backoff delay (seconds) for restarting a crashed worker (default: {_defaults.SUPERVISOR.MAX_RESTART_DELAY})",
+    help=f"Maximum backoff delay (seconds) for restarting a crashed worker (default: {_s.SUPERVISOR.MAX_RESTART_DELAY})",
 )
 @click.option("--verbose", "-v", is_flag=True, default=None,
               help="Enable DEBUG logging in supervisor (workers log to their own files)")
@@ -145,7 +147,7 @@ def worker(
 @click.option(
     "--min-role", "min_role", default=None,
     type=click.Choice(["triage", "write", "admin"], case_sensitive=False),
-    help=f"Minimum GitHub collaborator role required to trigger runs. Forwarded to each worker (default: {_defaults.MIN_ROLE}).",
+    help=f"Minimum GitHub collaborator role required to trigger runs. Forwarded to each worker (default: {_s.MIN_ROLE}).",
 )
 def supervisor_cmd(
     base_dir: str | None,
@@ -205,7 +207,7 @@ def supervisor_cmd(
 @cli.command("ui")
 @click.option(
     "--base-dir", default=None,
-    help=f"Base directory for log/PID discovery (default: {_defaults.UI.BASE_DIR})",
+    help=f"Base directory for log/PID discovery (default: {_s.UI.BASE_DIR})",
 )
 @click.option(
     "--supervisor-log", default=None, type=click.Path(), metavar="PATH",
@@ -213,7 +215,7 @@ def supervisor_cmd(
 )
 @click.option(
     "--scan-interval", default=None, type=int,
-    help=f"How often (seconds) to re-scan for new/removed workers (default: {_defaults.UI.SCAN_INTERVAL})",
+    help=f"How often (seconds) to re-scan for new/removed workers (default: {_s.UI.SCAN_INTERVAL})",
 )
 def ui_cmd(base_dir: str | None, supervisor_log: str | None, scan_interval: int | None) -> None:
     """Launch the terminal UI to monitor the supervisor and workers."""

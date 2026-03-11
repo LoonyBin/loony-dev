@@ -187,11 +187,13 @@ class WorkerProcess:
 def _worker_command(repo: str, work_dir: Path) -> list[str]:
     """Build the argv list for a worker subprocess.
 
-    Passes ``--repo``, ``--work-dir``, and ``--interval`` explicitly.
-    Other settings (bot_name, verbose, allowed_users, min_role) are forwarded
-    only when they were explicitly supplied on the supervisor's command line,
-    so workers can independently read their own config files for any settings
-    the supervisor did not override.
+    Passes ``--repo`` and ``--work-dir`` explicitly.  ``--interval`` is only
+    forwarded when ``supervisor.worker_interval`` was explicitly configured
+    (via CLI or config file), so workers can independently read their own
+    config files for the polling interval when the supervisor does not override
+    it.  Other settings (bot_name, verbose, allowed_users, min_role) are
+    forwarded only when they were explicitly supplied on the supervisor's
+    command line.
     """
     cmd_prefix: list[str]
     if shutil.which("loony-dev"):
@@ -203,8 +205,11 @@ def _worker_command(repo: str, work_dir: Path) -> list[str]:
         "worker",
         "--repo", repo,
         "--work-dir", str(work_dir),
-        "--interval", str(config.settings.SUPERVISOR.WORKER_INTERVAL),
     ]
+
+    worker_interval = config.settings.SUPERVISOR.get("WORKER_INTERVAL")
+    if worker_interval is not None:
+        cmd += ["--interval", str(worker_interval)]
 
     overrides = config.get_cli_overrides()
     if "bot_name" in overrides:

@@ -28,7 +28,7 @@ class TestConfigDefaults(unittest.TestCase):
 
     def test_supervisor_defaults(self) -> None:
         self.assertEqual(config.settings.SUPERVISOR.INTERVAL, 15)
-        self.assertEqual(config.settings.SUPERVISOR.WORKER_INTERVAL, 60)
+        self.assertIsNone(config.settings.SUPERVISOR.get("WORKER_INTERVAL"))
         self.assertEqual(config.settings.SUPERVISOR.REFRESH_INTERVAL, 1800)
         self.assertAlmostEqual(config.settings.SUPERVISOR.MIN_RESTART_DELAY, 5.0)
         self.assertAlmostEqual(config.settings.SUPERVISOR.MAX_RESTART_DELAY, 300.0)

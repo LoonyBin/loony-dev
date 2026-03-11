@@ -83,9 +83,6 @@ base_dir = "."
 # Health-check interval in seconds.
 interval = 15
 
-# Polling interval forwarded to each spawned worker.
-worker_interval = 60
-
 # How often (seconds) to re-discover repos and checkout new ones.
 refresh_interval = 1800
 
