@@ -125,7 +125,7 @@ class ClaudeQuotaMixin:
                 self.name, self._disabled_until,
             )
         else:
-            fallback = config.settings.QUOTA_FALLBACK_SECONDS
+            fallback = config.settings.CLAUDE.QUOTA_FALLBACK_SECONDS
             self._disabled_until = (
                 datetime.now(timezone.utc) + timedelta(seconds=fallback)
             )

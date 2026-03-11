@@ -129,7 +129,7 @@ class TestDisabledUntil(unittest.TestCase):
         # Fallback should be roughly QUOTA_FALLBACK_SECONDS from now
         delta = (agent._disabled_until - datetime.now(timezone.utc)).total_seconds()
         self.assertGreater(delta, 200)
-        self.assertLess(delta, config.settings.QUOTA_FALLBACK_SECONDS + 10)
+        self.assertLess(delta, config.settings.CLAUDE.QUOTA_FALLBACK_SECONDS + 10)
 
     def test_plain_agent_never_disabled(self) -> None:
         """Agent without the mixin is never disabled."""

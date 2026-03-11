@@ -9,7 +9,7 @@ from loony_dev.config import ConfigImmutabilityError
 
 
 class TestConfigDefaults(unittest.TestCase):
-    """Built-in defaults (hardcoded via Validators) should be readable without calling initialize()."""
+    """Built-in defaults (from _defaults.toml) should be readable without calling initialize()."""
 
     def setUp(self) -> None:
         config._reset_for_testing()
@@ -18,7 +18,7 @@ class TestConfigDefaults(unittest.TestCase):
         self.assertEqual(config.settings.MIN_ROLE, "triage")
         self.assertEqual(config.settings.ALLOWED_USERS, [])
         self.assertEqual(config.settings.PERMISSION_CACHE_TTL, 600)
-        self.assertEqual(config.settings.QUOTA_FALLBACK_SECONDS, 300)
+        self.assertEqual(config.settings.CLAUDE.QUOTA_FALLBACK_SECONDS, 300)
         self.assertEqual(config.settings.STUCK_THRESHOLD_HOURS, 12)
         self.assertFalse(config.settings.VERBOSE)
 

@@ -6,7 +6,7 @@ Priority (highest wins):
   3. ./.loony-dev.toml   (repo-level / per-checkout)
   4. ~/.config/loony-dev/config.toml
   5. /etc/loony-dev/config.toml
-  6. Built-in defaults   (hardcoded in this module via Dynaconf Validators)
+  6. Built-in defaults   (loony_dev/_defaults.toml)
 
 Usage
 -----
@@ -27,52 +27,17 @@ import logging
 import os
 from pathlib import Path
 
-from dynaconf import Dynaconf, Validator
+from dynaconf import Dynaconf
 
 _THIS_DIR = Path(__file__).parent
 logger = logging.getLogger(__name__)
 
 # Config-file search path (lowest to highest priority among files).
-# Built-in defaults are defined via Validators below, not a separate file.
 _CONFIG_FILES = [
+    str(_THIS_DIR / "_defaults.toml"),       # shipped with the package
     "/etc/loony-dev/config.toml",
     "~/.config/loony-dev/config.toml",
     ".loony-dev.toml",
-]
-
-# ---------------------------------------------------------------------------
-# Built-in defaults (lowest priority; overridden by config files, env vars,
-# and CLI flags).
-# ---------------------------------------------------------------------------
-_DEFAULT_VALIDATORS: list[Validator] = [
-    # Top-level settings
-    Validator("bot_name", default=""),
-    Validator("verbose", default=False),
-    Validator("log_file", default=""),
-    Validator("allowed_users", default=[]),
-    Validator("min_role", default="triage"),
-    Validator("permission_cache_ttl", default=600),
-    Validator("quota_fallback_seconds", default=300),
-    Validator("stuck_threshold_hours", default=12),
-    # Worker settings
-    Validator("worker.repo", default=""),
-    Validator("worker.interval", default=60),
-    Validator("worker.work_dir", default="."),
-    # Supervisor settings
-    Validator("supervisor.base_dir", default="."),
-    Validator("supervisor.interval", default=15),
-    Validator("supervisor.worker_interval", default=60),
-    Validator("supervisor.refresh_interval", default=1800),
-    Validator("supervisor.min_restart_delay", default=5.0),
-    Validator("supervisor.max_restart_delay", default=300.0),
-    Validator("supervisor.include", default=[]),
-    Validator("supervisor.exclude", default=[]),
-    # UI settings
-    Validator("ui.base_dir", default="."),
-    Validator("ui.supervisor_log", default=""),
-    Validator("ui.scan_interval", default=5),
-    Validator("ui.max_buffer_lines", default=5000),
-    Validator("ui.tail_lines", default=100),
 ]
 
 
@@ -127,9 +92,7 @@ def _make_settings() -> _FrozenSettings:
         settings_files=_CONFIG_FILES,
         environments=False,
         load_dotenv=False,
-        validators=_DEFAULT_VALIDATORS,
     )
-    inner.validators.validate_all()
 
     # Handle legacy env var for backward compatibility.
     _legacy_env = os.environ.get("LOONY_STUCK_THRESHOLD_HOURS")
