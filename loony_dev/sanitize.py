@@ -16,6 +16,30 @@ Intentionally NOT stripped
 - URLs
 - Normal HTML tags like ``<br>``, ``<details>``, ``<summary>`` that render visibly
 
+Community alternatives considered
+----------------------------------
+We evaluated community libraries before writing this module:
+
+- **llm-guard** (ProtectAI): Has an ``InvisibleText`` scanner (rule-based, stdlib only)
+  covering the zero-width vector, but has no HTML comment scanner.  Installing
+  ``llm-guard`` pulls in the full package including heavy ML dependencies (torch,
+  transformers) for its other scanners — an unacceptable overhead for this project.
+
+- **bleach** (Mozilla): A well-maintained HTML sanitizer focused on XSS prevention.
+  Its ``clean()`` function strips HTML comments but also strips *all* HTML tags unless
+  you explicitly allowlist them.  That conflicts with our requirement to pass through
+  visible tags (``<br>``, ``<details>``, ``<summary>``, etc.) unchanged.
+
+- **rebuff** (ProtectAI): Prompt-injection detector requiring an external API —
+  adds network dependency and latency, unsuitable for a synchronous sanitization step.
+
+- **pytector**: ML-based (DeBERTa/DistilBERT), not deterministic, heavyweight.
+
+Conclusion: no maintained library handles *both* vectors with the right semantics
+(strip comments, preserve visible tags) without adding heavyweight dependencies.
+This module uses only ``re`` and ``unicodedata`` from the standard library and is
+narrow enough in scope that the maintenance surface is minimal.
+
 Usage
 -----
     from loony_dev.sanitize import sanitize_user_content
