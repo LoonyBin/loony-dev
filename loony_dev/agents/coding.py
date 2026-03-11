@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from loony_dev import config
 from loony_dev.agents.base import Agent
 from loony_dev.agents.claude_quota import ClaudeQuotaMixin
 from loony_dev.models import TaskResult, truncate_for_log
@@ -20,8 +21,9 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
 
     name = "coding"
 
-    def __init__(self, work_dir: Path) -> None:
-        self.work_dir = work_dir
+    @property
+    def work_dir(self) -> Path:
+        return Path(config.settings.WORKER.WORK_DIR).resolve()
 
     def _can_handle_task(self, task: Task) -> bool:
         return task.task_type in ("implement_issue", "address_review", "resolve_conflicts")

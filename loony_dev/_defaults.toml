@@ -1,0 +1,82 @@
+# Built-in defaults for loony-dev.
+# These are the lowest-priority values — overridden by /etc/loony-dev/config.toml,
+# ~/.config/loony-dev/config.toml, .loony-dev.toml, environment variables, and CLI flags.
+
+# GitHub bot username for watermark detection. Empty string = auto-detect via `gh auth`.
+bot_name = ""
+
+# Enable DEBUG-level logging.
+verbose = false
+
+# Write DEBUG logs to this file path in addition to stderr. Empty string = disabled.
+log_file = ""
+
+# GitHub usernames always permitted to trigger runs, regardless of role.
+allowed_users = []
+
+# Minimum GitHub collaborator role required to trigger agent runs.
+# Choices: "triage", "write", "admin"
+min_role = "triage"
+
+# How long (seconds) to cache GitHub permission lookups.
+permission_cache_ttl = 600
+
+# Fallback cooldown (seconds) when Claude quota reset time cannot be parsed.
+quota_fallback_seconds = 300
+
+# Hours an issue/PR can be stuck "in-progress" before cleanup triggers.
+stuck_threshold_hours = 12
+
+
+[worker]
+# GitHub repository in owner/repo format. Empty string = auto-detect from git remote.
+repo = ""
+
+# Polling interval in seconds.
+interval = 60
+
+# Working directory for the agent.
+work_dir = "."
+
+
+[supervisor]
+# Base directory for repo checkouts and logs.
+base_dir = "."
+
+# Health-check interval in seconds.
+interval = 15
+
+# Polling interval forwarded to each worker.
+worker_interval = 60
+
+# How often (seconds) to re-discover repos and checkout new ones.
+refresh_interval = 1800
+
+# Minimum seconds before restarting a crashed worker.
+min_restart_delay = 5.0
+
+# Maximum backoff delay (seconds) for restarting a crashed worker.
+max_restart_delay = 300.0
+
+# Only supervise repos matching these glob patterns (empty = all repos).
+include = []
+
+# Skip repos matching these glob patterns.
+exclude = []
+
+
+[ui]
+# Base directory for log/PID discovery.
+base_dir = "."
+
+# Path to supervisor log file. Empty string = <base_dir>/.logs/supervisor.log
+supervisor_log = ""
+
+# How often (seconds) to re-scan for new/removed workers.
+scan_interval = 5
+
+# Maximum lines to buffer in the TUI log view.
+max_buffer_lines = 5000
+
+# Lines to load initially into RichLog; rest loaded on scroll-up.
+tail_lines = 100

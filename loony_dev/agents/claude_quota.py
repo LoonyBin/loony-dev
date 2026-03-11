@@ -6,6 +6,8 @@ import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from loony_dev import config
+
 logger = logging.getLogger(__name__)
 
 _QUOTA_PATTERNS = [
@@ -34,7 +36,6 @@ class ClaudeQuotaMixin:
     ``is_disabled``).
     """
 
-    QUOTA_FALLBACK_SECONDS = 5 * 60
     _disabled_until: datetime | None = None
 
     def can_handle(self, task: Task) -> bool:
@@ -124,10 +125,11 @@ class ClaudeQuotaMixin:
                 self.name, self._disabled_until,
             )
         else:
+            fallback = config.settings.QUOTA_FALLBACK_SECONDS
             self._disabled_until = (
-                datetime.now(timezone.utc) + timedelta(seconds=self.QUOTA_FALLBACK_SECONDS)
+                datetime.now(timezone.utc) + timedelta(seconds=fallback)
             )
             logger.warning(
                 "Agent '%s' rate-limited (couldn't parse reset time). Disabled for %ds.",
-                self.name, self.QUOTA_FALLBACK_SECONDS,
+                self.name, fallback,
             )

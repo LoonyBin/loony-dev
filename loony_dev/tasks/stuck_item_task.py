@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
+from loony_dev import config
 from loony_dev.github import _parse_datetime
 from loony_dev.models import Issue, PullRequest
 from loony_dev.tasks.base import Task
@@ -35,10 +36,21 @@ class StuckItemCleanupTask(Task):
     def discover(github: GitHubClient) -> Iterator[StuckItemCleanupTask]:
         """Yield cleanup tasks for issues and PRs stuck in-progress past the threshold.
 
-        The threshold is read from the ``LOONY_STUCK_THRESHOLD_HOURS`` environment
-        variable (default: 12 hours).
+        The threshold is read from ``config.settings.STUCK_THRESHOLD_HOURS``
+        (default: 12 hours).  The legacy ``LOONY_STUCK_THRESHOLD_HOURS``
+        environment variable is supported as a deprecated alias and will be
+        removed in a future release.
         """
-        threshold_hours = int(os.environ.get("LOONY_STUCK_THRESHOLD_HOURS", "12"))
+        _legacy_env = os.environ.get("LOONY_STUCK_THRESHOLD_HOURS")
+        if _legacy_env is not None:
+            logger.warning(
+                "LOONY_STUCK_THRESHOLD_HOURS is deprecated. "
+                "Use LOONY_DEV_STUCK_THRESHOLD_HOURS or set "
+                "stuck_threshold_hours in your loony-dev config file."
+            )
+            threshold_hours = int(_legacy_env)
+        else:
+            threshold_hours = config.settings.STUCK_THRESHOLD_HOURS
         cutoff = datetime.now(timezone.utc) - timedelta(hours=threshold_hours)
 
         for issue, _ in github.list_issues(label="in-progress"):
