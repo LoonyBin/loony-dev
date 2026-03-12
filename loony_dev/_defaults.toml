@@ -1,0 +1,123 @@
+# Built-in defaults for loony-dev.
+# These are the lowest-priority values — overridden by /etc/loony-dev/config.toml,
+# ~/.config/loony-dev/config.toml, .loony-dev.toml, environment variables, and CLI flags.
+#
+# To customise, copy this file to one of the following locations (highest priority first):
+#   .loony-dev.toml                       — repo-level / per-checkout
+#   ~/.config/loony-dev/config.toml       — user-level
+#   /etc/loony-dev/config.toml            — system-wide
+#
+# Environment variables override config files.  Prefix all keys with
+# LOONY_DEV_, using double underscores for nested sections:
+#
+#   LOONY_DEV_BOT_NAME=my-bot
+#   LOONY_DEV_MIN_ROLE=write
+#   LOONY_DEV_WORKER__INTERVAL=120
+#   LOONY_DEV_SUPERVISOR__BASE_DIR=/srv/loony
+#
+# CLI options (--bot-name, --interval, etc.) override everything else.
+
+# ---------------------------------------------------------------------------
+# Shared / top-level settings
+# ---------------------------------------------------------------------------
+
+# GitHub bot username for watermark detection.
+# Default: auto-detected via `gh auth status --active`
+bot_name = ""
+
+# Enable DEBUG-level logging (equivalent to --verbose on the CLI).
+verbose = false
+
+# Path to write DEBUG logs (in addition to stderr). Empty string = disabled.
+log_file = ""
+
+# GitHub usernames always permitted to trigger agent runs,
+# regardless of their repository role.
+allowed_users = []
+
+# Minimum GitHub collaborator role required to trigger agent runs.
+# Choices: "triage", "write", "admin"
+min_role = "triage"
+
+# How long (seconds) to cache GitHub permission lookups.
+permission_cache_ttl = 600
+
+# Hours an issue/PR can stay "in-progress" before the cleanup task resets it.
+stuck_threshold_hours = 12
+
+
+# ---------------------------------------------------------------------------
+# [claude] — settings for the Claude CLI integration
+# ---------------------------------------------------------------------------
+
+[claude]
+# Fallback cooldown (seconds) when Claude's quota reset time cannot be parsed.
+quota_fallback_seconds = 300
+
+
+# ---------------------------------------------------------------------------
+# [worker] — settings for the `loony-dev worker` command
+# ---------------------------------------------------------------------------
+
+[worker]
+# GitHub repository in owner/repo format.
+# Default: auto-detected from the git remote of the current checkout.
+repo = ""
+
+# Polling interval in seconds.
+interval = 60
+
+# Working directory for the agent.
+work_dir = "."
+
+
+# ---------------------------------------------------------------------------
+# [supervisor] — settings for the `loony-dev supervisor` command
+# ---------------------------------------------------------------------------
+
+[supervisor]
+# Base directory for repo checkouts (<base_dir>/<owner>/<repo>)
+# and logs (<base_dir>/.logs/<owner>/<repo>/).
+base_dir = "."
+
+# Health-check interval in seconds.
+interval = 15
+
+# How often (seconds) to re-discover repos and checkout new ones.
+refresh_interval = 1800
+
+# Minimum seconds before restarting a crashed worker.
+min_restart_delay = 5.0
+
+# Maximum backoff delay (seconds) for restarting a crashed worker.
+max_restart_delay = 300.0
+
+# Only supervise repos matching these glob patterns (empty = all repos).
+# Patterns with '/' are matched against 'owner/repo'; patterns without '/'
+# match the repo name only.
+include = []
+
+# Skip repos matching these glob patterns (applied after include).
+exclude = []
+
+
+# ---------------------------------------------------------------------------
+# [ui] — settings for the `loony-dev ui` command
+# ---------------------------------------------------------------------------
+
+[ui]
+# Base directory for log/PID discovery (should match supervisor base_dir).
+base_dir = "."
+
+# Path to the supervisor log file.
+# Default: <base_dir>/.logs/supervisor.log
+supervisor_log = ""
+
+# How often (seconds) to re-scan for new/removed workers.
+scan_interval = 5
+
+# Maximum lines to keep in the TUI log buffer.
+max_buffer_lines = 5000
+
+# Lines to load initially into the RichLog view.
+tail_lines = 100

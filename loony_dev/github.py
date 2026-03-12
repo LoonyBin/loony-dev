@@ -6,6 +6,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 
+from loony_dev import config
 from loony_dev.models import Comment, Issue, truncate_for_log
 from loony_dev.sanitize import InjectionType, sanitize_user_content
 
@@ -21,7 +22,6 @@ _ROLE_HIERARCHY = ["none", "read", "triage", "write", "admin"]
 # Roles that are authorized when min_role="triage" (the default).
 _DEFAULT_AUTHORIZED_ROLES = {"admin", "write", "triage"}
 
-_PERMISSION_CACHE_TTL = 600  # 10 minutes
 
 
 def _roles_at_or_above(min_role: str) -> set[str]:
@@ -40,13 +40,15 @@ def is_authorized(
 ) -> bool:
     """Return True if *username* is authorized to trigger agent runs.
 
-    A user is authorized if they are in the explicit *allowed_users* set or if
-    their repository permission level is at or above *min_role*.
+    A user is authorized if they are in the explicit *allowed_users* set (from
+    config) or if their repository permission level is at or above *min_role*.
     """
-    if username in github.allowed_users:
+    allowed_users = set(config.settings.get("ALLOWED_USERS", []))
+    min_role = config.settings.get("MIN_ROLE", "triage")
+    if username in allowed_users:
         return True
     permission = github.get_user_permission(username)
-    return permission in _roles_at_or_above(github.min_role)
+    return permission in _roles_at_or_above(min_role)
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -68,14 +70,10 @@ class GitHubClient:
     def __init__(
         self,
         repo: str,
-        bot_name: str,
-        allowed_users: set[str] | None = None,
-        min_role: str = "triage",
+        bot_name: str | None = None,
     ) -> None:
         self.repo = repo
-        self.bot_name = bot_name
-        self.allowed_users: set[str] = allowed_users or set()
-        self.min_role = min_role
+        self.bot_name = bot_name or config.settings.get("BOT_NAME", "")
         # Cache: username -> (permission_level, monotonic_timestamp)
         self._permission_cache: dict[str, tuple[str | None, float]] = {}
 
@@ -161,12 +159,13 @@ class GitHubClient:
         """Return the user's repository permission level, or None if not a collaborator.
 
         Possible values: 'admin', 'write', 'triage', 'read', 'none'.
-        Results are cached for ``_PERMISSION_CACHE_TTL`` seconds.
+        Results are cached for ``config.settings.PERMISSION_CACHE_TTL`` seconds.
         """
+        cache_ttl = config.settings.PERMISSION_CACHE_TTL
         now = time.monotonic()
         if username in self._permission_cache:
             cached_perm, cached_at = self._permission_cache[username]
-            if now - cached_at < _PERMISSION_CACHE_TTL:
+            if now - cached_at < cache_ttl:
                 logger.debug("Permission cache hit for %r: %r", username, cached_perm)
                 return cached_perm
 
@@ -190,8 +189,9 @@ class GitHubClient:
 
     def evict_stale_permission_cache(self) -> None:
         """Remove expired entries from the permission cache."""
+        cache_ttl = config.settings.PERMISSION_CACHE_TTL
         now = time.monotonic()
-        stale = [u for u, (_, ts) in self._permission_cache.items() if now - ts >= _PERMISSION_CACHE_TTL]
+        stale = [u for u, (_, ts) in self._permission_cache.items() if now - ts >= cache_ttl]
         for u in stale:
             del self._permission_cache[u]
         if stale:

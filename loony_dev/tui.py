@@ -18,9 +18,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Header, RichLog, Static, Tab, Tabs
 
-
-MAX_BUFFER_LINES = 5000
-TAIL_LINES = 100  # Lines to load into RichLog initially; rest loaded on scroll-up
+from loony_dev import config
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +51,7 @@ class LogWatcher:
     On the first successful open, reads from the beginning of the file so that
     existing log content is loaded into the buffer. Handles missing files
     gracefully until they appear. Accumulates received lines in ``self.buffer``
-    (capped at MAX_BUFFER_LINES).
+    (capped at config.settings.UI.MAX_BUFFER_LINES).
 
     Uses inotify on Linux to detect modifications without spinning; falls back
     to unconditional polling on platforms where inotify is unavailable.
@@ -139,7 +137,7 @@ class LogWatcher:
 
         if new_lines:
             self.buffer.extend(new_lines)
-            excess = len(self.buffer) - MAX_BUFFER_LINES
+            excess = len(self.buffer) - config.settings.UI.MAX_BUFFER_LINES
             if excess > 0:
                 del self.buffer[:excess]
 
@@ -311,7 +309,7 @@ class LogPane(Widget):
 
     Maintains one RichLog per tab and toggles visibility, so tab switches are
     instantaneous instead of replaying the entire buffer.  Only the last
-    TAIL_LINES are written initially; the full buffer is loaded lazily when
+    config.settings.UI.TAIL_LINES are written initially; the full buffer is loaded lazily when
     the user scrolls to the top.
     """
 
@@ -363,10 +361,10 @@ class LogPane(Widget):
         self._logs[key] = log
         self._watchers[key] = watcher
         self.mount(log, before=self.query_one("#follow-banner"))
-        tail = watcher.buffer[-TAIL_LINES:] if len(watcher.buffer) > TAIL_LINES else watcher.buffer
+        tail = watcher.buffer[-config.settings.UI.TAIL_LINES:] if len(watcher.buffer) > config.settings.UI.TAIL_LINES else watcher.buffer
         for line in tail:
             log.write(line)
-        if len(watcher.buffer) <= TAIL_LINES:
+        if len(watcher.buffer) <= config.settings.UI.TAIL_LINES:
             self._fully_loaded.add(key)
 
     def switch_watcher(self, key: str, watcher: LogWatcher) -> None:
@@ -401,7 +399,7 @@ class LogPane(Widget):
         if watcher is None:
             return
         # The tail that was loaded starts at this offset in the full buffer
-        prepended = max(0, len(watcher.buffer) - TAIL_LINES)
+        prepended = max(0, len(watcher.buffer) - config.settings.UI.TAIL_LINES)
         log.clear()
         for line in watcher.buffer:
             log.write(line)

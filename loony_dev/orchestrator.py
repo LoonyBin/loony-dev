@@ -5,6 +5,7 @@ import signal
 import time
 from typing import TYPE_CHECKING
 
+from loony_dev import config
 from loony_dev.tasks.conflict_task import ConflictResolutionTask
 from loony_dev.tasks.issue_task import IssueTask
 from loony_dev.tasks.planning_task import PlanningTask
@@ -34,12 +35,10 @@ class Orchestrator:
         github: GitHubClient,
         git: GitRepo,
         agents: list[Agent],
-        interval: int = 60,
     ) -> None:
         self.github = github
         self.git = git
         self.agents = agents
-        self.interval = interval
         self._shutdown_requested: bool = False
         self._graceful_shutdown: bool = False
         self._active_agent: Agent | None = None
@@ -51,7 +50,8 @@ class Orchestrator:
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGQUIT, self._handle_signal)
 
-        logger.info("Orchestrator started. Polling every %ds.", self.interval)
+        interval = config.settings.WORKER.INTERVAL
+        logger.info("Orchestrator started. Polling every %ds.", interval)
         while not self._shutdown_requested:
             try:
                 self._tick()
@@ -59,7 +59,7 @@ class Orchestrator:
                 logger.exception("Error during tick")
 
             # Interruptible sleep: check shutdown flag each second.
-            for _ in range(self.interval):
+            for _ in range(interval):
                 if self._shutdown_requested:
                     break
                 time.sleep(1)
