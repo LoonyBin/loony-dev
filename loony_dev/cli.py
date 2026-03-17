@@ -5,6 +5,7 @@ from pathlib import Path
 
 import click
 
+from loony_dev import config
 from loony_dev.agents.coding import CodingAgent
 from loony_dev.agents.null_agent import NullAgent
 from loony_dev.agents.planning import PlanningAgent
@@ -13,7 +14,7 @@ from loony_dev.github import GitHubClient
 from loony_dev.orchestrator import Orchestrator
 
 
-@click.group()
+@config.group()
 def cli() -> None:
     """Loony-Dev: Agent orchestrator that watches GitHub and dispatches work."""
 
@@ -129,6 +130,7 @@ def worker(
     type=click.Choice(["triage", "write", "admin"], case_sensitive=False),
     help="Minimum GitHub collaborator role required to trigger runs. Forwarded to each worker.",
 )
+@config.capture_explicit
 def supervisor_cmd(
     base_dir: str,
     interval: int,
