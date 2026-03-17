@@ -14,7 +14,7 @@ from loony_dev.github import GitHubClient
 from loony_dev.orchestrator import Orchestrator
 
 
-@config.group()
+@click.group(cls=config.ClickGroup)
 def cli() -> None:
     """Loony-Dev: Agent orchestrator that watches GitHub and dispatches work."""
 

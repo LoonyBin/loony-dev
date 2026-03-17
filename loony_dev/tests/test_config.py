@@ -110,6 +110,14 @@ def test_build_default_map_empty():
     assert config._build_default_map({}, None) == {}
 
 
+def test_build_default_map_no_cmd_name_returns_top_level():
+    """Without a cmd_name, top-level scalars are returned as group-level defaults."""
+    cfg = {"bot_name": "loony", "worker": {"interval": 30}}
+    dm = config._build_default_map(cfg, None)
+    assert dm == {"bot_name": "loony"}
+    assert "worker" not in dm
+
+
 def test_build_default_map_only_builds_invoked_command():
     cfg = {"worker": {"interval": 30}, "supervisor": {"base_dir": "/srv"}}
     dm = config._build_default_map(cfg, "worker")

@@ -10,9 +10,9 @@ Priority (highest wins):
 
 Usage
 -----
-Replace ``@click.group()`` with ``@config.group()`` on the root CLI group::
+Use ``cls=config.ClickGroup`` on the root CLI group::
 
-    @config.group()
+    @click.group(cls=config.ClickGroup)
     def cli() -> None: ...
 
 This injects config file + env var values via Click's built-in
@@ -20,6 +20,12 @@ This injects config file + env var values via Click's built-in
 change to ``@click.option(...)`` definitions.  The Click param
 ``default=...`` values become the baseline; config files sit on top,
 and explicit CLI flags win over both.
+
+For standalone commands (not sub-commands of a configured group), use
+``cls=config.ClickCommand``::
+
+    @click.command(cls=config.ClickCommand)
+    def cmd(...): ...
 
 To capture which options were explicitly supplied on the command line
 (so a command can selectively forward them to subprocesses), decorate
@@ -31,6 +37,9 @@ the command with ``@config.capture_explicit``::
     def supervisor_cmd(...):
         explicit = config.get_explicit_params()  # frozenset of param names
         ...
+
+``@config.capture_explicit`` is position-independent and may be placed
+anywhere in the decorator stack.
 """
 from __future__ import annotations
 
@@ -117,23 +126,32 @@ def _build_default_map(
     Section dicts (e.g. ``[worker]``) override top-level values for that
     specific sub-command.  Only the invoked sub-command's entry is built,
     so command names never need to be duplicated here.
+
+    When *cmd_name* is ``None`` (no sub-command detected), the top-level
+    scalars are returned directly as group-level defaults.
     """
-    if cmd_name is None:
-        return {}
-
     top_level = {k: v for k, v in cfg.items() if not isinstance(v, dict)}
-    sections = {k: v for k, v in cfg.items() if isinstance(v, dict)}
 
+    if cmd_name is None:
+        return top_level
+
+    sections = {k: v for k, v in cfg.items() if isinstance(v, dict)}
     combined = {**top_level, **sections.get(cmd_name, {})}
     return {cmd_name: combined} if combined else {}
 
 
 # ---------------------------------------------------------------------------
-# Custom Click group
+# Public Click classes
 # ---------------------------------------------------------------------------
 
-class _ConfigGroup(click.Group):
-    """Click ``Group`` that injects config file + env var values as ``default_map``."""
+class ClickGroup(click.Group):
+    """Click ``Group`` that injects config file + env var values as ``default_map``.
+
+    Usage::
+
+        @click.group(cls=config.ClickGroup)
+        def cli() -> None: ...
+    """
 
     def make_context(
         self,
@@ -155,16 +173,33 @@ class _ConfigGroup(click.Group):
         return super().make_context(info_name, args, parent=parent, **extra)
 
 
-def group(*args: Any, **kwargs: Any) -> Any:
-    """Replacement for ``@click.group()`` that adds config file support.
+class ClickCommand(click.Command):
+    """Click ``Command`` that injects config file + env var values as ``default_map``.
+
+    Useful for top-level standalone commands (not sub-commands of a
+    :class:`ClickGroup`, which already handles injection for its children).
 
     Usage::
 
-        @config.group()
-        def cli() -> None: ...
+        @click.command(cls=config.ClickCommand)
+        def cmd(...): ...
     """
-    kwargs.setdefault("cls", _ConfigGroup)
-    return click.group(*args, **kwargs)
+
+    def make_context(
+        self,
+        info_name: str | None,
+        args: list[str],
+        parent: click.Context | None = None,
+        **extra: Any,
+    ) -> click.Context:
+        cfg = _load_config_files()
+        _apply_env_vars(cfg)
+        dm = _build_default_map(cfg, info_name)
+        if dm:
+            merged: dict[str, Any] = dict(dm)
+            _deep_merge(merged, extra.pop("default_map", {}))
+            extra["default_map"] = merged
+        return super().make_context(info_name, args, parent=parent, **extra)
 
 
 # ---------------------------------------------------------------------------
@@ -174,8 +209,8 @@ def group(*args: Any, **kwargs: Any) -> Any:
 def capture_explicit(fn: Any) -> Any:
     """Decorator that records which CLI options were explicitly provided.
 
-    Place this *directly above the function definition* (inside the Click
-    decorators) so it wraps the command callback::
+    Position-independent: may be placed anywhere in the Click decorator
+    stack, above or below ``@click.option(...)`` decorators::
 
         @cli.command("supervisor")
         @click.option(...)
@@ -186,16 +221,16 @@ def capture_explicit(fn: Any) -> Any:
     retrieve the set of param names that came from the command line (not
     from defaults or config files).
     """
-    @click.pass_context
     @functools.wraps(fn)
-    def wrapper(ctx: click.Context, **kwargs: Any) -> Any:
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         global _explicit_params
+        ctx = click.get_current_context()
         _explicit_params = frozenset(
             name
-            for name in kwargs
+            for name in ctx.params
             if ctx.get_parameter_source(name) == ParameterSource.COMMANDLINE
         )
-        return fn(**kwargs)
+        return fn(*args, **kwargs)
 
     return wrapper
 
