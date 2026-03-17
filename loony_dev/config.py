@@ -132,8 +132,8 @@ def _build_default_map(
     if cmd_name is None:
         return top_level
 
-    sections = {k: v for k, v in cfg.items() if isinstance(v, dict)}
-    combined = {**top_level, **sections.get(cmd_name, {})}
+    cmd_section = cfg.get(cmd_name, {})
+    combined = {**top_level, **(cmd_section if isinstance(cmd_section, dict) else {})}
     return {cmd_name: combined} if combined else {}
 
 
