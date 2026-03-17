@@ -45,6 +45,10 @@ def cli() -> None:
     type=click.Choice(["triage", "write", "admin"], case_sensitive=False),
     help="Minimum GitHub collaborator role required to trigger agent runs.",
 )
+@click.option(
+    "--stuck-threshold-hours", "stuck_threshold_hours", default=12, show_default=True,
+    help="Hours after which an in-progress item is considered stuck and will be reset.",
+)
 def worker(**_) -> None:
     """Run the orchestrator worker loop for a single repository."""
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -64,21 +68,11 @@ def worker(**_) -> None:
         repo = GitHubClient.detect_repo()
         click.echo(f"Detected repo: {repo}")
 
-    github = GitHubClient(
-        repo=repo,
-        bot_name=config.settings.bot_name,
-        allowed_users=set(config.settings.allowed_users),
-        min_role=config.settings.min_role,
-    )
+    github = GitHubClient(repo=repo)
     git = GitRepo(work_dir=work_path)
     agents = [NullAgent(), CodingAgent(work_dir=work_path), PlanningAgent(work_dir=work_path)]
 
-    orchestrator = Orchestrator(
-        github=github,
-        git=git,
-        agents=agents,
-        interval=config.settings.interval,
-    )
+    orchestrator = Orchestrator(github=github, git=git, agents=agents)
 
     click.echo(f"Starting orchestrator for {repo} (polling every {config.settings.interval}s)")
     orchestrator.run()
@@ -152,11 +146,7 @@ def ui_cmd(**_) -> None:
     """Launch the terminal UI to monitor the supervisor and workers."""
     from loony_dev.tui import SupervisorApp
 
-    app = SupervisorApp(
-        base_dir=config.settings.base_dir,
-        supervisor_log=config.settings.supervisor_log,
-        scan_interval=float(config.settings.scan_interval),
-    )
+    app = SupervisorApp()
     app.run()
 
 

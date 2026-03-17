@@ -71,12 +71,16 @@ class GitHubClient:
         repo: str,
         bot_name: str | None = None,
         allowed_users: set[str] | None = None,
-        min_role: str = "triage",
+        min_role: str | None = None,
     ) -> None:
+        from loony_dev import config
         self.repo = repo
-        self.bot_name = bot_name or self.detect_bot_name()
-        self.allowed_users: set[str] = allowed_users or set()
-        self.min_role = min_role
+        self.bot_name = bot_name or config.settings.get("bot_name") or self.detect_bot_name()
+        self.allowed_users: set[str] = (
+            allowed_users if allowed_users is not None
+            else set(config.settings.get("allowed_users") or [])
+        )
+        self.min_role = min_role or config.settings.get("min_role") or "triage"
         # Cache: username -> (permission_level, monotonic_timestamp)
         self._permission_cache: dict[str, tuple[str | None, float]] = {}
 

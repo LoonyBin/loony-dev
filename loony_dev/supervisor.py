@@ -8,6 +8,8 @@ import signal
 import subprocess
 import sys
 import time
+
+import click
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -200,17 +202,26 @@ def _worker_command(repo: str, work_dir: Path, log_file: Path) -> list[str]:
     cmd = cmd_prefix + ["worker", "--repo", repo, "--work-dir", str(work_dir)]
 
     explicit = config.get_explicit_params()
+    ctx = click.get_current_context()
+    # Use click's param.opts to resolve CLI flag names without manual dasherizing.
+    param_opts: dict[str, str] = {
+        p.name: max(p.opts, key=len)
+        for p in ctx.command.params
+        if isinstance(p, click.Option)
+    }
+
+    # worker_interval → worker's --interval (name mismatch; handled manually)
     if "worker_interval" in explicit:
         cmd += ["--interval", str(config.settings.worker_interval)]
     if "bot_name" in explicit:
-        cmd += ["--bot-name", config.settings.bot_name]
+        cmd += [param_opts["bot_name"], config.settings.bot_name]
     if "verbose" in explicit:
-        cmd += ["--verbose"]
+        cmd += [param_opts["verbose"]]
     if "allowed_users" in explicit:
         for user in config.settings.allowed_users:
-            cmd += ["--allowed-users", user]
+            cmd += [param_opts["allowed_users"], user]
     if "min_role" in explicit:
-        cmd += ["--min-role", config.settings.min_role]
+        cmd += [param_opts["min_role"], config.settings.min_role]
     return cmd
 
 
@@ -347,7 +358,7 @@ def run_supervisor() -> None:
                     log_path.parent.mkdir(parents=True, exist_ok=True)
 
                     try:
-                        GitHubClient(repo, config.settings.bot_name).ensure_required_labels()
+                        GitHubClient(repo).ensure_required_labels()
                     except Exception:
                         logger.warning("Label provisioning failed for %s; continuing to launch worker.", repo)
 
