@@ -47,9 +47,8 @@ def cli() -> None:
 )
 def worker(**_) -> None:
     """Run the orchestrator worker loop for a single repository."""
-    log_level = logging.DEBUG if config.settings["verbose"] else logging.INFO
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    logging.basicConfig(level=log_level, format=log_format)
+    logging.basicConfig(level=config.settings.log_level, format=log_format)
 
     if config.settings["log_file"]:
         file_handler = logging.FileHandler(config.settings["log_file"])
@@ -128,9 +127,8 @@ def supervisor_cmd(**_) -> None:
     """Discover all accessible repositories and run a worker for each in parallel."""
     from loony_dev.supervisor import run_supervisor
 
-    log_level = logging.DEBUG if config.settings["verbose"] else logging.INFO
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    logging.basicConfig(level=log_level, format=log_format)
+    logging.basicConfig(level=config.settings.log_level, format=log_format)
 
     base_path = Path(config.settings["base_dir"]).resolve()
     logs_dir = base_path / ".logs"
@@ -164,15 +162,10 @@ def ui_cmd(**_) -> None:
     from loony_dev.tui import SupervisorApp
 
     base_path = Path(config.settings["base_dir"]).resolve()
-    sup_log = (
-        Path(config.settings["supervisor_log"])
-        if config.settings["supervisor_log"]
-        else base_path / ".logs" / "supervisor.log"
-    )
 
     app = SupervisorApp(
         base_dir=base_path,
-        supervisor_log=sup_log,
+        supervisor_log=config.settings.supervisor_log,
         scan_interval=float(config.settings["scan_interval"]),
     )
     app.run()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import textwrap
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -275,3 +276,50 @@ def test_settings_populated_via_clickgroup(tmp_path, monkeypatch):
     result = runner.invoke(grp, ["sub", "--level", "7"])
     assert result.exit_code == 0
     assert observed[0] == 7
+
+
+# ---------------------------------------------------------------------------
+# Settings helpers
+# ---------------------------------------------------------------------------
+
+def test_settings_log_level_verbose():
+    """log_level returns logging.DEBUG when verbose is True."""
+    import logging
+
+    s = config.Settings({"verbose": True})
+    assert s.log_level == logging.DEBUG
+
+
+def test_settings_log_level_not_verbose():
+    """log_level returns logging.INFO when verbose is False."""
+    import logging
+
+    s = config.Settings({"verbose": False})
+    assert s.log_level == logging.INFO
+
+
+def test_settings_supervisor_log_explicit(tmp_path):
+    """supervisor_log returns Path(supervisor_log) when set."""
+    p = str(tmp_path / "custom.log")
+    s = config.Settings({"supervisor_log": p, "base_dir": str(tmp_path)})
+    assert s.supervisor_log == Path(p)
+
+
+def test_settings_supervisor_log_default(tmp_path):
+    """supervisor_log defaults to <base_dir>/.logs/supervisor.log."""
+    s = config.Settings({"supervisor_log": None, "base_dir": str(tmp_path)})
+    assert s.supervisor_log == tmp_path.resolve() / ".logs" / "supervisor.log"
+
+
+def test_settings_attribute_access():
+    """Raw keys are accessible as attributes."""
+    s = config.Settings({"verbose": True, "interval": 60})
+    assert s.verbose is True
+    assert s.interval == 60
+
+
+def test_settings_missing_attribute_raises():
+    """Accessing a missing key as an attribute raises AttributeError."""
+    s = config.Settings({})
+    with pytest.raises(AttributeError):
+        _ = s.nonexistent
