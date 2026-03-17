@@ -1,9 +1,7 @@
 """Tests for loony_dev.config — config file loading and CLI default injection."""
 from __future__ import annotations
 
-import os
 import textwrap
-from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -13,17 +11,17 @@ from loony_dev.cli import cli
 
 
 # ---------------------------------------------------------------------------
-# _load_config_files
+# _load_config
 # ---------------------------------------------------------------------------
 
-def test_load_config_files_missing(tmp_path, monkeypatch):
+def test_load_config_missing(tmp_path, monkeypatch):
     """Returns an empty dict when no config files exist."""
     monkeypatch.chdir(tmp_path)
-    result = config._load_config_files()
+    result = config._load_config()
     assert result == {}
 
 
-def test_load_config_files_merges(tmp_path, monkeypatch):
+def test_load_config_merges(tmp_path, monkeypatch):
     """Config file values are loaded and available in the result."""
     cfg = tmp_path / ".loony-dev.toml"
     cfg.write_text(textwrap.dedent("""\
@@ -33,43 +31,39 @@ def test_load_config_files_merges(tmp_path, monkeypatch):
         interval = 30
     """))
     monkeypatch.chdir(tmp_path)
-    result = config._load_config_files()
+    result = config._load_config()
     assert result["bot_name"] == "test-bot"
     assert result["worker"]["interval"] == 30
 
 
-def test_load_config_files_invalid_ignored(tmp_path, monkeypatch):
+def test_load_config_invalid_ignored(tmp_path, monkeypatch):
     """Malformed config files are skipped without raising."""
     cfg = tmp_path / ".loony-dev.toml"
     cfg.write_bytes(b"not valid toml ][")
     monkeypatch.chdir(tmp_path)
-    result = config._load_config_files()
+    result = config._load_config()
     assert result == {}
 
 
-# ---------------------------------------------------------------------------
-# _apply_env_vars
-# ---------------------------------------------------------------------------
-
-def test_apply_env_vars_top_level(monkeypatch):
+def test_load_config_env_var_top_level(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("LOONY_DEV_BOT_NAME", "env-bot")
-    cfg: dict = {}
-    config._apply_env_vars(cfg)
-    assert cfg["bot_name"] == "env-bot"
+    result = config._load_config()
+    assert result["bot_name"] == "env-bot"
 
 
-def test_apply_env_vars_section(monkeypatch):
+def test_load_config_env_var_section(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("LOONY_DEV_WORKER__INTERVAL", "45")
-    cfg: dict = {}
-    config._apply_env_vars(cfg)
-    assert cfg["worker"]["interval"] == "45"
+    result = config._load_config()
+    assert str(result["worker"]["interval"]) == "45"
 
 
-def test_apply_env_vars_ignores_other_prefixes(monkeypatch):
+def test_load_config_ignores_other_prefixes(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OTHER_BOT_NAME", "ignored")
-    cfg: dict = {}
-    config._apply_env_vars(cfg)
-    assert "bot_name" not in cfg
+    result = config._load_config()
+    assert "bot_name" not in result
 
 
 # ---------------------------------------------------------------------------

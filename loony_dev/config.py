@@ -46,12 +46,12 @@ from __future__ import annotations
 import functools
 import logging
 import os
-import tomllib
 from pathlib import Path
 from typing import Any
 
 import click
 from click.core import ParameterSource
+from dynaconf import Dynaconf
 
 logger = logging.getLogger(__name__)
 
@@ -81,40 +81,37 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> None:
             base[key] = value
 
 
-def _load_config_files() -> dict[str, Any]:
-    """Read and merge config files from lowest to highest priority."""
-    merged: dict[str, Any] = {}
-    for path_str in _get_config_files():
-        path = Path(path_str).expanduser()
-        if not path.exists():
-            continue
-        try:
-            with path.open("rb") as fh:
-                data = tomllib.load(fh)
-            _deep_merge(merged, data)
-            logger.debug("Loaded config file: %s", path)
-        except Exception:
-            logger.warning("Failed to read config file %s", path, exc_info=True)
-    return merged
+def _load_config() -> dict[str, Any]:
+    """Load config from files and env vars via dynaconf, returning a lowercase dict.
 
-
-def _apply_env_vars(cfg: dict[str, Any]) -> None:
-    """Apply ``LOONY_DEV_*`` environment variables on top of *cfg*.
-
-    Naming conventions:
-      ``LOONY_DEV_BOT_NAME``          -> top-level ``bot_name``
-      ``LOONY_DEV_WORKER__INTERVAL``  -> section ``worker``, key ``interval``
+    File priority (lowest to highest): /etc, user-config-dir, ./.loony-dev.toml.
+    Environment variables (``LOONY_DEV_*``) override all files.
     """
-    prefix = "LOONY_DEV_"
-    for env_key, env_val in os.environ.items():
-        if not env_key.startswith(prefix):
-            continue
-        rest = env_key[len(prefix):].lower()
-        if "__" in rest:
-            section, key = rest.split("__", 1)
-            cfg.setdefault(section, {})[key] = env_val
-        else:
-            cfg[rest] = env_val
+    dynaconf_kwargs = {
+        "envvar_prefix": "LOONY_DEV",
+        "settings_files": _get_config_files(),
+        "merge": True,
+        "load_dotenv": False,
+    }
+    try:
+        settings = Dynaconf(**dynaconf_kwargs)
+        raw = settings.as_dict()
+    except Exception:
+        logger.warning("Failed to load configuration", exc_info=True)
+        return {}
+
+    # dynaconf leaks some option kwargs (e.g. merge, load_dotenv) into as_dict();
+    # strip them so they don't appear as user settings.
+    option_keys = {k.lower() for k in dynaconf_kwargs}
+
+    def _lower_keys(val: Any) -> Any:
+        if isinstance(val, dict):
+            return {k.lower(): _lower_keys(v) for k, v in val.items()}
+        if isinstance(val, list):
+            return [_lower_keys(item) for item in val]
+        return val
+
+    return {k: v for k, v in _lower_keys(raw).items() if k not in option_keys}
 
 
 def _build_default_map(
@@ -140,6 +137,17 @@ def _build_default_map(
     return {cmd_name: combined} if combined else {}
 
 
+def _inject_default_map(cmd_name: str | None, extra: dict[str, Any]) -> None:
+    """Load config and inject Click ``default_map`` into *extra* in-place."""
+    cfg = _load_config()
+    dm = _build_default_map(cfg, cmd_name)
+    if dm:
+        # Caller-supplied default_map wins over config-file values.
+        merged: dict[str, Any] = dict(dm)
+        _deep_merge(merged, extra.pop("default_map", {}))
+        extra["default_map"] = merged
+
+
 # ---------------------------------------------------------------------------
 # Public Click classes
 # ---------------------------------------------------------------------------
@@ -160,16 +168,8 @@ class ClickGroup(click.Group):
         parent: click.Context | None = None,
         **extra: Any,
     ) -> click.Context:
-        cfg = _load_config_files()
-        _apply_env_vars(cfg)
-        # Detect which sub-command is being invoked (first non-option arg).
         cmd_name = next((a for a in args if not a.startswith("-")), None)
-        dm = _build_default_map(cfg, cmd_name)
-        if dm:
-            # Caller-supplied default_map wins over config-file values.
-            merged: dict[str, Any] = dict(dm)
-            _deep_merge(merged, extra.pop("default_map", {}))
-            extra["default_map"] = merged
+        _inject_default_map(cmd_name, extra)
         return super().make_context(info_name, args, parent=parent, **extra)
 
 
@@ -192,13 +192,7 @@ class ClickCommand(click.Command):
         parent: click.Context | None = None,
         **extra: Any,
     ) -> click.Context:
-        cfg = _load_config_files()
-        _apply_env_vars(cfg)
-        dm = _build_default_map(cfg, info_name)
-        if dm:
-            merged: dict[str, Any] = dict(dm)
-            _deep_merge(merged, extra.pop("default_map", {}))
-            extra["default_map"] = merged
+        _inject_default_map(info_name, extra)
         return super().make_context(info_name, args, parent=parent, **extra)
 
 
