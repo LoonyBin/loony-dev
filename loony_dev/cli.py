@@ -45,17 +45,17 @@ def cli() -> None:
     type=click.Choice(["triage", "write", "admin"], case_sensitive=False),
     help="Minimum GitHub collaborator role required to trigger agent runs.",
 )
-def worker(
-    repo: str | None,
-    interval: int,
-    work_dir: str,
-    bot_name: str,
-    verbose: bool,
-    log_file: str | None,
-    allowed_users: tuple[str, ...],
-    min_role: str,
-) -> None:
+def worker(**_) -> None:
     """Run the orchestrator worker loop for a single repository."""
+    interval = config.settings["interval"]
+    repo = config.settings["repo"]
+    work_dir = config.settings["work_dir"]
+    bot_name = config.settings["bot_name"]
+    verbose = config.settings["verbose"]
+    log_file = config.settings["log_file"]
+    allowed_users = config.settings["allowed_users"]
+    min_role = config.settings["min_role"]
+
     log_level = logging.DEBUG if verbose else logging.INFO
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     logging.basicConfig(level=log_level, format=log_format)
@@ -131,23 +131,23 @@ def worker(
     help="Minimum GitHub collaborator role required to trigger runs. Forwarded to each worker.",
 )
 @config.capture_explicit
-def supervisor_cmd(
-    base_dir: str,
-    interval: int,
-    worker_interval: int,
-    refresh_interval: int,
-    bot_name: str | None,
-    include_patterns: tuple[str, ...],
-    exclude_patterns: tuple[str, ...],
-    min_restart_delay: float,
-    max_restart_delay: float,
-    verbose: bool,
-    log_file: str | None,
-    allowed_users: tuple[str, ...],
-    min_role: str,
-) -> None:
+def supervisor_cmd(**_) -> None:
     """Discover all accessible repositories and run a worker for each in parallel."""
     from loony_dev.supervisor import run_supervisor
+
+    base_dir = config.settings["base_dir"]
+    interval = config.settings["interval"]
+    worker_interval = config.settings["worker_interval"]
+    refresh_interval = config.settings["refresh_interval"]
+    bot_name = config.settings["bot_name"]
+    include_patterns = config.settings["include_patterns"]
+    exclude_patterns = config.settings["exclude_patterns"]
+    min_restart_delay = config.settings["min_restart_delay"]
+    max_restart_delay = config.settings["max_restart_delay"]
+    verbose = config.settings["verbose"]
+    log_file = config.settings["log_file"]
+    allowed_users = config.settings["allowed_users"]
+    min_role = config.settings["min_role"]
 
     log_level = logging.DEBUG if verbose else logging.INFO
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -203,9 +203,13 @@ def supervisor_cmd(
     "--scan-interval", default=5, show_default=True,
     help="How often (seconds) to re-scan for new/removed workers",
 )
-def ui_cmd(base_dir: str, supervisor_log: str | None, scan_interval: int) -> None:
+def ui_cmd(**_) -> None:
     """Launch the terminal UI to monitor the supervisor and workers."""
     from loony_dev.tui import SupervisorApp
+
+    base_dir = config.settings["base_dir"]
+    supervisor_log = config.settings["supervisor_log"]
+    scan_interval = config.settings["scan_interval"]
 
     base_path = Path(base_dir).resolve()
     sup_log = Path(supervisor_log) if supervisor_log else base_path / ".logs" / "supervisor.log"

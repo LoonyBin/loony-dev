@@ -209,3 +209,69 @@ def test_capture_explicit_empty_when_all_defaults(tmp_path, monkeypatch):
     runner = CliRunner()
     runner.invoke(cmd, [])
     assert captured[0] == frozenset()
+
+
+# ---------------------------------------------------------------------------
+# settings — immutable global config object
+# ---------------------------------------------------------------------------
+
+def test_settings_populated_before_command_body(tmp_path, monkeypatch):
+    """config.settings is an immutable snapshot of resolved params before the command body runs."""
+    import click
+
+    monkeypatch.chdir(tmp_path)
+    observed: list = []
+
+    @click.command(cls=config.ClickCommand)
+    @click.option("--count", default=5)
+    @click.option("--name", default="default")
+    def cmd(**_) -> None:
+        observed.append(dict(config.settings))
+
+    runner = CliRunner()
+    result = runner.invoke(cmd, ["--count", "42"])
+    assert result.exit_code == 0
+    assert observed[0]["count"] == 42
+    assert observed[0]["name"] == "default"
+
+
+def test_settings_is_immutable(tmp_path, monkeypatch):
+    """config.settings raises TypeError on mutation attempts."""
+    import click
+
+    monkeypatch.chdir(tmp_path)
+    errors: list = []
+
+    @click.command(cls=config.ClickCommand)
+    @click.option("--val", default=1)
+    def cmd(**_) -> None:
+        try:
+            config.settings["val"] = 99  # type: ignore[index]
+        except TypeError as exc:
+            errors.append(exc)
+
+    runner = CliRunner()
+    runner.invoke(cmd, [])
+    assert errors, "Expected TypeError when mutating settings"
+
+
+def test_settings_populated_via_clickgroup(tmp_path, monkeypatch):
+    """Sub-commands of a ClickGroup also populate config.settings."""
+    import click
+
+    monkeypatch.chdir(tmp_path)
+    observed: list = []
+
+    @click.group(cls=config.ClickGroup)
+    def grp() -> None:
+        pass
+
+    @grp.command("sub")
+    @click.option("--level", default=10)
+    def sub_cmd(**_) -> None:
+        observed.append(config.settings["level"])
+
+    runner = CliRunner()
+    result = runner.invoke(grp, ["sub", "--level", "7"])
+    assert result.exit_code == 0
+    assert observed[0] == 7

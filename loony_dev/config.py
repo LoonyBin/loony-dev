@@ -21,11 +21,23 @@ change to ``@click.option(...)`` definitions.  The Click param
 ``default=...`` values become the baseline; config files sit on top,
 and explicit CLI flags win over both.
 
+Sub-commands registered via ``@cli.command(...)`` automatically use
+:class:`ClickCommand`, which populates the module-level
+:data:`config.settings` immutable object before the command body runs.
+Command functions can therefore accept ``**_`` and read all resolved
+values from ``config.settings`` instead of a long parameter list::
+
+    @cli.command("worker")
+    @click.option("--interval", default=60)
+    def worker(**_) -> None:
+        interval = config.settings["interval"]
+        ...
+
 For standalone commands (not sub-commands of a configured group), use
-``cls=config.ClickCommand``::
+``cls=config.ClickCommand`` explicitly::
 
     @click.command(cls=config.ClickCommand)
-    def cmd(...): ...
+    def cmd(**_): ...
 
 To capture which options were explicitly supplied on the command line
 (so a command can selectively forward them to subprocesses), decorate
@@ -34,7 +46,7 @@ the command with ``@config.capture_explicit``::
     @cli.command("supervisor")
     @click.option(...)
     @config.capture_explicit
-    def supervisor_cmd(...):
+    def supervisor_cmd(**_):
         explicit = config.get_explicit_params()  # frozenset of param names
         ...
 
@@ -47,6 +59,7 @@ import functools
 import logging
 import os
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import click
@@ -66,6 +79,21 @@ def _get_config_files() -> list[str]:
 
 # Module-level: populated by @capture_explicit before each command body runs.
 _explicit_params: frozenset[str] = frozenset()
+
+# Immutable snapshot of all resolved CLI + config + default values.
+# Populated by ClickCommand.invoke() before the command body runs.
+settings: MappingProxyType = MappingProxyType({})
+
+
+def _populate_settings(ctx: click.Context) -> None:
+    """Snapshot *ctx.params* into the immutable module-level :data:`settings`.
+
+    Called from :meth:`ClickCommand.invoke` so that all code inside the
+    command body can read configuration via ``config.settings`` instead of
+    relying on the command function's parameter list.
+    """
+    global settings
+    settings = MappingProxyType(dict(ctx.params))
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +183,10 @@ def _inject_default_map(cmd_name: str | None, extra: dict[str, Any]) -> None:
 class ClickGroup(click.Group):
     """Click ``Group`` that injects config file + env var values as ``default_map``.
 
+    Sub-commands registered via ``@cli.command(...)`` automatically use
+    :class:`ClickCommand` so that :data:`settings` is populated before
+    each command body runs.
+
     Usage::
 
         @click.group(cls=config.ClickGroup)
@@ -172,17 +204,25 @@ class ClickGroup(click.Group):
         _inject_default_map(cmd_name, extra)
         return super().make_context(info_name, args, parent=parent, **extra)
 
+    def command(self, *args: Any, **kwargs: Any) -> Any:
+        """Register a sub-command, defaulting to :class:`ClickCommand` so that
+        :data:`settings` is populated before every sub-command body runs.
+        """
+        kwargs.setdefault("cls", ClickCommand)
+        return super().command(*args, **kwargs)
+
 
 class ClickCommand(click.Command):
-    """Click ``Command`` that injects config file + env var values as ``default_map``.
+    """Click ``Command`` that injects config file + env var values as ``default_map``
+    and populates the immutable :data:`settings` object before the command body runs.
 
     Useful for top-level standalone commands (not sub-commands of a
-    :class:`ClickGroup`, which already handles injection for its children).
+    :class:`ClickGroup`, which already handles injection and registration).
 
     Usage::
 
         @click.command(cls=config.ClickCommand)
-        def cmd(...): ...
+        def cmd(**_): ...
     """
 
     def make_context(
@@ -192,8 +232,25 @@ class ClickCommand(click.Command):
         parent: click.Context | None = None,
         **extra: Any,
     ) -> click.Context:
-        _inject_default_map(info_name, extra)
+        if parent is None:
+            # Standalone command (no parent group): inject a flat default_map
+            # of top-level config values merged with the command-specific section.
+            # Sub-commands skip this — their parent ClickGroup.make_context()
+            # already injects the nested map, and Click auto-propagates the
+            # flat sub-map to each sub-command context via parent.default_map.
+            cfg = _load_config()
+            top = {k: v for k, v in cfg.items() if not isinstance(v, dict)}
+            section = cfg.get(info_name or "", {})
+            dm = {**top, **(section if isinstance(section, dict) else {})}
+            if dm:
+                merged: dict[str, Any] = dict(dm)
+                _deep_merge(merged, extra.pop("default_map", {}))
+                extra["default_map"] = merged
         return super().make_context(info_name, args, parent=parent, **extra)
+
+    def invoke(self, ctx: click.Context) -> Any:
+        _populate_settings(ctx)
+        return super().invoke(ctx)
 
 
 # ---------------------------------------------------------------------------
