@@ -81,20 +81,18 @@ def test_build_default_map_sections():
         "worker": {"interval": 30, "work_dir": "/tmp"},
         "supervisor": {"base_dir": "/srv"},
     }
-    dm = config._build_default_map(cfg)
-    assert dm["worker"]["interval"] == 30
-    assert dm["supervisor"]["base_dir"] == "/srv"
+    assert config._build_default_map(cfg, "worker")["worker"]["interval"] == 30
+    assert config._build_default_map(cfg, "supervisor")["supervisor"]["base_dir"] == "/srv"
 
 
-def test_build_default_map_top_level_applied_to_all_commands():
+def test_build_default_map_top_level_applied_to_invoked_command():
     cfg = {
         "bot_name": "shared-bot",
         "worker": {"interval": 30},
     }
-    dm = config._build_default_map(cfg)
-    # top-level bot_name should appear in both worker and supervisor sections.
-    assert dm["worker"]["bot_name"] == "shared-bot"
-    assert dm["supervisor"]["bot_name"] == "shared-bot"
+    # top-level bot_name applies to whichever command is invoked.
+    assert config._build_default_map(cfg, "worker")["worker"]["bot_name"] == "shared-bot"
+    assert config._build_default_map(cfg, "supervisor")["supervisor"]["bot_name"] == "shared-bot"
 
 
 def test_build_default_map_section_overrides_top_level():
@@ -102,15 +100,21 @@ def test_build_default_map_section_overrides_top_level():
         "min_role": "triage",
         "worker": {"min_role": "write"},
     }
-    dm = config._build_default_map(cfg)
-    assert dm["worker"]["min_role"] == "write"
+    assert config._build_default_map(cfg, "worker")["worker"]["min_role"] == "write"
     # supervisor gets the top-level value.
-    assert dm["supervisor"]["min_role"] == "triage"
+    assert config._build_default_map(cfg, "supervisor")["supervisor"]["min_role"] == "triage"
 
 
 def test_build_default_map_empty():
-    dm = config._build_default_map({})
-    assert dm == {}
+    assert config._build_default_map({}) == {}
+    assert config._build_default_map({}, None) == {}
+
+
+def test_build_default_map_only_builds_invoked_command():
+    cfg = {"worker": {"interval": 30}, "supervisor": {"base_dir": "/srv"}}
+    dm = config._build_default_map(cfg, "worker")
+    assert "worker" in dm
+    assert "supervisor" not in dm
 
 
 # ---------------------------------------------------------------------------

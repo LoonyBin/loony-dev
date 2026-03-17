@@ -4,8 +4,8 @@ Priority (highest wins):
   1. CLI options
   2. Environment vars    LOONY_DEV_<KEY>  /  LOONY_DEV_<SECTION>__<KEY>
   3. ./.loony-dev.toml   (repo-level / per-checkout)
-  4. ~/.config/loony-dev/config.toml
-  5. /etc/loony-dev/config.toml
+  4. <user-config-dir>/loony-dev/config.toml  (platform-specific via click.get_app_dir)
+  5. /etc/loony-dev/config.toml  (POSIX only)
   6. Click param defaults  (the application's baseline)
 
 Usage
@@ -46,11 +46,14 @@ from click.core import ParameterSource
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_FILES = [
-    "/etc/loony-dev/config.toml",
-    "~/.config/loony-dev/config.toml",
-    ".loony-dev.toml",
-]
+def _get_config_files() -> list[str]:
+    """Return platform-appropriate config file paths, lowest to highest priority."""
+    files = []
+    if os.name == "posix":
+        files.append("/etc/loony-dev/config.toml")
+    files.append(str(Path(click.get_app_dir("loony-dev")) / "config.toml"))
+    files.append(".loony-dev.toml")
+    return files
 
 # Module-level: populated by @capture_explicit before each command body runs.
 _explicit_params: frozenset[str] = frozenset()
@@ -72,7 +75,7 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> None:
 def _load_config_files() -> dict[str, Any]:
     """Read and merge config files from lowest to highest priority."""
     merged: dict[str, Any] = {}
-    for path_str in _CONFIG_FILES:
+    for path_str in _get_config_files():
         path = Path(path_str).expanduser()
         if not path.exists():
             continue
@@ -105,25 +108,24 @@ def _apply_env_vars(cfg: dict[str, Any]) -> None:
             cfg[rest] = env_val
 
 
-def _build_default_map(cfg: dict[str, Any]) -> dict[str, Any]:
-    """Build Click's ``default_map`` from the loaded config data.
+def _build_default_map(
+    cfg: dict[str, Any], cmd_name: str | None = None
+) -> dict[str, Any]:
+    """Build Click's ``default_map`` for *cmd_name* from the loaded config data.
 
-    Top-level scalar values apply to all sub-commands.  Section dicts
-    (``[worker]``, ``[supervisor]``, ``[ui]``) override top-level values
-    for that specific sub-command.
+    Top-level scalar values serve as shared defaults for any sub-command.
+    Section dicts (e.g. ``[worker]``) override top-level values for that
+    specific sub-command.  Only the invoked sub-command's entry is built,
+    so command names never need to be duplicated here.
     """
-    # Split top-level scalars from section dicts.
+    if cmd_name is None:
+        return {}
+
     top_level = {k: v for k, v in cfg.items() if not isinstance(v, dict)}
     sections = {k: v for k, v in cfg.items() if isinstance(v, dict)}
 
-    default_map: dict[str, Any] = {}
-    # Known CLI sub-commands.
-    for cmd in ("worker", "supervisor", "ui"):
-        combined = {**top_level, **sections.get(cmd, {})}
-        if combined:
-            default_map[cmd] = combined
-
-    return default_map
+    combined = {**top_level, **sections.get(cmd_name, {})}
+    return {cmd_name: combined} if combined else {}
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +144,9 @@ class _ConfigGroup(click.Group):
     ) -> click.Context:
         cfg = _load_config_files()
         _apply_env_vars(cfg)
-        dm = _build_default_map(cfg)
+        # Detect which sub-command is being invoked (first non-option arg).
+        cmd_name = next((a for a in args if not a.startswith("-")), None)
+        dm = _build_default_map(cfg, cmd_name)
         if dm:
             # Caller-supplied default_map wins over config-file values.
             merged: dict[str, Any] = dict(dm)
