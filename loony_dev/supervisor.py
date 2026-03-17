@@ -185,7 +185,11 @@ class WorkerProcess:
 
 
 def _worker_command(repo: str, work_dir: Path, log_file: Path) -> list[str]:
-    """Build the argv list for a worker subprocess."""
+    """Build the argv list for a worker subprocess.
+
+    Only params explicitly provided on the supervisor command line are forwarded;
+    workers resolve everything else from their own config files and defaults.
+    """
     # Prefer the installed entry point; fall back to running the module directly.
     cmd_prefix: list[str]
     if shutil.which("loony-dev"):
@@ -193,20 +197,20 @@ def _worker_command(repo: str, work_dir: Path, log_file: Path) -> list[str]:
     else:
         cmd_prefix = [sys.executable, "-m", "loony_dev.cli"]
 
-    cmd = cmd_prefix + [
-        "worker",
-        "--repo", repo,
-        "--work-dir", str(work_dir),
-        "--interval", str(config.settings["worker_interval"]),
-    ]
-    if config.settings["bot_name"]:
-        cmd += ["--bot-name", config.settings["bot_name"]]
-    if config.settings["verbose"]:
+    cmd = cmd_prefix + ["worker", "--repo", repo, "--work-dir", str(work_dir)]
+
+    explicit = config.get_explicit_params()
+    if "worker_interval" in explicit:
+        cmd += ["--interval", str(config.settings.worker_interval)]
+    if "bot_name" in explicit:
+        cmd += ["--bot-name", config.settings.bot_name]
+    if "verbose" in explicit:
         cmd += ["--verbose"]
-    for user in (config.settings["allowed_users"] or []):
-        cmd += ["--allowed-users", user]
-    if config.settings["min_role"] != "triage":
-        cmd += ["--min-role", config.settings["min_role"]]
+    if "allowed_users" in explicit:
+        for user in config.settings.allowed_users:
+            cmd += ["--allowed-users", user]
+    if "min_role" in explicit:
+        cmd += ["--min-role", config.settings.min_role]
     return cmd
 
 
@@ -264,19 +268,10 @@ def run_supervisor() -> None:
 
     Runs until interrupted by SIGINT or SIGTERM.
     """
-    base_dir = Path(config.settings["base_dir"]).resolve()
-    interval = config.settings["interval"]
-    refresh_interval = config.settings["refresh_interval"]
-    min_restart_delay = config.settings["min_restart_delay"]
-    max_restart_delay = config.settings["max_restart_delay"]
-    include = list(config.settings["include_patterns"]) if config.settings["include_patterns"] else None
-    exclude = list(config.settings["exclude_patterns"]) if config.settings["exclude_patterns"] else None
+    config.settings.base_dir.mkdir(parents=True, exist_ok=True)
+    (config.settings.base_dir / ".logs").mkdir(parents=True, exist_ok=True)
 
-    base_dir.mkdir(parents=True, exist_ok=True)
-    logs_dir = base_dir / ".logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-
-    supervisor_pid_file = logs_dir / "supervisor.pid"
+    supervisor_pid_file = config.settings.base_dir / ".logs" / "supervisor.pid"
     _write_pid_file(supervisor_pid_file, os.getpid())
 
     workers: dict[str, WorkerProcess] = {}
@@ -301,12 +296,12 @@ def run_supervisor() -> None:
 
     logger.info(
         "Supervisor started. base_dir=%s interval=%ds refresh=%ds",
-        base_dir, interval, refresh_interval,
+        config.settings.base_dir, config.settings.interval, config.settings.refresh_interval,
     )
-    if include:
-        logger.info("Include patterns: %s", include)
-    if exclude:
-        logger.info("Exclude patterns: %s", exclude)
+    if config.settings.include:
+        logger.info("Include patterns: %s", config.settings.include)
+    if config.settings.exclude:
+        logger.info("Exclude patterns: %s", config.settings.exclude)
 
     while not shutdown_requested:
         now = time.monotonic()
@@ -314,7 +309,7 @@ def run_supervisor() -> None:
         # ------------------------------------------------------------------ #
         # Discovery phase
         # ------------------------------------------------------------------ #
-        if now - last_discovery >= refresh_interval:
+        if now - last_discovery >= config.settings.refresh_interval:
             last_discovery = now
             logger.info("Running repo discovery…")
 
@@ -322,7 +317,7 @@ def run_supervisor() -> None:
             if not all_repos:
                 logger.warning("No repos discovered (gh returned nothing or failed). Will retry on next refresh.")
             else:
-                active = filter_repos(all_repos, include, exclude)
+                active = filter_repos(all_repos, config.settings.include, config.settings.exclude)
                 logger.info(
                     "Discovered %d repos; %d match filters.",
                     len(all_repos), len(active),
@@ -341,21 +336,18 @@ def run_supervisor() -> None:
                     if repo in workers:
                         continue
                     try:
-                        work_dir = ensure_repo_checked_out(repo, base_dir)
+                        work_dir = ensure_repo_checked_out(repo, config.settings.base_dir)
                     except Exception:
                         logger.error("Skipping %s this cycle due to clone failure.", repo)
                         continue
 
-                    GitHubClient(repo, config.settings["bot_name"] or "").ensure_required_labels()
-
                     owner, name = repo.split("/", 1)
-                    log_path = base_dir / ".logs" / owner / name / "loony-worker.log"
-                    pid_path = base_dir / ".logs" / owner / name / "loony-worker.pid"
+                    log_path = config.settings.base_dir / ".logs" / owner / name / "loony-worker.log"
+                    pid_path = config.settings.base_dir / ".logs" / owner / name / "loony-worker.pid"
                     log_path.parent.mkdir(parents=True, exist_ok=True)
 
                     try:
-                        client = GitHubClient(repo, config.settings["bot_name"] or "")
-                        client.ensure_required_labels()
+                        GitHubClient(repo, config.settings.bot_name).ensure_required_labels()
                     except Exception:
                         logger.warning("Label provisioning failed for %s; continuing to launch worker.", repo)
 
@@ -379,7 +371,7 @@ def run_supervisor() -> None:
                         repo, wp.log_file.parent,
                     )
                     _terminate_worker(wp)
-                    remove_repo(repo, base_dir)
+                    remove_repo(repo, config.settings.base_dir)
 
         if shutdown_requested:
             break
@@ -405,7 +397,10 @@ def run_supervisor() -> None:
             )
             _remove_pid_file(wp.pid_file)
 
-            delay = min(min_restart_delay * (2 ** wp.restart_count), max_restart_delay)
+            delay = min(
+                config.settings.min_restart_delay * (2 ** wp.restart_count),
+                config.settings.max_restart_delay,
+            )
             logger.info("Restarting worker for %s in %.1fs…", repo, delay)
 
             # Interruptible delay
@@ -432,7 +427,7 @@ def run_supervisor() -> None:
             break
 
         # Interruptible sleep for the health-check interval
-        sleep_deadline = time.monotonic() + interval
+        sleep_deadline = time.monotonic() + config.settings.interval
         while not shutdown_requested and time.monotonic() < sleep_deadline:
             time.sleep(min(1.0, sleep_deadline - time.monotonic()))
 

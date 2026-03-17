@@ -50,30 +50,25 @@ def worker(**_) -> None:
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     logging.basicConfig(level=config.settings.log_level, format=log_format)
 
-    if config.settings["log_file"]:
-        file_handler = logging.FileHandler(config.settings["log_file"])
+    if config.settings.log_file:
+        file_handler = logging.FileHandler(config.settings.log_file)
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(logging.Formatter(log_format))
         logging.getLogger().addHandler(file_handler)
-        logging.getLogger().info("Also writing DEBUG logs to %s", config.settings["log_file"])
+        logging.getLogger().info("Also writing DEBUG logs to %s", config.settings.log_file)
 
-    work_path = Path(config.settings["work_dir"]).resolve()
+    work_path = Path(config.settings.work_dir).resolve()
 
-    repo = config.settings["repo"]
+    repo = config.settings.repo
     if repo is None:
         repo = GitHubClient.detect_repo()
         click.echo(f"Detected repo: {repo}")
 
-    bot_name = config.settings["bot_name"]
-    if bot_name is None:
-        bot_name = GitHubClient.detect_bot_name()
-        click.echo(f"Detected bot name: {bot_name}")
-
     github = GitHubClient(
         repo=repo,
-        bot_name=bot_name,
-        allowed_users=set(config.settings["allowed_users"]),
-        min_role=config.settings["min_role"],
+        bot_name=config.settings.bot_name,
+        allowed_users=set(config.settings.allowed_users),
+        min_role=config.settings.min_role,
     )
     git = GitRepo(work_dir=work_path)
     agents = [NullAgent(), CodingAgent(work_dir=work_path), PlanningAgent(work_dir=work_path)]
@@ -82,10 +77,10 @@ def worker(**_) -> None:
         github=github,
         git=git,
         agents=agents,
-        interval=config.settings["interval"],
+        interval=config.settings.interval,
     )
 
-    click.echo(f"Starting orchestrator for {repo} (polling every {config.settings['interval']}s)")
+    click.echo(f"Starting orchestrator for {repo} (polling every {config.settings.interval}s)")
     orchestrator.run()
 
 
@@ -130,16 +125,12 @@ def supervisor_cmd(**_) -> None:
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     logging.basicConfig(level=config.settings.log_level, format=log_format)
 
-    base_path = Path(config.settings["base_dir"]).resolve()
-    logs_dir = base_path / ".logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-
-    log_file = config.settings["log_file"] or str(logs_dir / "supervisor.log")
-    file_handler = logging.FileHandler(log_file)
+    config.settings.supervisor_log.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(config.settings.supervisor_log)
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(logging.Formatter(log_format))
     logging.getLogger().addHandler(file_handler)
-    logging.getLogger().info("Also writing DEBUG logs to %s", log_file)
+    logging.getLogger().info("Also writing DEBUG logs to %s", config.settings.supervisor_log)
 
     run_supervisor()
 
@@ -161,12 +152,10 @@ def ui_cmd(**_) -> None:
     """Launch the terminal UI to monitor the supervisor and workers."""
     from loony_dev.tui import SupervisorApp
 
-    base_path = Path(config.settings["base_dir"]).resolve()
-
     app = SupervisorApp(
-        base_dir=base_path,
+        base_dir=config.settings.base_dir,
         supervisor_log=config.settings.supervisor_log,
-        scan_interval=float(config.settings["scan_interval"]),
+        scan_interval=float(config.settings.scan_interval),
     )
     app.run()
 

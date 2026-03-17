@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import subprocess
@@ -68,12 +69,12 @@ class GitHubClient:
     def __init__(
         self,
         repo: str,
-        bot_name: str,
+        bot_name: str | None = None,
         allowed_users: set[str] | None = None,
         min_role: str = "triage",
     ) -> None:
         self.repo = repo
-        self.bot_name = bot_name
+        self.bot_name = bot_name or self.detect_bot_name()
         self.allowed_users: set[str] = allowed_users or set()
         self.min_role = min_role
         # Cache: username -> (permission_level, monotonic_timestamp)
@@ -433,6 +434,7 @@ class GitHubClient:
         return result.stdout.strip()
 
     @staticmethod
+    @functools.lru_cache(maxsize=1)
     def detect_bot_name() -> str:
         """Detect the authenticated GitHub user's login via the gh CLI."""
         result = subprocess.run(

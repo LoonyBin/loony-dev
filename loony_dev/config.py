@@ -128,6 +128,23 @@ class Settings(_Mapping[str, Any]):
         return logging.DEBUG if self._data.get("verbose") else logging.INFO
 
     @property
+    def base_dir(self) -> Path:
+        """Return ``--base-dir`` as a resolved :class:`~pathlib.Path`."""
+        return Path(self._data["base_dir"]).resolve()
+
+    @property
+    def include(self) -> list[str] | None:
+        """Return ``--include`` patterns as a list, or ``None`` if unset."""
+        patterns = self._data.get("include_patterns")
+        return list(patterns) if patterns else None
+
+    @property
+    def exclude(self) -> list[str] | None:
+        """Return ``--exclude`` patterns as a list, or ``None`` if unset."""
+        patterns = self._data.get("exclude_patterns")
+        return list(patterns) if patterns else None
+
+    @property
     def supervisor_log(self) -> Path:
         """Resolve the supervisor log path.
 
@@ -136,7 +153,7 @@ class Settings(_Mapping[str, Any]):
         """
         if self._data.get("supervisor_log"):
             return Path(self._data["supervisor_log"])
-        return Path(self._data["base_dir"]).resolve() / ".logs" / "supervisor.log"
+        return self.base_dir / ".logs" / "supervisor.log"
 
 
 # Module-level: populated by @capture_explicit before each command body runs.
