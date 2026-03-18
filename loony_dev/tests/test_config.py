@@ -46,26 +46,6 @@ def test_load_config_invalid_ignored(tmp_path, monkeypatch):
     assert result == {}
 
 
-def test_load_config_env_var_top_level(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("LOONY_DEV_BOT_NAME", "env-bot")
-    result = config._load_config()
-    assert result["bot_name"] == "env-bot"
-
-
-def test_load_config_env_var_section(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("LOONY_DEV_WORKER__INTERVAL", "45")
-    result = config._load_config()
-    assert str(result["worker"]["interval"]) == "45"
-
-
-def test_load_config_ignores_other_prefixes(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("OTHER_BOT_NAME", "ignored")
-    result = config._load_config()
-    assert "bot_name" not in result
-
 
 # ---------------------------------------------------------------------------
 # _build_default_map
@@ -152,16 +132,34 @@ def test_supervisor_base_dir_from_config_file(tmp_path, monkeypatch):
 
 
 def test_env_var_overrides_config_file(tmp_path, monkeypatch):
-    """Env var value takes precedence over config file for the same key."""
+    """Env var value takes precedence over config file for the same key.
+
+    Click's auto_envvar_prefix=LOONY_DEV means the worker --interval option
+    reads from LOONY_DEV_WORKER_INTERVAL (prefix + command + param name).
+    """
+    import click
+
     cfg = tmp_path / ".loony-dev.toml"
-    cfg.write_text("[worker]\ninterval = 30\n")
+    cfg.write_text("[mytest]\ninterval = 30\n")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("LOONY_DEV_WORKER__INTERVAL", "99")
+    monkeypatch.setenv("LOONY_DEV_MYTEST_INTERVAL", "99")
+
+    observed: list[int] = []
+
+    @click.group(cls=config.ClickGroup)
+    def grp() -> None:
+        pass
+
+    @grp.command("mytest")
+    @click.option("--interval", default=60)
+    def mytest_cmd(**_) -> None:
+        observed.append(config.settings["interval"])
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["worker", "--help"])
+    result = runner.invoke(grp, ["mytest"])
     assert result.exit_code == 0
-    assert "99" in result.output
+    # env var (99) wins over config file (30) and Click default (60)
+    assert observed[0] == 99
 
 
 # ---------------------------------------------------------------------------

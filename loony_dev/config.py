@@ -2,7 +2,7 @@
 
 Priority (highest wins):
   1. CLI options
-  2. Environment vars    LOONY_DEV_<KEY>  /  LOONY_DEV_<SECTION>__<KEY>
+  2. Environment vars    LOONY_DEV_<COMMAND>_<KEY>  (via Click auto_envvar_prefix)
   3. ./.loony-dev.toml   (repo-level / per-checkout)
   4. <user-config-dir>/loony-dev/config.toml  (platform-specific via click.get_app_dir)
   5. /etc/loony-dev/config.toml  (POSIX only)
@@ -58,13 +58,13 @@ from __future__ import annotations
 import functools
 import logging
 import os
+import tomllib
 from collections.abc import Iterator, Mapping as _Mapping
 from pathlib import Path
 from typing import Any
 
 import click
 from click.core import ParameterSource
-from dynaconf import Dynaconf
 
 logger = logging.getLogger(__name__)
 
@@ -189,36 +189,22 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> None:
 
 
 def _load_config() -> dict[str, Any]:
-    """Load config from files and env vars via dynaconf, returning a lowercase dict.
+    """Load config from TOML files, returning a merged dict.
 
     File priority (lowest to highest): /etc, user-config-dir, ./.loony-dev.toml.
-    Environment variables (``LOONY_DEV_*``) override all files.
+    Environment variables are handled natively by Click via auto_envvar_prefix.
     """
-    dynaconf_kwargs = {
-        "envvar_prefix": "LOONY_DEV",
-        "settings_files": _get_config_files(),
-        "merge": True,
-        "load_dotenv": False,
-    }
-    try:
-        settings = Dynaconf(**dynaconf_kwargs)
-        raw = settings.as_dict()
-    except Exception:
-        logger.warning("Failed to load configuration", exc_info=True)
-        return {}
-
-    # dynaconf leaks some option kwargs (e.g. merge, load_dotenv) into as_dict();
-    # strip them so they don't appear as user settings.
-    option_keys = {k.lower() for k in dynaconf_kwargs}
-
-    def _lower_keys(val: Any) -> Any:
-        if isinstance(val, dict):
-            return {k.lower(): _lower_keys(v) for k, v in val.items()}
-        if isinstance(val, list):
-            return [_lower_keys(item) for item in val]
-        return val
-
-    return {k: v for k, v in _lower_keys(raw).items() if k not in option_keys}
+    result: dict[str, Any] = {}
+    for path in _get_config_files():
+        try:
+            with open(path, "rb") as fh:
+                data = tomllib.load(fh)
+            _deep_merge(result, data)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            logger.warning("Failed to load config file %s", path, exc_info=True)
+    return result
 
 
 def _build_default_map(
@@ -279,6 +265,7 @@ class ClickGroup(click.Group):
         parent: click.Context | None = None,
         **extra: Any,
     ) -> click.Context:
+        extra.setdefault("auto_envvar_prefix", "LOONY_DEV")
         cmd_name = next((a for a in args if not a.startswith("-")), None)
         _inject_default_map(cmd_name, extra)
         return super().make_context(info_name, args, parent=parent, **extra)
@@ -317,6 +304,7 @@ class ClickCommand(click.Command):
             # Sub-commands skip this — their parent ClickGroup.make_context()
             # already injects the nested map, and Click auto-propagates the
             # flat sub-map to each sub-command context via parent.default_map.
+            extra.setdefault("auto_envvar_prefix", "LOONY_DEV")
             cfg = _load_config()
             top = {k: v for k, v in cfg.items() if not isinstance(v, dict)}
             section = cfg.get(info_name or "", {})
