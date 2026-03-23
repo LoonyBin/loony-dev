@@ -230,18 +230,19 @@ def _worker_command(repo: str, work_dir: Path, log_file: Path) -> list[str]:
         param = worker_params.get(name)
         if param is None:
             continue
-        flag = max(param.opts, key=len)
-        value = config.settings[name]
-        if param.is_flag:
-            if value:
-                cmd += [flag]
-        elif param.multiple:
-            for item in (value or []):
-                cmd += [flag, item]
-        else:
-            cmd += [flag, str(value)]
+        cmd += _flag_args(param, config.settings[name])
 
     return cmd
+
+
+def _flag_args(param: click.Option, value: object) -> list[str]:
+    """Return the argv fragment for a single Click option and its value."""
+    flag = max(param.opts, key=len)
+    if param.is_flag:
+        return [flag] if value else []
+    if param.multiple:
+        return [arg for item in (value or []) for arg in (flag, item)]
+    return [flag, str(value)]
 
 
 def launch_worker(repo: str, work_dir: Path, log_file: Path, pid_file: Path) -> WorkerProcess:
