@@ -39,23 +39,9 @@ For standalone commands (not sub-commands of a configured group), use
     @click.command(cls=config.ClickCommand)
     def cmd(**_): ...
 
-To capture which options were explicitly supplied on the command line
-(so a command can selectively forward them to subprocesses), decorate
-the command with ``@config.capture_explicit``::
-
-    @cli.command("supervisor")
-    @click.option(...)
-    @config.capture_explicit
-    def supervisor_cmd(**_):
-        explicit = config.get_explicit_params()  # frozenset of param names
-        ...
-
-``@config.capture_explicit`` is position-independent and may be placed
-anywhere in the decorator stack.
 """
 from __future__ import annotations
 
-import functools
 import logging
 import os
 import tomllib
@@ -64,7 +50,6 @@ from pathlib import Path
 from typing import Any
 
 import click
-from click.core import ParameterSource
 
 logger = logging.getLogger(__name__)
 
@@ -155,9 +140,6 @@ class Settings(_Mapping[str, Any]):
             return Path(self._data["supervisor_log"])
         return self.base_dir / ".logs" / "supervisor.log"
 
-
-# Module-level: populated by @capture_explicit before each command body runs.
-_explicit_params: frozenset[str] = frozenset()
 
 # Immutable snapshot of all resolved CLI + config + default values.
 # Populated by ClickCommand.invoke() before the command body runs.
@@ -319,43 +301,3 @@ class ClickCommand(click.Command):
         _populate_settings(ctx)
         return super().invoke(ctx)
 
-
-# ---------------------------------------------------------------------------
-# Explicit-param tracking
-# ---------------------------------------------------------------------------
-
-def capture_explicit(fn: Any) -> Any:
-    """Decorator that records which CLI options were explicitly provided.
-
-    Position-independent: may be placed anywhere in the Click decorator
-    stack, above or below ``@click.option(...)`` decorators::
-
-        @cli.command("supervisor")
-        @click.option(...)
-        @config.capture_explicit
-        def supervisor_cmd(...): ...
-
-    Call ``config.get_explicit_params()`` from inside the command body to
-    retrieve the set of param names that came from the command line (not
-    from defaults or config files).
-    """
-    @functools.wraps(fn)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        global _explicit_params
-        ctx = click.get_current_context()
-        _explicit_params = frozenset(
-            name
-            for name in ctx.params
-            if ctx.get_parameter_source(name) == ParameterSource.COMMANDLINE
-        )
-        return fn(*args, **kwargs)
-
-    return wrapper
-
-
-def get_explicit_params() -> frozenset[str]:
-    """Return the set of param names explicitly supplied on the command line.
-
-    Only valid *inside* a command decorated with ``@config.capture_explicit``.
-    """
-    return _explicit_params

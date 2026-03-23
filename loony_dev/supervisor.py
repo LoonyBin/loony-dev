@@ -10,6 +10,7 @@ import sys
 import time
 
 import click
+from click.core import ParameterSource
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -201,27 +202,45 @@ def _worker_command(repo: str, work_dir: Path, log_file: Path) -> list[str]:
 
     cmd = cmd_prefix + ["worker", "--repo", repo, "--work-dir", str(work_dir)]
 
-    explicit = config.get_explicit_params()
     ctx = click.get_current_context()
-    # Use click's param.opts to resolve CLI flag names without manual dasherizing.
-    param_opts: dict[str, str] = {
-        p.name: max(p.opts, key=len)
-        for p in ctx.command.params
-        if isinstance(p, click.Option)
+
+    # Determine which params were explicitly provided on the command line.
+    explicit = frozenset(
+        name for name in ctx.params
+        if ctx.get_parameter_source(name) == ParameterSource.COMMANDLINE
+    )
+
+    # Build a map of worker param name → click.Option.
+    worker_cmd = ctx.find_root().command.commands["worker"]
+    worker_params: dict[str, click.Option] = {
+        p.name: p for p in worker_cmd.params if isinstance(p, click.Option)
     }
 
     # worker_interval → worker's --interval (name mismatch; handled manually)
-    if "worker_interval" in explicit:
-        cmd += ["--interval", str(config.settings.worker_interval)]
-    if "bot_name" in explicit:
-        cmd += [param_opts["bot_name"], config.settings.bot_name]
-    if "verbose" in explicit:
-        cmd += [param_opts["verbose"]]
-    if "allowed_users" in explicit:
-        for user in config.settings.allowed_users:
-            cmd += [param_opts["allowed_users"], user]
-    if "min_role" in explicit:
-        cmd += [param_opts["min_role"], config.settings.min_role]
+    if "worker_interval" in explicit and "interval" in worker_params:
+        cmd += [max(worker_params["interval"].opts, key=len), str(config.settings.worker_interval)]
+
+    # Params already handled above or with supervisor-specific semantics (different meaning
+    # than the identically-named worker param: supervisor's --interval is the health-check
+    # cadence; --log-file is the supervisor's own log, not the worker's).
+    _skip = {"worker_interval", "interval", "log_file"}
+
+    # Forward all other explicitly-set supervisor params that the worker also accepts.
+    for name in sorted(explicit - _skip):
+        param = worker_params.get(name)
+        if param is None:
+            continue
+        flag = max(param.opts, key=len)
+        value = config.settings[name]
+        if param.is_flag:
+            if value:
+                cmd += [flag]
+        elif param.multiple:
+            for item in (value or []):
+                cmd += [flag, item]
+        else:
+            cmd += [flag, str(value)]
+
     return cmd
 
 

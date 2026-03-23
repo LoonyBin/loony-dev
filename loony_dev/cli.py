@@ -111,7 +111,6 @@ def worker(**_) -> None:
     type=click.Choice(["triage", "write", "admin"], case_sensitive=False),
     help="Minimum GitHub collaborator role required to trigger runs. Forwarded to each worker.",
 )
-@config.capture_explicit
 def supervisor_cmd(**_) -> None:
     """Discover all accessible repositories and run a worker for each in parallel."""
     from loony_dev.supervisor import run_supervisor

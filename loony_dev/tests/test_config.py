@@ -163,54 +163,6 @@ def test_env_var_overrides_config_file(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# capture_explicit / get_explicit_params
-# ---------------------------------------------------------------------------
-
-def test_get_explicit_params_initially_empty():
-    assert config.get_explicit_params() == frozenset()
-
-
-def test_capture_explicit_records_cli_params(tmp_path, monkeypatch):
-    """@capture_explicit sets the module-level explicit params when CLI flags are used."""
-    monkeypatch.chdir(tmp_path)
-
-    captured: list[frozenset] = []
-
-    import click
-    import functools
-
-    @click.command()
-    @click.option("--foo", default="x")
-    @click.option("--bar", default="y")
-    @config.capture_explicit
-    def cmd(foo: str, bar: str) -> None:
-        captured.append(config.get_explicit_params())
-
-    runner = CliRunner()
-    runner.invoke(cmd, ["--foo", "hello"])
-    assert captured[0] == {"foo"}
-
-
-def test_capture_explicit_empty_when_all_defaults(tmp_path, monkeypatch):
-    """@capture_explicit reports empty set when no flags were supplied."""
-    monkeypatch.chdir(tmp_path)
-
-    captured: list[frozenset] = []
-
-    import click
-
-    @click.command()
-    @click.option("--foo", default="x")
-    @config.capture_explicit
-    def cmd(foo: str) -> None:
-        captured.append(config.get_explicit_params())
-
-    runner = CliRunner()
-    runner.invoke(cmd, [])
-    assert captured[0] == frozenset()
-
-
-# ---------------------------------------------------------------------------
 # settings — immutable global config object
 # ---------------------------------------------------------------------------
 
