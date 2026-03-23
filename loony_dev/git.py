@@ -39,11 +39,23 @@ class GitRepo:
     def ensure_main_up_to_date(self) -> None:
         """Checkout default branch and pull latest."""
         if not self.has_commits():
-            logger.info(
-                "Repository at %s has no commits; skipping checkout. "
-                "Agent will handle the empty repo.",
-                self.work_dir,
-            )
+            # Fetch so we can see whether the upstream already has commits.
+            self._run("fetch", "origin")
+            branch = self.get_default_branch()
+            remote_ref = f"origin/{branch}"
+            remote_has_commits = subprocess.run(
+                ["git", "rev-parse", "--verify", remote_ref],
+                cwd=self.work_dir, capture_output=True, text=True,
+            ).returncode == 0
+            if not remote_has_commits:
+                logger.info(
+                    "Repository at %s has no commits; skipping checkout. "
+                    "Agent will handle the empty repo.",
+                    self.work_dir,
+                )
+                return
+            # Upstream has history – create a local branch tracking it.
+            self._run("checkout", "-b", branch, "--track", remote_ref)
             return
         branch = self.get_default_branch()
         self._run("checkout", branch)

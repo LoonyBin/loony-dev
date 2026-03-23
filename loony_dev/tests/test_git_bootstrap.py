@@ -93,6 +93,28 @@ class TestEnsureMainUpToDate(unittest.TestCase):
             repo.ensure_main_up_to_date()
             self.assertFalse(repo.has_commits())
 
+    def test_ensure_main_up_to_date_pulls_when_upstream_has_commits(self) -> None:
+        """Local clone has no commits but upstream already does — must pull them."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bare = _make_bare_repo(tmp_path)
+
+            # Create the empty clone *before* any commits exist in the bare repo.
+            clone = _clone(bare, tmp_path, name="clone")
+
+            # Seed the bare repo via a separate clone so the original clone
+            # remains locally empty while the upstream now has history.
+            seeder = _clone(bare, tmp_path, name="seeder")
+            _make_commit(seeder, branch="main")
+
+            repo = GitRepo(clone)
+            self.assertFalse(repo.has_commits())  # sanity-check: local still empty
+
+            repo.ensure_main_up_to_date()
+
+            self.assertTrue(repo.has_commits())
+            self.assertEqual(repo.current_branch(), "main")
+
 
 if __name__ == "__main__":
     unittest.main()
