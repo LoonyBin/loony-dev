@@ -16,9 +16,37 @@ class GitRepo:
         logger.debug("Running: %s", " ".join(cmd))
         return subprocess.run(cmd, cwd=self.work_dir, capture_output=True, text=True, check=True)
 
+    def has_commits(self) -> bool:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.work_dir, capture_output=True, text=True,
+        )
+        return result.returncode == 0
+
+    def get_default_branch(self, remote: str = "origin") -> str:
+        result = subprocess.run(
+            ["git", "symbolic-ref", f"refs/remotes/{remote}/HEAD"],
+            cwd=self.work_dir, capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            # refs/remotes/origin/main -> main
+            return result.stdout.strip().split("/")[-1]
+        logger.warning(
+            "Could not resolve default branch for remote '%s'; falling back to 'main'.", remote
+        )
+        return "main"
+
     def ensure_main_up_to_date(self) -> None:
-        """Checkout main and pull latest."""
-        self._run("checkout", "main")
+        """Checkout default branch and pull latest."""
+        if not self.has_commits():
+            logger.info(
+                "Repository at %s has no commits; skipping checkout. "
+                "Agent will handle the empty repo.",
+                self.work_dir,
+            )
+            return
+        branch = self.get_default_branch()
+        self._run("checkout", branch)
         self._run("pull", "--ff-only")
 
     def has_uncommitted_changes(self) -> bool:
