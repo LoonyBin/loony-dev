@@ -37,6 +37,15 @@ class PullRequest:
     new_comments: list[Comment] = field(default_factory=list)
     mergeable: str | None = None
     updated_at: datetime | None = None
+    head_sha: str = ""
+
+
+@dataclass
+class CheckRun:
+    name: str
+    status: str        # "completed" | "in_progress" | "queued"
+    conclusion: str    # "failure" | "success" | "cancelled" | "timed_out" | ...
+    details_url: str   # Link to the CI run log
 
 
 @dataclass

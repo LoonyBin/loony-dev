@@ -24,7 +24,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         self.work_dir = work_dir
 
     def _can_handle_task(self, task: Task) -> bool:
-        return task.task_type in ("implement_issue", "address_review", "resolve_conflicts")
+        return task.task_type in ("implement_issue", "address_review", "resolve_conflicts", "fix_ci")
 
     def execute(self, task: Task) -> TaskResult:
         prompt = task.describe()
