@@ -44,6 +44,11 @@ def cli() -> None:
     type=click.Choice(["triage", "write", "admin"], case_sensitive=False),
     help="Minimum GitHub collaborator role required to trigger agent runs.",
 )
+@click.option(
+    "--skip-ci-checks", "skip_ci_checks", multiple=True, metavar="NAME",
+    help="CI check names to ignore when detecting failures (repeatable). "
+         "E.g. --skip-ci-checks 'deploy-preview' --skip-ci-checks 'license/cla'.",
+)
 def worker(
     repo: str | None,
     interval: int,
@@ -53,6 +58,7 @@ def worker(
     log_file: str | None,
     allowed_users: tuple[str, ...],
     min_role: str,
+    skip_ci_checks: tuple[str, ...],
 ) -> None:
     """Run the orchestrator worker loop for a single repository."""
     log_level = logging.DEBUG if verbose else logging.INFO
@@ -81,6 +87,7 @@ def worker(
         bot_name=bot_name,
         allowed_users=set(allowed_users),
         min_role=min_role,
+        skip_ci_checks=set(skip_ci_checks),
     )
     git = GitRepo(work_dir=work_path)
     agents = [NullAgent(), CodingAgent(work_dir=work_path), PlanningAgent(work_dir=work_path)]
