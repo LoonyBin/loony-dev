@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from loony_dev.models import truncate_for_log
-from loony_dev.tasks.base import Task
+from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, Task
 from loony_dev.tasks.planning_task import PLAN_MARKER
 
 if TYPE_CHECKING:
@@ -29,7 +29,11 @@ class IssueTask(Task):
 
     @staticmethod
     def discover(github: GitHubClient) -> Iterator[IssueTask]:
-        """Yield implementation tasks for issues labeled ready-for-development."""
+        """Yield implementation tasks for issues labeled ready-for-development.
+
+        The initial trigger (the label itself) requires triage+ access to apply,
+        so no additional comment-based authorization filter is needed here.
+        """
         for issue, _ in github.list_issues("ready-for-development"):
             logger.debug("Examining issue #%d: %s", issue.number, issue.title)
             comments = github.get_issue_comments(issue.number)
@@ -81,7 +85,7 @@ class IssueTask(Task):
         github.remove_label(self.issue.number, "in-progress")
         github.post_comment(
             self.issue.number,
-            f"Implementation complete.\n\n{result.summary}",
+            f"{SUCCESS_MARKER}\n\nImplementation complete.\n\n{result.summary}",
         )
 
         author = self.issue.author
@@ -113,5 +117,5 @@ class IssueTask(Task):
         github.add_label(self.issue.number, "ready-for-development")
         github.post_comment(
             self.issue.number,
-            f"Implementation failed: {error}",
+            f"{FAILURE_MARKER}\n\nImplementation failed: {error}",
         )

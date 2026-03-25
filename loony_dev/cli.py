@@ -35,7 +35,32 @@ def cli() -> None:
     "--log-file", default=None, type=click.Path(), metavar="PATH",
     help="Write DEBUG logs to a file in addition to stderr (useful for long-running daemon deployments).",
 )
-def worker(repo: str | None, interval: int, work_dir: str, bot_name: str, verbose: bool, log_file: str | None) -> None:
+@click.option(
+    "--allowed-users", "allowed_users", multiple=True, metavar="USER",
+    help="GitHub usernames always permitted to trigger runs (repeatable). "
+         "Use for external contributors not in the repo's collaborators list.",
+)
+@click.option(
+    "--min-role", "min_role", default="triage", show_default=True,
+    type=click.Choice(["triage", "write", "admin"], case_sensitive=False),
+    help="Minimum GitHub collaborator role required to trigger agent runs.",
+)
+@click.option(
+    "--skip-ci-checks", "skip_ci_checks", multiple=True, metavar="NAME",
+    help="CI check names to ignore when detecting failures (repeatable). "
+         "E.g. --skip-ci-checks 'deploy-preview' --skip-ci-checks 'license/cla'.",
+)
+def worker(
+    repo: str | None,
+    interval: int,
+    work_dir: str,
+    bot_name: str,
+    verbose: bool,
+    log_file: str | None,
+    allowed_users: tuple[str, ...],
+    min_role: str,
+    skip_ci_checks: tuple[str, ...],
+) -> None:
     """Run the orchestrator worker loop for a single repository."""
     log_level = logging.DEBUG if verbose else logging.INFO
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -58,7 +83,13 @@ def worker(repo: str | None, interval: int, work_dir: str, bot_name: str, verbos
         bot_name = GitHubClient.detect_bot_name()
         click.echo(f"Detected bot name: {bot_name}")
 
-    github = GitHubClient(repo=repo, bot_name=bot_name)
+    github = GitHubClient(
+        repo=repo,
+        bot_name=bot_name,
+        allowed_users=set(allowed_users),
+        min_role=min_role,
+        skip_ci_checks=set(skip_ci_checks),
+    )
     git = GitRepo(work_dir=work_path)
     agents = [NullAgent(), CodingAgent(work_dir=work_path), PlanningAgent(work_dir=work_path), DesignAgent(work_dir=work_path)]
 
@@ -97,6 +128,15 @@ def worker(repo: str | None, interval: int, work_dir: str, bot_name: str, verbos
               help="Enable DEBUG logging in supervisor (workers log to their own files)")
 @click.option("--log-file", default=None,
               help="Write supervisor DEBUG logs to this file")
+@click.option(
+    "--allowed-users", "allowed_users", multiple=True, metavar="USER",
+    help="GitHub usernames always permitted to trigger runs (repeatable). Forwarded to each worker.",
+)
+@click.option(
+    "--min-role", "min_role", default="triage", show_default=True,
+    type=click.Choice(["triage", "write", "admin"], case_sensitive=False),
+    help="Minimum GitHub collaborator role required to trigger runs. Forwarded to each worker.",
+)
 def supervisor_cmd(
     base_dir: str,
     interval: int,
@@ -109,6 +149,8 @@ def supervisor_cmd(
     max_restart_delay: float,
     verbose: bool,
     log_file: str | None,
+    allowed_users: tuple[str, ...],
+    min_role: str,
 ) -> None:
     """Discover all accessible repositories and run a worker for each in parallel."""
     from loony_dev.supervisor import run_supervisor
@@ -149,6 +191,8 @@ def supervisor_cmd(
         include=include,
         exclude=exclude,
         refresh_interval=refresh_interval,
+        allowed_users=list(allowed_users),
+        min_role=min_role,
     )
 
 

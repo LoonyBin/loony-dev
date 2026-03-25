@@ -9,6 +9,10 @@ if TYPE_CHECKING:
     from loony_dev.models import TaskResult
 
 
+FAILURE_MARKER = "<!-- loony-failure -->"
+SUCCESS_MARKER = "<!-- loony-success -->"
+
+
 class Task(ABC):
     """A unit of work dispatched to an agent."""
 
@@ -19,6 +23,9 @@ class Task(ABC):
     @abstractmethod
     def discover(github: GitHubClient) -> Iterator[Task]:
         """Yield tasks of this type discovered from GitHub. Called each tick.
+
+        Authorization settings (allowed_users, min_role) are read from the
+        *github* client instance.
 
         Implementations should yield lazily so the orchestrator can stop
         iterating as soon as a can-perform task is found.

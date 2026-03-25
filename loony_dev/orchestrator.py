@@ -5,6 +5,7 @@ import signal
 import time
 from typing import TYPE_CHECKING
 
+from loony_dev.tasks.ci_failure_task import CIFailureTask
 from loony_dev.tasks.conflict_task import ConflictResolutionTask
 from loony_dev.tasks.design_task import DesignTask
 from loony_dev.tasks.issue_task import IssueTask
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 # The orchestrator iterates these in order, stopping as soon as it finds
 # a task that some configured agent can handle.
 TASK_CLASSES = sorted(
-    [StuckItemCleanupTask, ConflictResolutionTask, PRReviewTask, DesignTask, PlanningTask, IssueTask],
+    [StuckItemCleanupTask, ConflictResolutionTask, CIFailureTask, PRReviewTask, DesignTask, PlanningTask, IssueTask],
     key=lambda tc: tc.priority,
 )
 
@@ -92,6 +93,7 @@ class Orchestrator:
                 logger.exception("Failed to clean up GitHub state on shutdown")
 
     def _tick(self) -> None:
+        self.github.evict_stale_permission_cache()
         result = self._find_work()
         if result is None:
             logger.debug("No tasks found.")
