@@ -7,7 +7,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 
-from loony_dev.models import Comment, Issue, truncate_for_log
+from loony_dev.models import CheckRun, Comment, Issue, truncate_for_log
 from loony_dev.sanitize import InjectionType, sanitize_user_content
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,8 @@ def _parse_datetime(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+CI_FAILURE_MARKER = "<!-- loony-ci-failure -->"
+
 REQUIRED_LABELS = [
     {"name": "ready-for-development", "color": "0075ca", "description": "Issue is ready for implementation"},
     {"name": "ready-for-planning",    "color": "e4e669", "description": "Issue needs planning/triage"},
@@ -72,6 +74,7 @@ class GitHubClient:
         bot_name: str | None = None,
         allowed_users: set[str] | None = None,
         min_role: str | None = None,
+        skip_ci_checks: set[str] | None = None,
     ) -> None:
         from loony_dev import config
         self.repo = repo
@@ -81,6 +84,10 @@ class GitHubClient:
             else set(config.settings.get("allowed_users") or [])
         )
         self.min_role = min_role or config.settings.get("min_role") or "triage"
+        self.skip_ci_checks: set[str] = (
+            skip_ci_checks if skip_ci_checks is not None
+            else set(config.settings.get("skip_ci_checks") or [])
+        )
         # Cache: username -> (permission_level, monotonic_timestamp)
         self._permission_cache: dict[str, tuple[str | None, float]] = {}
 
@@ -255,7 +262,7 @@ class GitHubClient:
         items = self._gh_json(
             "pr", "list",
             "--state", "open",
-            "--json", "number,headRefName,title,comments,reviews,labels,mergeable,updatedAt",
+            "--json", "number,headRefName,headRefOid,title,comments,reviews,labels,mergeable,updatedAt",
         )
         sanitized = []
         for item in items:
@@ -304,6 +311,36 @@ class GitHubClient:
             logger.warning("Failed to fetch inline review comments for PR #%d", pr_number)
         return []
 
+    def get_pr_check_runs(self, head_sha: str) -> list[CheckRun]:
+        """Return completed failing check runs for the given commit SHA.
+
+        Filters for status == "completed" and conclusion in ("failure", "timed_out").
+        Excludes checks whose name is in self.skip_ci_checks.
+        """
+        try:
+            data = self._gh_api(f"commits/{head_sha}/check-runs")
+            if not isinstance(data, dict):
+                return []
+            runs = []
+            for run in data.get("check_runs", []):
+                name = run.get("name", "")
+                if name in self.skip_ci_checks:
+                    continue
+                status = run.get("status", "")
+                conclusion = run.get("conclusion") or ""
+                if status == "completed" and conclusion in ("failure", "timed_out"):
+                    runs.append(CheckRun(
+                        name=name,
+                        status=status,
+                        conclusion=conclusion,
+                        details_url=run.get("details_url", run.get("html_url", "")),
+                    ))
+            logger.debug("get_pr_check_runs(%r) returned %d failing run(s)", head_sha, len(runs))
+            return runs
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to fetch check runs for SHA %r", head_sha)
+            return []
+
     def find_pr_for_issue(self, issue_number: int) -> int | None:
         """Return the PR number for a PR that references the given issue, or None."""
         for search_args in [
@@ -348,44 +385,6 @@ class GitHubClient:
             self._gh("issue", "edit", str(number), "--remove-label", label)
         except subprocess.CalledProcessError:
             logger.warning("Failed to remove label '%s' from #%d", label, number)
-
-    def ensure_label(self, name: str, color: str, description: str) -> None:
-        """Create label if it doesn't exist. Silently ignores conflicts (422)."""
-        try:
-            result = subprocess.run(
-                [
-                    "gh", "api", f"repos/{self.repo}/labels",
-                    "--method", "POST",
-                    "-f", f"name={name}",
-                    "-f", f"color={color}",
-                    "-f", f"description={description}",
-                ],
-                capture_output=True, text=True,
-            )
-            if result.returncode == 0:
-                logger.debug("Created label %r in %s", name, self.repo)
-                return
-            # A 422 response means the label already exists — parse to confirm.
-            try:
-                body = json.loads(result.stdout)
-                errors = body.get("errors", [])
-                if any(e.get("code") == "already_exists" for e in errors):
-                    logger.debug("Label %r already exists in %s", name, self.repo)
-                    return
-            except (ValueError, AttributeError):
-                pass
-            logger.warning(
-                "Failed to provision label %r in %s: %s",
-                name, self.repo, (result.stderr or result.stdout).strip(),
-            )
-        except Exception as exc:
-            logger.warning("Failed to provision label %r in %s: %s", name, self.repo, exc)
-
-    def ensure_required_labels(self) -> None:
-        """Provision all labels required by loony-dev into this repo."""
-        logger.info("Provisioning required labels for %s", self.repo)
-        for label in REQUIRED_LABELS:
-            self.ensure_label(**label)
 
     def assign_self(self, number: int) -> None:
         try:

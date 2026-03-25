@@ -49,6 +49,11 @@ def cli() -> None:
     "--stuck-threshold-hours", "stuck_threshold_hours", default=12, show_default=True,
     help="Hours after which an in-progress item is considered stuck and will be reset.",
 )
+@click.option(
+    "--skip-ci-checks", "skip_ci_checks", multiple=True, metavar="NAME",
+    help="CI check names to ignore when detecting failures (repeatable). "
+         "E.g. --skip-ci-checks 'deploy-preview' --skip-ci-checks 'license/cla'.",
+)
 def worker(**_) -> None:
     """Run the orchestrator worker loop for a single repository."""
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
