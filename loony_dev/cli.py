@@ -5,6 +5,7 @@ from pathlib import Path
 
 import click
 
+from loony_dev import config
 from loony_dev.agents.coding import CodingAgent
 from loony_dev.agents.null_agent import NullAgent
 from loony_dev.agents.planning import PlanningAgent
@@ -13,7 +14,7 @@ from loony_dev.github import GitHubClient
 from loony_dev.orchestrator import Orchestrator
 
 
-@click.group()
+@click.group(cls=config.ClickGroup)
 def cli() -> None:
     """Loony-Dev: Agent orchestrator that watches GitHub and dispatches work."""
 
@@ -45,61 +46,40 @@ def cli() -> None:
     help="Minimum GitHub collaborator role required to trigger agent runs.",
 )
 @click.option(
+    "--stuck-threshold-hours", "stuck_threshold_hours", default=12, show_default=True,
+    help="Hours after which an in-progress item is considered stuck and will be reset.",
+)
+@click.option(
     "--skip-ci-checks", "skip_ci_checks", multiple=True, metavar="NAME",
     help="CI check names to ignore when detecting failures (repeatable). "
          "E.g. --skip-ci-checks 'deploy-preview' --skip-ci-checks 'license/cla'.",
 )
-def worker(
-    repo: str | None,
-    interval: int,
-    work_dir: str,
-    bot_name: str,
-    verbose: bool,
-    log_file: str | None,
-    allowed_users: tuple[str, ...],
-    min_role: str,
-    skip_ci_checks: tuple[str, ...],
-) -> None:
+def worker(**_) -> None:
     """Run the orchestrator worker loop for a single repository."""
-    log_level = logging.DEBUG if verbose else logging.INFO
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    logging.basicConfig(level=log_level, format=log_format)
+    logging.basicConfig(level=config.settings.log_level, format=log_format)
 
-    if log_file:
-        file_handler = logging.FileHandler(log_file)
+    if config.settings.log_file:
+        file_handler = logging.FileHandler(config.settings.log_file)
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(logging.Formatter(log_format))
         logging.getLogger().addHandler(file_handler)
-        logging.getLogger().info("Also writing DEBUG logs to %s", log_file)
+        logging.getLogger().info("Also writing DEBUG logs to %s", config.settings.log_file)
 
-    work_path = Path(work_dir).resolve()
+    work_path = Path(config.settings.work_dir).resolve()
 
+    repo = config.settings.repo
     if repo is None:
         repo = GitHubClient.detect_repo()
         click.echo(f"Detected repo: {repo}")
 
-    if bot_name is None:
-        bot_name = GitHubClient.detect_bot_name()
-        click.echo(f"Detected bot name: {bot_name}")
-
-    github = GitHubClient(
-        repo=repo,
-        bot_name=bot_name,
-        allowed_users=set(allowed_users),
-        min_role=min_role,
-        skip_ci_checks=set(skip_ci_checks),
-    )
+    github = GitHubClient(repo=repo)
     git = GitRepo(work_dir=work_path)
     agents = [NullAgent(), CodingAgent(work_dir=work_path), PlanningAgent(work_dir=work_path)]
 
-    orchestrator = Orchestrator(
-        github=github,
-        git=git,
-        agents=agents,
-        interval=interval,
-    )
+    orchestrator = Orchestrator(github=github, git=git, agents=agents)
 
-    click.echo(f"Starting orchestrator for {repo} (polling every {interval}s)")
+    click.echo(f"Starting orchestrator for {repo} (polling every {config.settings.interval}s)")
     orchestrator.run()
 
 
@@ -136,63 +116,21 @@ def worker(
     type=click.Choice(["triage", "write", "admin"], case_sensitive=False),
     help="Minimum GitHub collaborator role required to trigger runs. Forwarded to each worker.",
 )
-def supervisor_cmd(
-    base_dir: str,
-    interval: int,
-    worker_interval: int,
-    refresh_interval: int,
-    bot_name: str | None,
-    include_patterns: tuple[str, ...],
-    exclude_patterns: tuple[str, ...],
-    min_restart_delay: float,
-    max_restart_delay: float,
-    verbose: bool,
-    log_file: str | None,
-    allowed_users: tuple[str, ...],
-    min_role: str,
-) -> None:
+def supervisor_cmd(**_) -> None:
     """Discover all accessible repositories and run a worker for each in parallel."""
     from loony_dev.supervisor import run_supervisor
 
-    log_level = logging.DEBUG if verbose else logging.INFO
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    logging.basicConfig(level=log_level, format=log_format)
+    logging.basicConfig(level=config.settings.log_level, format=log_format)
 
-    base_path = Path(base_dir).resolve()
-    logs_dir = base_path / ".logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-
-    if log_file is None:
-        log_file = str(logs_dir / "supervisor.log")
-
-    file_handler = logging.FileHandler(log_file)
+    config.settings.supervisor_log.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(config.settings.supervisor_log)
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(logging.Formatter(log_format))
     logging.getLogger().addHandler(file_handler)
-    logging.getLogger().info("Also writing DEBUG logs to %s", log_file)
+    logging.getLogger().info("Also writing DEBUG logs to %s", config.settings.supervisor_log)
 
-    if bot_name is None:
-        bot_name = GitHubClient.detect_bot_name()
-        click.echo(f"Detected bot name: {bot_name}")
-
-    include = list(include_patterns) if include_patterns else None
-    exclude = list(exclude_patterns) if exclude_patterns else None
-
-    run_supervisor(
-        base_dir=base_path,
-        interval=interval,
-        worker_interval=worker_interval,
-        bot_name=bot_name,
-        verbose=verbose,
-        log_file=log_file,
-        min_restart_delay=min_restart_delay,
-        max_restart_delay=max_restart_delay,
-        include=include,
-        exclude=exclude,
-        refresh_interval=refresh_interval,
-        allowed_users=list(allowed_users),
-        min_role=min_role,
-    )
+    run_supervisor()
 
 
 @cli.command("ui")
@@ -208,18 +146,11 @@ def supervisor_cmd(
     "--scan-interval", default=5, show_default=True,
     help="How often (seconds) to re-scan for new/removed workers",
 )
-def ui_cmd(base_dir: str, supervisor_log: str | None, scan_interval: int) -> None:
+def ui_cmd(**_) -> None:
     """Launch the terminal UI to monitor the supervisor and workers."""
     from loony_dev.tui import SupervisorApp
 
-    base_path = Path(base_dir).resolve()
-    sup_log = Path(supervisor_log) if supervisor_log else base_path / ".logs" / "supervisor.log"
-
-    app = SupervisorApp(
-        base_dir=base_path,
-        supervisor_log=sup_log,
-        scan_interval=float(scan_interval),
-    )
+    app = SupervisorApp()
     app.run()
 
 

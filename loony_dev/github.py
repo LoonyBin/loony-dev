@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import subprocess
@@ -70,16 +71,23 @@ class GitHubClient:
     def __init__(
         self,
         repo: str,
-        bot_name: str,
+        bot_name: str | None = None,
         allowed_users: set[str] | None = None,
-        min_role: str = "triage",
+        min_role: str | None = None,
         skip_ci_checks: set[str] | None = None,
     ) -> None:
+        from loony_dev import config
         self.repo = repo
-        self.bot_name = bot_name
-        self.allowed_users: set[str] = allowed_users or set()
-        self.min_role = min_role
-        self.skip_ci_checks: set[str] = skip_ci_checks or set()
+        self.bot_name = bot_name or config.settings.get("bot_name") or self.detect_bot_name()
+        self.allowed_users: set[str] = (
+            allowed_users if allowed_users is not None
+            else set(config.settings.get("allowed_users") or [])
+        )
+        self.min_role = min_role or config.settings.get("min_role") or "triage"
+        self.skip_ci_checks: set[str] = (
+            skip_ci_checks if skip_ci_checks is not None
+            else set(config.settings.get("skip_ci_checks") or [])
+        )
         # Cache: username -> (permission_level, monotonic_timestamp)
         self._permission_cache: dict[str, tuple[str | None, float]] = {}
 
@@ -378,44 +386,6 @@ class GitHubClient:
         except subprocess.CalledProcessError:
             logger.warning("Failed to remove label '%s' from #%d", label, number)
 
-    def ensure_label(self, name: str, color: str, description: str) -> None:
-        """Create label if it doesn't exist. Silently ignores conflicts (422)."""
-        try:
-            result = subprocess.run(
-                [
-                    "gh", "api", f"repos/{self.repo}/labels",
-                    "--method", "POST",
-                    "-f", f"name={name}",
-                    "-f", f"color={color}",
-                    "-f", f"description={description}",
-                ],
-                capture_output=True, text=True,
-            )
-            if result.returncode == 0:
-                logger.debug("Created label %r in %s", name, self.repo)
-                return
-            # A 422 response means the label already exists — parse to confirm.
-            try:
-                body = json.loads(result.stdout)
-                errors = body.get("errors", [])
-                if any(e.get("code") == "already_exists" for e in errors):
-                    logger.debug("Label %r already exists in %s", name, self.repo)
-                    return
-            except (ValueError, AttributeError):
-                pass
-            logger.warning(
-                "Failed to provision label %r in %s: %s",
-                name, self.repo, (result.stderr or result.stdout).strip(),
-            )
-        except Exception as exc:
-            logger.warning("Failed to provision label %r in %s: %s", name, self.repo, exc)
-
-    def ensure_required_labels(self) -> None:
-        """Provision all labels required by loony-dev into this repo."""
-        logger.info("Provisioning required labels for %s", self.repo)
-        for label in REQUIRED_LABELS:
-            self.ensure_label(**label)
-
     def assign_self(self, number: int) -> None:
         try:
             self._gh("issue", "edit", str(number), "--add-assignee", "@me")
@@ -467,6 +437,7 @@ class GitHubClient:
         return result.stdout.strip()
 
     @staticmethod
+    @functools.lru_cache(maxsize=1)
     def detect_bot_name() -> str:
         """Detect the authenticated GitHub user's login via the gh CLI."""
         result = subprocess.run(

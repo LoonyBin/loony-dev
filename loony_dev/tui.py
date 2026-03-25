@@ -454,15 +454,21 @@ class SupervisorApp(App):
 
     def __init__(
         self,
-        base_dir: Path,
-        supervisor_log: Path,
-        scan_interval: float = 5.0,
+        base_dir: Path | None = None,
+        supervisor_log: Path | None = None,
+        scan_interval: float | None = None,
         **kwargs,
     ) -> None:
+        from loony_dev import config
         super().__init__(**kwargs)
-        self._base_dir = base_dir
-        self._supervisor_log = supervisor_log
-        self._scan_interval = scan_interval
+        self._base_dir = base_dir if base_dir is not None else config.settings.base_dir
+        self._supervisor_log = (
+            supervisor_log if supervisor_log is not None else config.settings.supervisor_log
+        )
+        self._scan_interval = (
+            scan_interval if scan_interval is not None
+            else float(config.settings.get("scan_interval", 5))
+        )
         self._watchers: dict[str, LogWatcher] = {}
         self._current_label: str | None = None
 
