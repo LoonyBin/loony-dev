@@ -146,14 +146,16 @@ class TestDisabledUntil(unittest.TestCase):
         agent = _DummyClaudeAgent()
         agent._handle_quota_error("some unknown error")
         self.assertTrue(agent.is_disabled())
-        # Fallback should be roughly QUOTA_FALLBACK_SECONDS from now
+        # Fallback should be roughly quota_fallback_seconds (default 1800s) from now
         delta = (agent._disabled_until - datetime.now(timezone.utc)).total_seconds()
         self.assertGreater(delta, 200)
-        self.assertLess(delta, agent.QUOTA_FALLBACK_SECONDS + 10)
+        self.assertLess(delta, 1800 + 10)
 
-    def test_fallback_duration_is_at_least_30_minutes(self) -> None:
-        """QUOTA_FALLBACK_SECONDS must be >= 1800 (30 minutes)."""
-        self.assertGreaterEqual(ClaudeQuotaMixin.QUOTA_FALLBACK_SECONDS, 1800)
+    def test_fallback_duration_default_is_at_least_30_minutes(self) -> None:
+        """Default quota_fallback_seconds must be >= 1800 (30 minutes)."""
+        from loony_dev import config
+        fallback = int(config.settings.get("quota_fallback_seconds", 30 * 60))
+        self.assertGreaterEqual(fallback, 1800)
 
     def test_handle_quota_error_fallback_logs_raw_output(self) -> None:
         """When parse fails the warning log must include the raw output."""

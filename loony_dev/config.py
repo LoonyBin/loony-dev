@@ -146,6 +146,42 @@ class Settings(_Mapping[str, Any]):
 settings: Settings = Settings({})
 
 
+_LEGACY_ENV_VARS: dict[str, str] = {
+    # Maps legacy env var name → settings key.  Values are applied only when
+    # the settings key has not already been set via CLI or config file.
+    # Support will be removed in a future major version.
+    "LOONY_STUCK_THRESHOLD_HOURS": "stuck_threshold_hours",
+}
+
+
+def _apply_legacy_env_vars(data: dict[str, Any]) -> None:
+    """Warn about and optionally apply deprecated environment variables.
+
+    Each entry in :data:`_LEGACY_ENV_VARS` is checked; if the env var is set
+    and the corresponding settings key was not already provided via CLI or
+    config file (i.e. its value is ``None``), the env var value is used as a
+    fallback.
+    """
+    for env_var, settings_key in _LEGACY_ENV_VARS.items():
+        value = os.environ.get(env_var)
+        if value is None:
+            continue
+        logger.warning(
+            "%s is deprecated and will be removed in a future major version. "
+            "Use --%s or '%s' in the config file instead.",
+            env_var,
+            settings_key.replace("_", "-"),
+            settings_key,
+        )
+        if data.get(settings_key) is None:
+            try:
+                data[settings_key] = int(value)
+            except ValueError:
+                logger.warning(
+                    "Could not parse %s=%r as an integer; ignoring.", env_var, value
+                )
+
+
 def _populate_settings(ctx: click.Context) -> None:
     """Snapshot *ctx.params* into the immutable module-level :data:`settings`.
 
@@ -154,7 +190,9 @@ def _populate_settings(ctx: click.Context) -> None:
     relying on the command function's parameter list.
     """
     global settings
-    settings = Settings(dict(ctx.params))
+    data = dict(ctx.params)
+    _apply_legacy_env_vars(data)
+    settings = Settings(data)
 
 
 # ---------------------------------------------------------------------------

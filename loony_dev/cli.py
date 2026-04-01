@@ -107,25 +107,14 @@ def worker(**_) -> None:
               help="Enable DEBUG logging in supervisor (workers log to their own files)")
 @click.option("--log-file", default=None,
               help="Write supervisor DEBUG logs to this file")
-@click.option(
-    "--worker-interval", "worker_interval", default=None, type=int,
-    help="Polling interval (seconds) forwarded to each worker (overrides worker's own default).",
-)
-@click.option(
-    "--worker-bot-name", "worker_bot_name", default=None,
-    help="Bot username forwarded to each worker.",
-)
-@click.option(
-    "--worker-allowed-users", "worker_allowed_users", multiple=True, metavar="USER",
-    help="GitHub usernames forwarded to each worker as --allowed-users (repeatable).",
-)
-@click.option(
-    "--worker-min-role", "worker_min_role", default=None,
-    type=click.Choice(["triage", "write", "admin"], case_sensitive=False),
-    help="Minimum GitHub collaborator role forwarded to each worker.",
-)
+@click.argument("worker_args", nargs=-1, type=click.UNPROCESSED)
 def supervisor_cmd(**_) -> None:
-    """Discover all accessible repositories and run a worker for each in parallel."""
+    """Discover all accessible repositories and run a worker for each in parallel.
+
+    To forward arguments to each worker, append them after ``--``:
+
+        loony-dev supervisor --base-dir /repos -- --interval 30 --bot-name mybot
+    """
     from loony_dev.supervisor import run_supervisor
 
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
