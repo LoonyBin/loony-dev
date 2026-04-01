@@ -54,6 +54,10 @@ def cli() -> None:
     help="CI check names to ignore when detecting failures (repeatable). "
          "E.g. --skip-ci-checks 'deploy-preview' --skip-ci-checks 'license/cla'.",
 )
+@click.option(
+    "--quota-fallback-seconds", "quota_fallback_seconds", default=1800, show_default=True,
+    help="Seconds to disable a Claude agent for when quota is hit and no reset time can be parsed.",
+)
 def worker(**_) -> None:
     """Run the orchestrator worker loop for a single repository."""
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -88,12 +92,8 @@ def worker(**_) -> None:
               help="Base directory for repo checkouts (<base-dir>/<owner>/<repo>) and logs (<base-dir>/.logs/<owner>/<repo>/)")
 @click.option("--interval", default=15, show_default=True,
               help="Health-check interval in seconds")
-@click.option("--worker-interval", default=60, show_default=True,
-              help="Polling interval forwarded to each worker")
 @click.option("--refresh-interval", default=1800, show_default=True,
               help="How often (seconds) to re-discover repos and checkout new ones")
-@click.option("--bot-name", default=None,
-              help="Bot username forwarded to workers")
 @click.option("--include", "include_patterns", multiple=True, metavar="PATTERN",
               help="Only supervise repos matching this glob pattern (repeatable). "
                    "Matched against 'owner/repo'; patterns without '/' match repo name only.")
@@ -108,13 +108,21 @@ def worker(**_) -> None:
 @click.option("--log-file", default=None,
               help="Write supervisor DEBUG logs to this file")
 @click.option(
-    "--allowed-users", "allowed_users", multiple=True, metavar="USER",
-    help="GitHub usernames always permitted to trigger runs (repeatable). Forwarded to each worker.",
+    "--worker-interval", "worker_interval", default=None, type=int,
+    help="Polling interval (seconds) forwarded to each worker (overrides worker's own default).",
 )
 @click.option(
-    "--min-role", "min_role", default="triage", show_default=True,
+    "--worker-bot-name", "worker_bot_name", default=None,
+    help="Bot username forwarded to each worker.",
+)
+@click.option(
+    "--worker-allowed-users", "worker_allowed_users", multiple=True, metavar="USER",
+    help="GitHub usernames forwarded to each worker as --allowed-users (repeatable).",
+)
+@click.option(
+    "--worker-min-role", "worker_min_role", default=None,
     type=click.Choice(["triage", "write", "admin"], case_sensitive=False),
-    help="Minimum GitHub collaborator role required to trigger runs. Forwarded to each worker.",
+    help="Minimum GitHub collaborator role forwarded to each worker.",
 )
 def supervisor_cmd(**_) -> None:
     """Discover all accessible repositories and run a worker for each in parallel."""
@@ -145,6 +153,14 @@ def supervisor_cmd(**_) -> None:
 @click.option(
     "--scan-interval", default=5, show_default=True,
     help="How often (seconds) to re-scan for new/removed workers",
+)
+@click.option(
+    "--max-buffer-lines", "max_buffer_lines", default=5000, show_default=True,
+    help="Maximum log lines to keep in memory per worker log.",
+)
+@click.option(
+    "--tail-lines", "tail_lines", default=100, show_default=True,
+    help="Log lines to render initially; the rest are loaded lazily on scroll-up.",
 )
 def ui_cmd(**_) -> None:
     """Launch the terminal UI to monitor the supervisor and workers."""

@@ -10,7 +10,6 @@ import sys
 import time
 
 import click
-from click.core import ParameterSource
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -190,8 +189,8 @@ class WorkerProcess:
 def _worker_command(repo: str, work_dir: Path, log_file: Path) -> list[str]:
     """Build the argv list for a worker subprocess.
 
-    Only params explicitly provided on the supervisor command line are forwarded;
-    workers resolve everything else from their own config files and defaults.
+    Worker-specific arguments are forwarded via explicit ``--worker-*`` supervisor
+    options; workers resolve everything else from their own config files and defaults.
     """
     # Prefer the installed entry point; fall back to running the module directly.
     cmd_prefix: list[str]
@@ -202,47 +201,18 @@ def _worker_command(repo: str, work_dir: Path, log_file: Path) -> list[str]:
 
     cmd = cmd_prefix + ["worker", "--repo", repo, "--work-dir", str(work_dir)]
 
-    ctx = click.get_current_context()
+    s = config.settings
 
-    # Determine which params were explicitly provided on the command line.
-    explicit = frozenset(
-        name for name in ctx.params
-        if ctx.get_parameter_source(name) == ParameterSource.COMMANDLINE
-    )
-
-    # Build a map of worker param name → click.Option.
-    worker_cmd = ctx.find_root().command.commands["worker"]
-    worker_params: dict[str, click.Option] = {
-        p.name: p for p in worker_cmd.params if isinstance(p, click.Option)
-    }
-
-    # worker_interval → worker's --interval (name mismatch; handled manually)
-    if "worker_interval" in explicit and "interval" in worker_params:
-        cmd += [max(worker_params["interval"].opts, key=len), str(config.settings.worker_interval)]
-
-    # Params already handled above or with supervisor-specific semantics (different meaning
-    # than the identically-named worker param: supervisor's --interval is the health-check
-    # cadence; --log-file is the supervisor's own log, not the worker's).
-    _skip = {"worker_interval", "interval", "log_file"}
-
-    # Forward all other explicitly-set supervisor params that the worker also accepts.
-    for name in sorted(explicit - _skip):
-        param = worker_params.get(name)
-        if param is None:
-            continue
-        cmd += _flag_args(param, config.settings[name])
+    if s.get("worker_interval") is not None:
+        cmd += ["--interval", str(s["worker_interval"])]
+    if s.get("worker_bot_name") is not None:
+        cmd += ["--bot-name", s["worker_bot_name"]]
+    for user in (s.get("worker_allowed_users") or []):
+        cmd += ["--allowed-users", user]
+    if s.get("worker_min_role") is not None:
+        cmd += ["--min-role", s["worker_min_role"]]
 
     return cmd
-
-
-def _flag_args(param: click.Option, value: object) -> list[str]:
-    """Return the argv fragment for a single Click option and its value."""
-    flag = max(param.opts, key=len)
-    if param.is_flag:
-        return [flag] if value else []
-    if param.multiple:
-        return [arg for item in (value or []) for arg in (flag, item)]
-    return [flag, str(value)]
 
 
 def launch_worker(repo: str, work_dir: Path, log_file: Path, pid_file: Path) -> WorkerProcess:

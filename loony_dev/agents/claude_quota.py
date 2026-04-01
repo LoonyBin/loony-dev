@@ -6,6 +6,8 @@ import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from loony_dev import config
+
 logger = logging.getLogger(__name__)
 
 # Deprecated IANA timezone names that may not exist in minimal tzdata packages.
@@ -45,7 +47,6 @@ class ClaudeQuotaMixin:
     ``is_disabled``).
     """
 
-    QUOTA_FALLBACK_SECONDS = 30 * 60  # 30 minutes
     _disabled_until: datetime | None = None
 
     def can_handle(self, task: Task) -> bool:
@@ -137,13 +138,14 @@ class ClaudeQuotaMixin:
                 self.name, self._disabled_until,
             )
         else:
+            fallback = int(config.settings.get("quota_fallback_seconds", 30 * 60))
             self._disabled_until = (
-                datetime.now(timezone.utc) + timedelta(seconds=self.QUOTA_FALLBACK_SECONDS)
+                datetime.now(timezone.utc) + timedelta(seconds=fallback)
             )
             logger.warning(
                 "Agent '%s' rate-limited (couldn't parse reset time). "
                 "Disabled for %ds. Raw output (truncated): %.500s",
                 self.name,
-                self.QUOTA_FALLBACK_SECONDS,
+                fallback,
                 output,
             )

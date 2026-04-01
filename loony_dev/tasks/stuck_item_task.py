@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -33,6 +34,12 @@ class StuckItemCleanupTask(Task):
     @staticmethod
     def discover(github: GitHubClient) -> Iterator[StuckItemCleanupTask]:
         """Yield cleanup tasks for issues and PRs stuck in-progress past the threshold."""
+        if os.environ.get("LOONY_STUCK_THRESHOLD_HOURS") is not None:
+            logger.warning(
+                "LOONY_STUCK_THRESHOLD_HOURS is deprecated and has no effect. "
+                "Use --stuck-threshold-hours or 'stuck_threshold_hours' in the [worker] "
+                "config section instead."
+            )
         from loony_dev import config
         threshold_hours = int(config.settings.get("stuck_threshold_hours", 12))
         cutoff = datetime.now(timezone.utc) - timedelta(hours=threshold_hours)

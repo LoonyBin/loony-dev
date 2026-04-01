@@ -60,24 +60,26 @@ def test_build_default_map_sections():
     assert config._build_default_map(cfg, "supervisor")["supervisor"]["base_dir"] == "/srv"
 
 
-def test_build_default_map_top_level_applied_to_invoked_command():
+def test_build_default_map_top_level_not_applied_to_subcommands():
     cfg = {
         "bot_name": "shared-bot",
         "worker": {"interval": 30},
     }
-    # top-level bot_name applies to whichever command is invoked.
-    assert config._build_default_map(cfg, "worker")["worker"]["bot_name"] == "shared-bot"
-    assert config._build_default_map(cfg, "supervisor")["supervisor"]["bot_name"] == "shared-bot"
+    # Strict scoping: top-level scalars do NOT flow into subcommands.
+    assert "bot_name" not in config._build_default_map(cfg, "worker").get("worker", {})
+    # A command with no section at all returns an empty map.
+    assert config._build_default_map(cfg, "supervisor") == {}
 
 
-def test_build_default_map_section_overrides_top_level():
+def test_build_default_map_section_only():
     cfg = {
         "min_role": "triage",
         "worker": {"min_role": "write"},
     }
+    # Strict scoping: worker only reads its own section; top-level is ignored.
     assert config._build_default_map(cfg, "worker")["worker"]["min_role"] == "write"
-    # supervisor gets the top-level value.
-    assert config._build_default_map(cfg, "supervisor")["supervisor"]["min_role"] == "triage"
+    # supervisor has no section → empty map (top-level value not inherited).
+    assert config._build_default_map(cfg, "supervisor") == {}
 
 
 def test_build_default_map_empty():

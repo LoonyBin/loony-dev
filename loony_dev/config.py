@@ -194,22 +194,20 @@ def _build_default_map(
 ) -> dict[str, Any]:
     """Build Click's ``default_map`` for *cmd_name* from the loaded config data.
 
-    Top-level scalar values serve as shared defaults for any sub-command.
-    Section dicts (e.g. ``[worker]``) override top-level values for that
-    specific sub-command.  Only the invoked sub-command's entry is built,
-    so command names never need to be duplicated here.
+    Strict scoping: top-level scalar values apply only to the root CLI group.
+    Sub-command defaults come exclusively from their own TOML section
+    (e.g. ``[worker]`` for the worker command).
 
     When *cmd_name* is ``None`` (no sub-command detected), the top-level
     scalars are returned directly as group-level defaults.
     """
-    top_level = {k: v for k, v in cfg.items() if not isinstance(v, dict)}
-
     if cmd_name is None:
-        return top_level
+        return {k: v for k, v in cfg.items() if not isinstance(v, dict)}
 
     cmd_section = cfg.get(cmd_name, {})
-    combined = {**top_level, **(cmd_section if isinstance(cmd_section, dict) else {})}
-    return {cmd_name: combined} if combined else {}
+    if isinstance(cmd_section, dict) and cmd_section:
+        return {cmd_name: dict(cmd_section)}
+    return {}
 
 
 def _inject_default_map(cmd_name: str | None, extra: dict[str, Any]) -> None:
@@ -282,15 +280,14 @@ class ClickCommand(click.Command):
     ) -> click.Context:
         if parent is None:
             # Standalone command (no parent group): inject a flat default_map
-            # of top-level config values merged with the command-specific section.
+            # using only the command-specific section (strict scoping).
             # Sub-commands skip this — their parent ClickGroup.make_context()
             # already injects the nested map, and Click auto-propagates the
             # flat sub-map to each sub-command context via parent.default_map.
             extra.setdefault("auto_envvar_prefix", "LOONY_DEV")
             cfg = _load_config()
-            top = {k: v for k, v in cfg.items() if not isinstance(v, dict)}
             section = cfg.get(info_name or "", {})
-            dm = {**top, **(section if isinstance(section, dict) else {})}
+            dm = dict(section) if isinstance(section, dict) else {}
             if dm:
                 merged: dict[str, Any] = dict(dm)
                 _deep_merge(merged, extra.pop("default_map", {}))
