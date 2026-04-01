@@ -10,6 +10,7 @@ import sys
 import time
 
 import click
+from click.core import ParameterSource
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -189,10 +190,16 @@ class WorkerProcess:
 def _worker_command(repo: str, work_dir: Path, log_file: Path) -> list[str]:
     """Build the argv list for a worker subprocess.
 
-    Worker-specific arguments are forwarded via explicit ``--worker-*`` supervisor
-    options; workers resolve everything else from their own config files and defaults.
+    Supervisor params that were explicitly set on the CLI (``ParameterSource.COMMANDLINE``)
+    and carry the ``worker_`` prefix are forwarded to the worker by:
+
+    1. Stripping the ``worker_`` prefix to obtain the worker param name.
+    2. Looking up that name in the worker command's own params (the intersection).
+    3. Appending the worker's longest flag string and value to the command.
+
+    Everything else (defaults, config-file values) is intentionally omitted so
+    workers can resolve their own settings independently.
     """
-    # Prefer the installed entry point; fall back to running the module directly.
     cmd_prefix: list[str]
     if shutil.which("loony-dev"):
         cmd_prefix = ["loony-dev"]
@@ -201,16 +208,40 @@ def _worker_command(repo: str, work_dir: Path, log_file: Path) -> list[str]:
 
     cmd = cmd_prefix + ["worker", "--repo", repo, "--work-dir", str(work_dir)]
 
-    s = config.settings
+    ctx = click.get_current_context()
 
-    if s.get("worker_interval") is not None:
-        cmd += ["--interval", str(s["worker_interval"])]
-    if s.get("worker_bot_name") is not None:
-        cmd += ["--bot-name", s["worker_bot_name"]]
-    for user in (s.get("worker_allowed_users") or []):
-        cmd += ["--allowed-users", user]
-    if s.get("worker_min_role") is not None:
-        cmd += ["--min-role", s["worker_min_role"]]
+    # Build worker param-name → longest CLI flag mapping via the worker command object.
+    group_ctx = ctx.parent
+    worker_flags: dict[str, str] = {}
+    if group_ctx is not None:
+        worker_cmd = group_ctx.command.get_command(group_ctx, "worker")
+        if worker_cmd is not None:
+            worker_flags = {
+                p.name: max(p.opts, key=len)
+                for p in worker_cmd.params
+                if isinstance(p, click.Option)
+            }
+
+    # Intersect: supervisor params that are (a) explicit on CLI, (b) have the
+    # worker_ prefix, and (c) exist in the worker command's params.
+    for param in ctx.command.params:
+        if not isinstance(param, click.Option):
+            continue
+        if ctx.get_parameter_source(param.name) != ParameterSource.COMMANDLINE:
+            continue
+        if not param.name.startswith("worker_"):
+            continue
+        worker_param = param.name[len("worker_"):]
+        if worker_param not in worker_flags:
+            continue
+
+        value = ctx.params[param.name]
+        flag = worker_flags[worker_param]
+        if isinstance(value, (list, tuple)):
+            for v in value:
+                cmd += [flag, str(v)]
+        elif value is not None:
+            cmd += [flag, str(value)]
 
     return cmd
 
