@@ -107,6 +107,10 @@ def worker(**_) -> None:
               help="Enable DEBUG logging in supervisor (workers log to their own files)")
 @click.option("--log-file", default=None,
               help="Write supervisor DEBUG logs to this file")
+@click.option("--accept-invites-from", "accept_invites_from", multiple=True, metavar="USER",
+              help="Automatically accept repo invitations from these users. Repeatable. "
+                   "Use '*' to accept from anyone (not recommended). "
+                   "If omitted, no invitations are accepted.")
 @click.argument("worker_args", nargs=-1, type=click.UNPROCESSED)
 def supervisor_cmd(**_) -> None:
     """Discover all accessible repositories and run a worker for each in parallel.

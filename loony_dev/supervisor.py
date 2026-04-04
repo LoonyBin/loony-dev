@@ -40,6 +40,90 @@ def _remove_pid_file(path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Invitation acceptance
+# ---------------------------------------------------------------------------
+
+def list_pending_invitations() -> list[dict]:
+    """Return all pending repository invitation objects for the authenticated user."""
+    import json
+    try:
+        result = subprocess.run(
+            ["gh", "api", "/user/repository_invitations", "--paginate"],
+            capture_output=True, text=True, check=True,
+        )
+        # --paginate emits one JSON array per page; merge them all
+        invitations: list[dict] = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                chunk = json.loads(line)
+                if isinstance(chunk, list):
+                    invitations.extend(chunk)
+            except json.JSONDecodeError as exc:
+                logger.warning("Failed to parse invitation response chunk: %s", exc)
+        return invitations
+    except subprocess.CalledProcessError as exc:
+        logger.error("Failed to list pending invitations: %s", exc.stderr.strip())
+        return []
+    except Exception:
+        logger.exception("Unexpected error listing pending invitations")
+        return []
+
+
+def accept_pending_invitations() -> list[str]:
+    """Accept pending repository invitations from configured users.
+
+    Reads ``config.settings.accept_invites_from`` to determine which inviters
+    are trusted.  Returns a list of accepted 'owner/repo' strings.
+    """
+    accept_from: tuple[str, ...] = config.settings.get("accept_invites_from") or ()
+    if not accept_from:
+        return []
+
+    wildcard = accept_from == ("*",)
+    if wildcard:
+        logger.warning(
+            "--accept-invites-from='*' is set. The agent will accept repository invitations "
+            "from ANY GitHub user. This allows anyone to inject arbitrary repositories into this "
+            "agent's workspace. Only use this in fully trusted environments."
+        )
+
+    invitations = list_pending_invitations()
+    if not invitations:
+        return []
+
+    accepted: list[str] = []
+    skipped = 0
+
+    for inv in invitations:
+        inv_id = inv.get("id")
+        repo = (inv.get("repository") or {}).get("full_name", "<unknown>")
+        inviter = (inv.get("inviter") or {}).get("login", "<unknown>")
+
+        if not wildcard and inviter not in accept_from:
+            logger.debug("Skipping invitation to %s from %s (not in accept_invites_from)", repo, inviter)
+            skipped += 1
+            continue
+
+        try:
+            subprocess.run(
+                ["gh", "api", "--method", "PATCH", f"/user/repository_invitations/{inv_id}"],
+                capture_output=True, text=True, check=True,
+            )
+            logger.info("Accepted invitation to %s from %s", repo, inviter)
+            accepted.append(repo)
+        except subprocess.CalledProcessError as exc:
+            logger.warning("Failed to accept invitation %s to %s: %s", inv_id, repo, exc.stderr.strip())
+
+    if skipped and not accepted:
+        logger.info("No pending invitations from configured users")
+
+    return accepted
+
+
+# ---------------------------------------------------------------------------
 # Repository discovery
 # ---------------------------------------------------------------------------
 
@@ -307,6 +391,7 @@ def run_supervisor() -> None:
             last_discovery = now
             logger.info("Running repo discovery…")
 
+            accept_pending_invitations()
             all_repos = list_accessible_repos()
             if not all_repos:
                 logger.warning("No repos discovered (gh returned nothing or failed). Will retry on next refresh.")
