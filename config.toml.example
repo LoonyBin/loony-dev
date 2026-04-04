@@ -108,6 +108,12 @@
 # Choices: "triage", "write", "admin"
 # worker_min_role = "triage"
 
+# GitHub usernames whose repo invitations the supervisor should auto-accept.
+# Checked on every refresh cycle; newly accepted repos are discovered in the same cycle.
+# Use ["*"] to accept from any user (security risk — not recommended).
+# Omit or leave empty to disable invitation acceptance entirely.
+# accept_invites_from = ["trusted-org-bot"]
+
 
 # ---------------------------------------------------------------------------
 # [ui] — loony-dev ui (terminal monitor)
