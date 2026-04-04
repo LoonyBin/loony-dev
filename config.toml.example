@@ -1,0 +1,132 @@
+# loony-dev configuration example
+#
+# Copy this file to one of the following locations (highest priority wins):
+#   ./.loony-dev.toml                          (repo-level / per-checkout)
+#   ~/.config/loony-dev/config.toml            (user-level, Linux/macOS)
+#   ~/Library/Application Support/loony-dev/config.toml  (user-level, macOS)
+#   /etc/loony-dev/config.toml                 (system-wide, POSIX only)
+#
+# Configuration is STRICTLY SCOPED: each section applies only to the matching
+# sub-command. There are no shared top-level defaults that flow into
+# sub-commands; place every key inside the appropriate [section].
+#
+# Priority order (highest wins):
+#   1. CLI flags
+#   2. Environment variables  LOONY_DEV_<COMMAND>_<KEY>
+#   3. ./.loony-dev.toml
+#   4. User config dir config.toml
+#   5. /etc/loony-dev/config.toml
+#   6. Built-in CLI defaults
+
+
+# ---------------------------------------------------------------------------
+# [worker] — loony-dev worker
+# ---------------------------------------------------------------------------
+
+[worker]
+
+# GitHub repository to watch (owner/repo).  Detected from git remote when unset.
+# repo = "my-org/my-repo"
+
+# Polling interval in seconds.
+# interval = 60
+
+# Working directory for the agent (must exist).
+# work_dir = "."
+
+# Bot username used for watermark detection.  Detected from `gh auth` when unset.
+# bot_name = "my-bot[bot]"
+
+# Write DEBUG logs to this file in addition to stderr.
+# log_file = "/var/log/loony-dev/worker.log"
+
+# GitHub usernames always allowed to trigger runs regardless of collaborator role.
+# allowed_users = ["trusted-external-user"]
+
+# Minimum GitHub collaborator role required to trigger agent runs.
+# Choices: "triage", "write", "admin"
+# min_role = "triage"
+
+# Hours after which an in-progress issue or PR is considered stuck and reset.
+# stuck_threshold_hours = 12
+
+# CI check names to ignore when detecting failures.
+# skip_ci_checks = ["deploy-preview", "license/cla"]
+
+# Seconds to disable a Claude agent after hitting a quota/rate-limit error
+# when no reset time can be parsed from the error message.
+# quota_fallback_seconds = 1800
+
+
+# ---------------------------------------------------------------------------
+# [supervisor] — loony-dev supervisor
+# ---------------------------------------------------------------------------
+
+[supervisor]
+
+# Base directory for repository checkouts and log files.
+#   Checkouts: <base_dir>/<owner>/<repo>
+#   Logs:      <base_dir>/.logs/<owner>/<repo>/loony-worker.log
+# base_dir = "."
+
+# Supervisor health-check interval in seconds.
+# interval = 15
+
+# How often (seconds) to re-discover repositories and check out new ones.
+# refresh_interval = 1800
+
+# Glob patterns — only supervise repos matching at least one pattern.
+# Patterns with "/" are matched against "owner/repo"; others match repo name only.
+# include = ["my-org/*", "my-repo"]
+
+# Glob patterns — skip repos matching any of these (applied after include).
+# exclude = ["my-org/archived-*"]
+
+# Minimum seconds before restarting a crashed worker (exponential backoff base).
+# min_restart_delay = 5.0
+
+# Maximum backoff delay (seconds) when restarting crashed workers.
+# max_restart_delay = 300.0
+
+# Write supervisor DEBUG logs to this file.
+# log_file = "/var/log/loony-dev/supervisor.log"
+
+# --- Worker options forwarded from supervisor ---
+# These override the workers' own defaults/config for all workers this
+# supervisor launches.  Leave unset to let each worker resolve its own config.
+
+# Polling interval forwarded to each worker.
+# worker_interval = 60
+
+# Bot username forwarded to each worker.
+# worker_bot_name = "my-bot[bot]"
+
+# GitHub usernames forwarded to each worker as --allowed-users.
+# worker_allowed_users = ["trusted-external-user"]
+
+# Minimum collaborator role forwarded to each worker.
+# Choices: "triage", "write", "admin"
+# worker_min_role = "triage"
+
+
+# ---------------------------------------------------------------------------
+# [ui] — loony-dev ui (terminal monitor)
+# ---------------------------------------------------------------------------
+
+[ui]
+
+# Base directory to scan for worker logs and PID files (same default as supervisor).
+# base_dir = "."
+
+# Path to the supervisor log file.
+# Defaults to <base_dir>/.logs/supervisor.log when unset.
+# supervisor_log = "/var/log/loony-dev/supervisor.log"
+
+# How often (seconds) to re-scan for new or removed workers.
+# scan_interval = 5
+
+# Maximum number of log lines to keep in memory per worker.
+# max_buffer_lines = 5000
+
+# Number of log lines to render initially; the rest load lazily on scroll-up.
+# tail_lines = 100

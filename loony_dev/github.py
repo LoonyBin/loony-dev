@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import subprocess
@@ -70,16 +71,23 @@ class GitHubClient:
     def __init__(
         self,
         repo: str,
-        bot_name: str,
+        bot_name: str | None = None,
         allowed_users: set[str] | None = None,
-        min_role: str = "triage",
+        min_role: str | None = None,
         skip_ci_checks: set[str] | None = None,
     ) -> None:
+        from loony_dev import config
         self.repo = repo
-        self.bot_name = bot_name
-        self.allowed_users: set[str] = allowed_users or set()
-        self.min_role = min_role
-        self.skip_ci_checks: set[str] = skip_ci_checks or set()
+        self.bot_name = bot_name or config.settings.get("bot_name") or self.detect_bot_name()
+        self.allowed_users: set[str] = (
+            allowed_users if allowed_users is not None
+            else set(config.settings.get("allowed_users") or [])
+        )
+        self.min_role = min_role or config.settings.get("min_role") or "triage"
+        self.skip_ci_checks: set[str] = (
+            skip_ci_checks if skip_ci_checks is not None
+            else set(config.settings.get("skip_ci_checks") or [])
+        )
         # Cache: username -> (permission_level, monotonic_timestamp)
         self._permission_cache: dict[str, tuple[str | None, float]] = {}
 
@@ -467,6 +475,7 @@ class GitHubClient:
         return result.stdout.strip()
 
     @staticmethod
+    @functools.lru_cache(maxsize=1)
     def detect_bot_name() -> str:
         """Detect the authenticated GitHub user's login via the gh CLI."""
         result = subprocess.run(
