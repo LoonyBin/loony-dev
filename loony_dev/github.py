@@ -300,9 +300,28 @@ class GitHubClient:
         return sanitized
 
     def get_pr_inline_comments(self, pr_number: int) -> list[Comment]:
-        """Fetch inline review comments for a PR."""
+        """Fetch inline review comments for a PR.
+
+        Uses each comment's associated review ``submitted_at`` as the effective
+        ``created_at`` timestamp. Inline comments are drafted before a review is
+        submitted, so their own ``created_at`` may pre-date the bot's last
+        SUCCESS_MARKER even though the review was submitted afterwards. Using
+        ``submitted_at`` ensures correct ordering relative to the marker.
+        """
         try:
             data = self._gh_api(f"pulls/{pr_number}/comments")
+            data_reviews = self._gh_api(f"pulls/{pr_number}/reviews")
+            review_submitted_at: dict[int, str] = {}
+            if isinstance(data_reviews, list):
+                review_submitted_at = {
+                    r["id"]: r["submitted_at"]
+                    for r in data_reviews
+                    if r.get("submitted_at")
+                }
+            logger.debug(
+                "get_pr_inline_comments(#%d) fetched %d review(s)",
+                pr_number, len(review_submitted_at),
+            )
             if isinstance(data, list):
                 comments = []
                 for c in data:
@@ -310,10 +329,16 @@ class GitHubClient:
                     body = c.get("body", "")
                     if author != self.bot_name:
                         body = self._sanitize_field(body, "body", "pr", pr_number)
+                    review_id = c.get("pull_request_review_id")
+                    effective_ts = (
+                        review_submitted_at.get(review_id)
+                        if review_id is not None
+                        else None
+                    ) or c.get("created_at", "")
                     comments.append(Comment(
                         author=author,
                         body=body,
-                        created_at=c.get("created_at", ""),
+                        created_at=effective_ts,
                         path=c.get("path"),
                         line=c.get("line"),
                     ))
