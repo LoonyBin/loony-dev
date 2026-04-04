@@ -108,6 +108,11 @@
 # Choices: "triage", "write", "admin"
 # worker_min_role = "triage"
 
+# GitHub usernames whose repository invitations are auto-accepted by the supervisor.
+# Repeatable list. Use ["*"] to accept from anyone (not recommended).
+# If unset or empty, no invitations are accepted.
+# accept_invites_from = ["trusted-user", "another-user"]
+
 
 # ---------------------------------------------------------------------------
 # [ui] — loony-dev ui (terminal monitor)
