@@ -69,7 +69,8 @@ class IssueTask(Task):
             f"- Create a new branch for this work\n"
             f"- Implement the changes described in the issue\n"
             f"- Commit your changes with a descriptive message referencing #{self.issue.number}\n"
-            f"- Push the branch and create a pull request\n"
+            f"- Push the branch and create a pull request by running:\n"
+            f"  gh pr create --fill -R $(gh repo view --json nameWithOwner -q .nameWithOwner)\n"
             f"- The PR title should reference the issue number"
         )
 
