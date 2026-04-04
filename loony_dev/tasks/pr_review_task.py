@@ -99,8 +99,15 @@ class PRReviewTask(Task):
                 bot_last_success_idx = i
 
         if bot_last_success_idx == -1:
-            return [c for c in comments if c.author != bot_name]
-        return [c for c in comments[bot_last_success_idx + 1:] if c.author != bot_name]
+            result = [c for c in comments if c.author != bot_name]
+        else:
+            result = [c for c in comments[bot_last_success_idx + 1:] if c.author != bot_name]
+
+        logger.debug(
+            "_new_since_bot: last success marker at index %d, returning %d new comment(s)",
+            bot_last_success_idx, len(result),
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Task interface
