@@ -60,6 +60,8 @@ def _parse_datetime(value: str | None) -> datetime | None:
 
 CI_FAILURE_MARKER = "<!-- loony-ci-failure -->"
 
+INJECTION_WARNING_SENTINEL = "<!-- loonybin-injection-warning field="
+
 REQUIRED_LABELS = [
     {"name": "ready-for-development", "color": "0075ca", "description": "Issue is ready for implementation"},
     {"name": "ready-for-planning",    "color": "e4e669", "description": "Issue needs planning/triage"},
@@ -141,6 +143,12 @@ class GitHubClient:
             self._post_injection_warning(item_number, field_name, result.injections)
         return result.text
 
+    def _injection_warning_exists(self, item_number: int, field_name: str) -> bool:
+        """Return True if a warning comment for *field_name* has already been posted."""
+        comments = self.get_issue_comments(item_number)
+        sentinel = f'{INJECTION_WARNING_SENTINEL}"{field_name}" -->'
+        return any(sentinel in c.body for c in comments)
+
     def _post_injection_warning(
         self,
         number: int,
@@ -148,8 +156,12 @@ class GitHubClient:
         injections: list[InjectionType],
     ) -> None:
         """Post a GitHub comment warning maintainers of detected hidden content."""
+        if self._injection_warning_exists(number, field_name):
+            return
         injection_labels = ", ".join(f"`{i.value}`" for i in injections)
+        sentinel = f'{INJECTION_WARNING_SENTINEL}"{field_name}" -->'
         body = (
+            f"{sentinel}\n"
             "> [!WARNING]\n"
             "> **Potential prompt injection attempt detected.**\n"
             ">\n"
