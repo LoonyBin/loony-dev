@@ -26,6 +26,9 @@ class ConflictResolutionTask(Task):
     def discover(github: GitHubClient) -> Iterator[ConflictResolutionTask]:
         """Yield PRs that are in a CONFLICTING state with main."""
         for item in github.list_open_prs():
+            if not github.is_assigned_to_bot(item):
+                continue
+
             labels = [l["name"] for l in item.get("labels", [])]
             if "in-progress" in labels:
                 continue

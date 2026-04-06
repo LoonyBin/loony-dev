@@ -274,7 +274,7 @@ class GitHubClient:
         items = self._gh_json(
             "pr", "list",
             "--state", "open",
-            "--json", "number,headRefName,headRefOid,title,comments,reviews,labels,mergeable,updatedAt",
+            "--json", "number,headRefName,headRefOid,title,comments,reviews,labels,mergeable,updatedAt,assignees",
         )
         sanitized = []
         for item in items:
@@ -298,6 +298,13 @@ class GitHubClient:
             sanitized.append(item)
         logger.debug("list_open_prs() returned %d open PR(s)", len(sanitized))
         return sanitized
+
+    def is_assigned_to_bot(self, pr: dict) -> bool:
+        """Return True if the bot is listed as an assignee on the given PR dict."""
+        return any(
+            a.get("login", "") == self.bot_name
+            for a in pr.get("assignees", [])
+        )
 
     def get_pr_inline_comments(self, pr_number: int) -> list[Comment]:
         """Fetch inline review comments for a PR.

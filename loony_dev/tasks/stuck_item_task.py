@@ -46,6 +46,8 @@ class StuckItemCleanupTask(Task):
                 yield StuckItemCleanupTask(issue, threshold_hours)
 
         for item in github.list_open_prs():
+            if not github.is_assigned_to_bot(item):
+                continue
             labels = [label["name"] for label in item.get("labels", [])]
             if "in-progress" not in labels:
                 continue

@@ -31,6 +31,9 @@ class PRReviewTask(Task):
         """Yield PRs that have new review comments from authorized users since the bot last responded."""
         for item in github.list_open_prs():
             pr_number = item["number"]
+            if not github.is_assigned_to_bot(item):
+                logger.debug("PR #%d is not assigned to bot — skipping", pr_number)
+                continue
             labels = [l["name"] for l in item.get("labels", [])]
             logger.debug("Examining PR #%d: %s (labels=%s)", pr_number, item.get("title", ""), labels)
             if "in-progress" in labels:
