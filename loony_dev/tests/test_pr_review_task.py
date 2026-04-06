@@ -15,7 +15,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from loony_dev.models import Comment, PullRequest
-from loony_dev.tasks.base import SUCCESS_MARKER
+from loony_dev.tasks.base import SUCCESS_MARKER, SUCCESS_MARKER_PREFIX, encode_marker
 from loony_dev.tasks.pr_review_task import PRReviewTask
 
 BOT_NAME = "loony-bot"
@@ -26,8 +26,12 @@ def _comment(author: str, body: str, ts: str, path: str | None = None, line: int
     return Comment(author=author, body=body, created_at=ts, path=path, line=line)
 
 
-def _success(ts: str) -> Comment:
-    return _comment(BOT_NAME, f"{SUCCESS_MARKER}\nReview addressed.", ts)
+def _success(ts: str, last_seen: str | None = None) -> Comment:
+    if last_seen is not None:
+        marker = encode_marker(SUCCESS_MARKER_PREFIX, last_seen)
+    else:
+        marker = SUCCESS_MARKER
+    return _comment(BOT_NAME, f"{marker}\nReview addressed.", ts)
 
 
 def _inline(ts: str, path: str = "foo.py", line: int = 10) -> Comment:
@@ -109,6 +113,46 @@ class TestNewSinceBot(unittest.TestCase):
         result = PRReviewTask._new_since_bot(comments, BOT_NAME)
         # middle_comment is between markers — not returned
         self.assertEqual(result, [after_new])
+
+    # ------------------------------------------------------------------
+    # 6. Timestamp-based filtering (issue #82): comment posted DURING
+    #    the task run (between task-start and marker-post) is captured.
+    # ------------------------------------------------------------------
+    def test_timestamp_filter_picks_up_midrun_comment(self) -> None:
+        # Timeline:
+        #   T1: user posts comment → triggers task discovery
+        #   T2: user posts another comment while agent is running
+        #   T3: bot posts SUCCESS_MARKER with last-seen=T1
+        # Expected: T2 comment IS returned (T2 > T1 = last-seen)
+        t1_comment = _general("2024-01-01T10:00:00Z")
+        t2_midrun = _general("2024-01-01T11:00:00Z")
+        t3_marker = _success("2024-01-01T12:00:00Z", last_seen="2024-01-01T10:00:00Z")
+
+        comments = sorted([t1_comment, t2_midrun, t3_marker], key=lambda c: c.created_at)
+        result = PRReviewTask._new_since_bot(comments, BOT_NAME)
+        self.assertEqual(result, [t2_midrun])
+
+    def test_timestamp_filter_excludes_already_seen_comments(self) -> None:
+        # last-seen=T2 → comments at or before T2 are excluded
+        t1 = _general("2024-01-01T09:00:00Z")
+        t2 = _general("2024-01-01T10:00:00Z")
+        marker = _success("2024-01-01T11:00:00Z", last_seen="2024-01-01T10:00:00Z")
+        t3 = _general("2024-01-01T12:00:00Z")
+
+        comments = sorted([t1, t2, marker, t3], key=lambda c: c.created_at)
+        result = PRReviewTask._new_since_bot(comments, BOT_NAME)
+        self.assertEqual(result, [t3])
+
+    def test_old_marker_backward_compat_still_uses_position(self) -> None:
+        # Old marker (no last-seen): position-based filter must still work.
+        t1 = _general("2024-01-01T09:00:00Z")
+        marker = _success("2024-01-01T10:00:00Z")  # no last_seen arg → old format
+        t2 = _general("2024-01-01T11:00:00Z")
+
+        comments = [t1, marker, t2]
+        result = PRReviewTask._new_since_bot(comments, BOT_NAME)
+        # t1 is before the marker index, t2 is after → only t2 returned
+        self.assertEqual(result, [t2])
 
 
 class TestDiscoverInlineOnly(unittest.TestCase):
