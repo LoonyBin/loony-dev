@@ -6,12 +6,10 @@ from pathlib import Path
 import click
 
 from loony_dev import config
-from loony_dev.agents.coding import CodingAgent
-from loony_dev.agents.null_agent import NullAgent
-from loony_dev.agents.planning import PlanningAgent
 from loony_dev.git import GitRepo
 from loony_dev.github import GitHubClient
 from loony_dev.orchestrator import Orchestrator
+from loony_dev.plugins.loader import load_agent_plugins, load_task_plugins
 
 
 @click.group(cls=config.ClickGroup)
@@ -79,9 +77,10 @@ def worker(**_) -> None:
 
     github = GitHubClient(repo=repo)
     git = GitRepo(work_dir=work_path)
-    agents = [NullAgent(), CodingAgent(work_dir=work_path), PlanningAgent(work_dir=work_path)]
+    task_classes = load_task_plugins()
+    agents = load_agent_plugins(work_dir=work_path, settings=config.settings)
 
-    orchestrator = Orchestrator(github=github, git=git, agents=agents)
+    orchestrator = Orchestrator(github=github, git=git, agents=agents, task_classes=task_classes)
 
     click.echo(f"Starting orchestrator for {repo} (polling every {config.settings.interval}s)")
     orchestrator.run()
