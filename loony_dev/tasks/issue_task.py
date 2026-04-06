@@ -70,7 +70,7 @@ class IssueTask(Task):
             f"- Implement the changes described in the issue\n"
             f"- Commit your changes with a descriptive message referencing #{self.issue.number}\n"
             f"- Push the branch and create a pull request targeting the upstream repo, e.g.:\n"
-            f"  gh pr create -R $(gh repo view --json nameWithOwner -q .nameWithOwner)\n"
+            f"  gh pr create --assignee @me -R $(gh repo view --json nameWithOwner -q .nameWithOwner)\n"
             f"  (--fill is optional; use your discretion for the PR title and body)\n"
             f"- The PR title should reference the issue number"
         )
