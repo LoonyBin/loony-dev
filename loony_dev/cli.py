@@ -76,7 +76,9 @@ def worker(**_) -> None:
         click.echo(f"Detected repo: {repo}")
 
     github = GitHubClient(repo=repo)
-    git = GitRepo(work_dir=work_path)
+    default_branch = github.detect_default_branch()
+    click.echo(f"Default branch: {default_branch}")
+    git = GitRepo(work_dir=work_path, default_branch=default_branch)
     task_classes = load_task_plugins()
     agents = load_agent_plugins(work_dir=work_path, settings=config.settings)
 
