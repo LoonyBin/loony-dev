@@ -15,8 +15,9 @@ class ConflictResolutionTask(Task):
     task_type = "resolve_conflicts"
     priority = 10
 
-    def __init__(self, pr: PullRequest) -> None:
+    def __init__(self, pr: PullRequest, default_branch: str = "main") -> None:
         self.pr = pr
+        self.default_branch = default_branch
 
     # ------------------------------------------------------------------
     # Task discovery
@@ -24,7 +25,8 @@ class ConflictResolutionTask(Task):
 
     @staticmethod
     def discover(github: GitHubClient) -> Iterator[ConflictResolutionTask]:
-        """Yield PRs that are in a CONFLICTING state with main."""
+        """Yield PRs that are in a CONFLICTING state with the default branch."""
+        default_branch = github.detect_default_branch()
         for item in github.list_open_prs():
             if not github.is_assigned_to_bot(item):
                 continue
@@ -36,12 +38,15 @@ class ConflictResolutionTask(Task):
             if item.get("mergeable") != "CONFLICTING":
                 continue
 
-            yield ConflictResolutionTask(PullRequest(
-                number=item["number"],
-                branch=item["headRefName"],
-                title=item["title"],
-                mergeable=item.get("mergeable"),
-            ))
+            yield ConflictResolutionTask(
+                PullRequest(
+                    number=item["number"],
+                    branch=item["headRefName"],
+                    title=item["title"],
+                    mergeable=item.get("mergeable"),
+                ),
+                default_branch=default_branch,
+            )
 
     # ------------------------------------------------------------------
     # Task interface
@@ -50,10 +55,10 @@ class ConflictResolutionTask(Task):
     def describe(self) -> str:
         return (
             f"Resolve merge conflicts on PR #{self.pr.number}: {self.pr.title}\n\n"
-            f"The branch '{self.pr.branch}' has conflicts with main that must be resolved before merging.\n\n"
+            f"The branch '{self.pr.branch}' has conflicts with {self.default_branch} that must be resolved before merging.\n\n"
             f"Instructions:\n"
             f"- Run: git checkout {self.pr.branch}\n"
-            f"- Run: git merge main\n"
+            f"- Run: git merge {self.default_branch}\n"
             f"- If conflicts arise, read each conflicting file, understand the intent of both sides,\n"
             f"  and resolve the markers appropriately\n"
             f"- Stage resolved files and run: git merge --continue\n"

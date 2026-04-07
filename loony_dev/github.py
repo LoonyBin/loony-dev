@@ -489,3 +489,25 @@ class GitHubClient:
             capture_output=True, text=True, check=True,
         )
         return result.stdout.strip()
+
+    def detect_default_branch(self) -> str:
+        """Detect the repository's default branch via the gh CLI.
+
+        Returns the default branch name (e.g. ``main``, ``master``,
+        ``development``).  Falls back to ``"main"`` if detection fails.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    "gh", "repo", "view", self.repo,
+                    "--json", "defaultBranchRef",
+                    "-q", ".defaultBranchRef.name",
+                ],
+                capture_output=True, text=True, check=True,
+            )
+            branch = result.stdout.strip()
+            if branch:
+                return branch
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to detect default branch for %s; falling back to 'main'", self.repo)
+        return "main"
