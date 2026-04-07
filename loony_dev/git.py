@@ -8,8 +8,9 @@ logger = logging.getLogger(__name__)
 
 
 class GitRepo:
-    def __init__(self, work_dir: Path) -> None:
+    def __init__(self, work_dir: Path, default_branch: str = "main") -> None:
         self.work_dir = work_dir
+        self.default_branch = default_branch
 
     def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
         cmd = ["git", *args]
@@ -17,8 +18,8 @@ class GitRepo:
         return subprocess.run(cmd, cwd=self.work_dir, capture_output=True, text=True, check=True)
 
     def ensure_main_up_to_date(self) -> None:
-        """Checkout main and pull latest."""
-        self._run("checkout", "main")
+        """Checkout the default branch and pull latest."""
+        self._run("checkout", self.default_branch)
         self._run("pull", "--ff-only")
 
     def has_uncommitted_changes(self) -> bool:
@@ -43,7 +44,7 @@ class GitRepo:
         self._run("push", "--force-with-lease", "-u", "origin", branch)
 
     def checkout_main(self) -> None:
-        self._run("checkout", "main")
+        self._run("checkout", self.default_branch)
 
     def current_branch(self) -> str:
         result = self._run("rev-parse", "--abbrev-ref", "HEAD")
