@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import subprocess
@@ -59,6 +60,8 @@ def _parse_datetime(value: str | None) -> datetime | None:
 
 CI_FAILURE_MARKER = "<!-- loony-ci-failure -->"
 
+INJECTION_WARNING_SENTINEL = "<!-- loonybin-injection-warning field="
+
 REQUIRED_LABELS = [
     {"name": "ready-for-development", "color": "0075ca", "description": "Issue is ready for implementation"},
     {"name": "ready-for-planning",    "color": "e4e669", "description": "Issue needs planning/triage"},
@@ -71,16 +74,23 @@ class GitHubClient:
     def __init__(
         self,
         repo: str,
-        bot_name: str,
+        bot_name: str | None = None,
         allowed_users: set[str] | None = None,
-        min_role: str = "triage",
+        min_role: str | None = None,
         skip_ci_checks: set[str] | None = None,
     ) -> None:
+        from loony_dev import config
         self.repo = repo
-        self.bot_name = bot_name
-        self.allowed_users: set[str] = allowed_users or set()
-        self.min_role = min_role
-        self.skip_ci_checks: set[str] = skip_ci_checks or set()
+        self.bot_name = bot_name or config.settings.get("bot_name") or self.detect_bot_name()
+        self.allowed_users: set[str] = (
+            allowed_users if allowed_users is not None
+            else set(config.settings.get("allowed_users") or [])
+        )
+        self.min_role = min_role or config.settings.get("min_role") or "triage"
+        self.skip_ci_checks: set[str] = (
+            skip_ci_checks if skip_ci_checks is not None
+            else set(config.settings.get("skip_ci_checks") or [])
+        )
         # Cache: username -> (permission_level, monotonic_timestamp)
         self._permission_cache: dict[str, tuple[str | None, float]] = {}
 
@@ -134,6 +144,12 @@ class GitHubClient:
             self._post_injection_warning(item_number, field_name, result.injections)
         return result.text
 
+    def _injection_warning_exists(self, item_number: int, field_name: str) -> bool:
+        """Return True if a warning comment for *field_name* has already been posted."""
+        comments = self.get_issue_comments(item_number)
+        sentinel = f'{INJECTION_WARNING_SENTINEL}"{field_name}" -->'
+        return any(sentinel in c.body for c in comments)
+
     def _post_injection_warning(
         self,
         number: int,
@@ -141,8 +157,12 @@ class GitHubClient:
         injections: list[InjectionType],
     ) -> None:
         """Post a GitHub comment warning maintainers of detected hidden content."""
+        if self._injection_warning_exists(number, field_name):
+            return
         injection_labels = ", ".join(f"`{i.value}`" for i in injections)
+        sentinel = f'{INJECTION_WARNING_SENTINEL}"{field_name}" -->'
         body = (
+            f"{sentinel}\n"
             "> [!WARNING]\n"
             "> **Potential prompt injection attempt detected.**\n"
             ">\n"
@@ -255,7 +275,7 @@ class GitHubClient:
         items = self._gh_json(
             "pr", "list",
             "--state", "open",
-            "--json", "number,headRefName,headRefOid,title,comments,reviews,labels,mergeable,updatedAt",
+            "--json", "number,headRefName,headRefOid,title,comments,reviews,labels,mergeable,updatedAt,assignees",
         )
         sanitized = []
         for item in items:
@@ -280,10 +300,36 @@ class GitHubClient:
         logger.debug("list_open_prs() returned %d open PR(s)", len(sanitized))
         return sanitized
 
+    def is_assigned_to_bot(self, pr: dict) -> bool:
+        """Return True if the bot is listed as an assignee on the given PR dict."""
+        return any(
+            a.get("login", "") == self.bot_name
+            for a in pr.get("assignees", [])
+        )
+
     def get_pr_inline_comments(self, pr_number: int) -> list[Comment]:
-        """Fetch inline review comments for a PR."""
+        """Fetch inline review comments for a PR.
+
+        Uses each comment's associated review ``submitted_at`` as the effective
+        ``created_at`` timestamp. Inline comments are drafted before a review is
+        submitted, so their own ``created_at`` may pre-date the bot's last
+        SUCCESS_MARKER even though the review was submitted afterwards. Using
+        ``submitted_at`` ensures correct ordering relative to the marker.
+        """
         try:
             data = self._gh_api(f"pulls/{pr_number}/comments")
+            data_reviews = self._gh_api(f"pulls/{pr_number}/reviews")
+            review_submitted_at: dict[int, str] = {}
+            if isinstance(data_reviews, list):
+                review_submitted_at = {
+                    r["id"]: r["submitted_at"]
+                    for r in data_reviews
+                    if r.get("submitted_at")
+                }
+            logger.debug(
+                "get_pr_inline_comments(#%d) fetched %d review(s)",
+                pr_number, len(review_submitted_at),
+            )
             if isinstance(data, list):
                 comments = []
                 for c in data:
@@ -291,10 +337,16 @@ class GitHubClient:
                     body = c.get("body", "")
                     if author != self.bot_name:
                         body = self._sanitize_field(body, "body", "pr", pr_number)
+                    review_id = c.get("pull_request_review_id")
+                    effective_ts = (
+                        review_submitted_at.get(review_id)
+                        if review_id is not None
+                        else None
+                    ) or c.get("created_at", "")
                     comments.append(Comment(
                         author=author,
                         body=body,
-                        created_at=c.get("created_at", ""),
+                        created_at=effective_ts,
                         path=c.get("path"),
                         line=c.get("line"),
                     ))
@@ -379,44 +431,6 @@ class GitHubClient:
         except subprocess.CalledProcessError:
             logger.warning("Failed to remove label '%s' from #%d", label, number)
 
-    def ensure_label(self, name: str, color: str, description: str) -> None:
-        """Create label if it doesn't exist. Silently ignores conflicts (422)."""
-        try:
-            result = subprocess.run(
-                [
-                    "gh", "api", f"repos/{self.repo}/labels",
-                    "--method", "POST",
-                    "-f", f"name={name}",
-                    "-f", f"color={color}",
-                    "-f", f"description={description}",
-                ],
-                capture_output=True, text=True,
-            )
-            if result.returncode == 0:
-                logger.debug("Created label %r in %s", name, self.repo)
-                return
-            # A 422 response means the label already exists — parse to confirm.
-            try:
-                body = json.loads(result.stdout)
-                errors = body.get("errors", [])
-                if any(e.get("code") == "already_exists" for e in errors):
-                    logger.debug("Label %r already exists in %s", name, self.repo)
-                    return
-            except (ValueError, AttributeError):
-                pass
-            logger.warning(
-                "Failed to provision label %r in %s: %s",
-                name, self.repo, (result.stderr or result.stdout).strip(),
-            )
-        except Exception as exc:
-            logger.warning("Failed to provision label %r in %s: %s", name, self.repo, exc)
-
-    def ensure_required_labels(self) -> None:
-        """Provision all labels required by loony-dev into this repo."""
-        logger.info("Provisioning required labels for %s", self.repo)
-        for label in REQUIRED_LABELS:
-            self.ensure_label(**label)
-
     def assign_self(self, number: int) -> None:
         try:
             self._gh("issue", "edit", str(number), "--add-assignee", "@me")
@@ -468,6 +482,7 @@ class GitHubClient:
         return result.stdout.strip()
 
     @staticmethod
+    @functools.lru_cache(maxsize=1)
     def detect_bot_name() -> str:
         """Detect the authenticated GitHub user's login via the gh CLI."""
         result = subprocess.run(
@@ -475,3 +490,25 @@ class GitHubClient:
             capture_output=True, text=True, check=True,
         )
         return result.stdout.strip()
+
+    def detect_default_branch(self) -> str:
+        """Detect the repository's default branch via the gh CLI.
+
+        Returns the default branch name (e.g. ``main``, ``master``,
+        ``development``).  Falls back to ``"main"`` if detection fails.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    "gh", "repo", "view", self.repo,
+                    "--json", "defaultBranchRef",
+                    "-q", ".defaultBranchRef.name",
+                ],
+                capture_output=True, text=True, check=True,
+            )
+            branch = result.stdout.strip()
+            if branch:
+                return branch
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to detect default branch for %s; falling back to 'main'", self.repo)
+        return "main"

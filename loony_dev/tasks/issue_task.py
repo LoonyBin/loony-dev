@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from loony_dev.models import truncate_for_log
 from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, Task
-from loony_dev.tasks.planning_task import PLAN_MARKER
+from loony_dev.tasks.planning_task import PLAN_MARKER, PLAN_MARKER_PREFIX
 
 if TYPE_CHECKING:
     from loony_dev.github import GitHubClient
@@ -49,8 +49,10 @@ class IssueTask(Task):
         """Return the text of the most recent approved plan comment, or None."""
         plan: str | None = None
         for c in comments:
-            if c.author == bot_name and c.body.startswith(PLAN_MARKER):
-                plan = c.body[len(PLAN_MARKER):].strip()
+            if c.author == bot_name and c.body.startswith(PLAN_MARKER_PREFIX):
+                # Strip the marker header (HTML comment on the first line) to get the plan text.
+                end = c.body.find("-->")
+                plan = c.body[end + 3:].strip() if end >= 0 else c.body[len(PLAN_MARKER):].strip()
         return plan
 
     # ------------------------------------------------------------------
@@ -69,7 +71,9 @@ class IssueTask(Task):
             f"- Create a new branch for this work\n"
             f"- Implement the changes described in the issue\n"
             f"- Commit your changes with a descriptive message referencing #{self.issue.number}\n"
-            f"- Push the branch and create a pull request\n"
+            f"- Push the branch and create a pull request targeting the upstream repo, e.g.:\n"
+            f"  gh pr create --assignee @me -R $(gh repo view --json nameWithOwner -q .nameWithOwner)\n"
+            f"  (--fill is optional; use your discretion for the PR title and body)\n"
             f"- The PR title should reference the issue number"
         )
 

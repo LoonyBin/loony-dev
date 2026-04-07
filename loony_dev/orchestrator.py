@@ -36,12 +36,13 @@ class Orchestrator:
         github: GitHubClient,
         git: GitRepo,
         agents: list[Agent],
-        interval: int = 60,
+        interval: int | None = None,
     ) -> None:
+        from loony_dev import config
         self.github = github
         self.git = git
         self.agents = agents
-        self.interval = interval
+        self.interval = interval if interval is not None else config.settings.get("interval", 60)
         self._shutdown_requested: bool = False
         self._graceful_shutdown: bool = False
         self._active_agent: Agent | None = None
@@ -153,7 +154,7 @@ class Orchestrator:
             self._active_task = None
 
     def _cleanup(self) -> None:
-        """Ensure working directory is clean and on main."""
+        """Ensure working directory is clean and on the default branch."""
         try:
             if self.git.has_uncommitted_changes():
                 logger.warning("Uncommitted changes detected after task. Force committing.")
@@ -163,4 +164,4 @@ class Orchestrator:
         try:
             self.git.checkout_main()
         except Exception:
-            logger.exception("Failed to checkout main")
+            logger.exception("Failed to checkout default branch")
