@@ -6,7 +6,20 @@ import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from loony_dev import config
+
 logger = logging.getLogger(__name__)
+
+# Deprecated IANA timezone names that may not exist in minimal tzdata packages.
+# Claude's API sometimes returns these; map them to their canonical successors.
+_TZ_ALIASES: dict[str, str] = {
+    "Asia/Calcutta": "Asia/Kolkata",
+    "Asia/Saigon": "Asia/Ho_Chi_Minh",
+    "US/Eastern": "America/New_York",
+    "US/Central": "America/Chicago",
+    "US/Mountain": "America/Denver",
+    "US/Pacific": "America/Los_Angeles",
+}
 
 _QUOTA_PATTERNS = [
     "rate limit",
@@ -34,7 +47,6 @@ class ClaudeQuotaMixin:
     ``is_disabled``).
     """
 
-    QUOTA_FALLBACK_SECONDS = 5 * 60
     _disabled_until: datetime | None = None
 
     def can_handle(self, task: Task) -> bool:
@@ -79,8 +91,9 @@ class ClaudeQuotaMixin:
         time_str = match.group(1).strip()
         tz_str = match.group(2).strip()
 
+        canonical = _TZ_ALIASES.get(tz_str, tz_str)
         try:
-            tz = ZoneInfo(tz_str)
+            tz = ZoneInfo(canonical)
         except (KeyError, ValueError):
             return None
 
@@ -113,7 +126,8 @@ class ClaudeQuotaMixin:
         """Disable this agent until the quota resets.
 
         Parses the reset time from *output* and sets ``_disabled_until``.
-        Falls back to a fixed cooldown when the time cannot be parsed.
+        Falls back to a fixed cooldown when the time cannot be parsed,
+        and logs the raw output to aid diagnosis.
         """
         reset_at = self._parse_reset_time(output)
         if reset_at:
@@ -124,10 +138,14 @@ class ClaudeQuotaMixin:
                 self.name, self._disabled_until,
             )
         else:
+            fallback = int(config.settings.get("quota_fallback_seconds", 30 * 60))
             self._disabled_until = (
-                datetime.now(timezone.utc) + timedelta(seconds=self.QUOTA_FALLBACK_SECONDS)
+                datetime.now(timezone.utc) + timedelta(seconds=fallback)
             )
             logger.warning(
-                "Agent '%s' rate-limited (couldn't parse reset time). Disabled for %ds.",
-                self.name, self.QUOTA_FALLBACK_SECONDS,
+                "Agent '%s' rate-limited (couldn't parse reset time). "
+                "Disabled for %ds. Raw output (truncated): %.500s",
+                self.name,
+                fallback,
+                output,
             )

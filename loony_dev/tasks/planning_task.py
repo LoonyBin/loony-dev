@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from loony_dev.github import is_authorized
 from loony_dev.models import Comment, truncate_for_log
-from loony_dev.tasks.base import FAILURE_MARKER, Task
+from loony_dev.tasks.base import FAILURE_MARKER, Task, decode_last_seen, encode_marker
 
 if TYPE_CHECKING:
     from loony_dev.github import GitHubClient
@@ -14,7 +14,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-PLAN_MARKER = "<!-- loony-plan -->"
+PLAN_MARKER_PREFIX = "<!-- loony-plan"
+PLAN_MARKER = "<!-- loony-plan -->"  # legacy fixed string; kept for backward compatibility
 
 
 class PlanningTask(Task):
@@ -85,23 +86,35 @@ class PlanningTask(Task):
     ) -> tuple[str | None, list[Comment]]:
         """Return (existing_plan, new_user_comments_since_last_plan).
 
-        Only a bot comment starting with PLAN_MARKER counts as a plan.
+        Only a bot comment starting with PLAN_MARKER_PREFIX counts as a plan.
         Other bot comments (e.g. failure notices) are ignored.
+
+        When the plan marker encodes a ``last-seen`` timestamp, new comments are
+        filtered by timestamp so that feedback posted during a planning run is
+        not permanently missed.  Old markers without ``last-seen`` fall back to
+        position-based filtering.
         """
         bot_last_plan_idx = -1
         bot_last_plan: str | None = None
 
         for i, c in enumerate(comments):
-            if c.author == bot_name and c.body.startswith(PLAN_MARKER):
+            if c.author == bot_name and c.body.startswith(PLAN_MARKER_PREFIX):
                 bot_last_plan_idx = i
-                bot_last_plan = c.body[len(PLAN_MARKER):].strip()
+                # Strip the marker header (first HTML comment) to get the plan text.
+                end = c.body.find("-->")
+                bot_last_plan = c.body[end + 3:].strip() if end >= 0 else c.body[len(PLAN_MARKER):].strip()
 
         if bot_last_plan_idx == -1:
             new_comments = [c for c in comments if c.author != bot_name]
         else:
-            new_comments = [
-                c for c in comments[bot_last_plan_idx + 1:] if c.author != bot_name
-            ]
+            last_seen = decode_last_seen(comments[bot_last_plan_idx].body)
+            if last_seen is not None:
+                new_comments = [c for c in comments if c.author != bot_name and c.created_at > last_seen]
+            else:
+                # Backward compat: old marker without last-seen → position-based filter.
+                new_comments = [
+                    c for c in comments[bot_last_plan_idx + 1:] if c.author != bot_name
+                ]
 
         return bot_last_plan, new_comments
 
@@ -143,7 +156,9 @@ class PlanningTask(Task):
             "Issue #%d: posting plan (%d chars): %s",
             self.issue.number, len(result.summary), truncate_for_log(result.summary),
         )
-        github.post_comment(self.issue.number, f"{PLAN_MARKER}\n\n{result.summary}")
+        last_seen_ts = max((c.created_at for c in self.new_comments), default="")
+        marker = encode_marker(PLAN_MARKER_PREFIX, last_seen_ts) if last_seen_ts else PLAN_MARKER
+        github.post_comment(self.issue.number, f"{marker}\n\n{result.summary}")
 
     def on_failure(self, github: GitHubClient, error: Exception) -> None:
         logger.debug("Issue #%d: planning failed (%s)", self.issue.number, error)

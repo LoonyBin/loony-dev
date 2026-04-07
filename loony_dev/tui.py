@@ -18,9 +18,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Header, RichLog, Static, Tab, Tabs
 
-
-MAX_BUFFER_LINES = 5000
-TAIL_LINES = 100  # Lines to load into RichLog initially; rest loaded on scroll-up
+from loony_dev import config
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +51,7 @@ class LogWatcher:
     On the first successful open, reads from the beginning of the file so that
     existing log content is loaded into the buffer. Handles missing files
     gracefully until they appear. Accumulates received lines in ``self.buffer``
-    (capped at MAX_BUFFER_LINES).
+    (capped at ``config.settings.max_buffer_lines``).
 
     Uses inotify on Linux to detect modifications without spinning; falls back
     to unconditional polling on platforms where inotify is unavailable.
@@ -139,7 +137,7 @@ class LogWatcher:
 
         if new_lines:
             self.buffer.extend(new_lines)
-            excess = len(self.buffer) - MAX_BUFFER_LINES
+            excess = len(self.buffer) - int(config.settings.get("max_buffer_lines", 5000))
             if excess > 0:
                 del self.buffer[:excess]
 
@@ -311,8 +309,8 @@ class LogPane(Widget):
 
     Maintains one RichLog per tab and toggles visibility, so tab switches are
     instantaneous instead of replaying the entire buffer.  Only the last
-    TAIL_LINES are written initially; the full buffer is loaded lazily when
-    the user scrolls to the top.
+    ``config.settings.tail_lines`` lines are written initially; the full buffer
+    is loaded lazily when the user scrolls to the top.
     """
 
     DEFAULT_CSS = """
@@ -363,10 +361,11 @@ class LogPane(Widget):
         self._logs[key] = log
         self._watchers[key] = watcher
         self.mount(log, before=self.query_one("#follow-banner"))
-        tail = watcher.buffer[-TAIL_LINES:] if len(watcher.buffer) > TAIL_LINES else watcher.buffer
+        tail_lines = int(config.settings.get("tail_lines", 100))
+        tail = watcher.buffer[-tail_lines:] if len(watcher.buffer) > tail_lines else watcher.buffer
         for line in tail:
             log.write(line)
-        if len(watcher.buffer) <= TAIL_LINES:
+        if len(watcher.buffer) <= tail_lines:
             self._fully_loaded.add(key)
 
     def switch_watcher(self, key: str, watcher: LogWatcher) -> None:
@@ -401,7 +400,7 @@ class LogPane(Widget):
         if watcher is None:
             return
         # The tail that was loaded starts at this offset in the full buffer
-        prepended = max(0, len(watcher.buffer) - TAIL_LINES)
+        prepended = max(0, len(watcher.buffer) - int(config.settings.get("tail_lines", 100)))
         log.clear()
         for line in watcher.buffer:
             log.write(line)
@@ -454,15 +453,21 @@ class SupervisorApp(App):
 
     def __init__(
         self,
-        base_dir: Path,
-        supervisor_log: Path,
-        scan_interval: float = 5.0,
+        base_dir: Path | None = None,
+        supervisor_log: Path | None = None,
+        scan_interval: float | None = None,
         **kwargs,
     ) -> None:
+        from loony_dev import config
         super().__init__(**kwargs)
-        self._base_dir = base_dir
-        self._supervisor_log = supervisor_log
-        self._scan_interval = scan_interval
+        self._base_dir = base_dir if base_dir is not None else config.settings.base_dir
+        self._supervisor_log = (
+            supervisor_log if supervisor_log is not None else config.settings.supervisor_log
+        )
+        self._scan_interval = (
+            scan_interval if scan_interval is not None
+            else float(config.settings.get("scan_interval", 5))
+        )
         self._watchers: dict[str, LogWatcher] = {}
         self._current_label: str | None = None
 

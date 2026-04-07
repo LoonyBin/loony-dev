@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from loony_dev.agents.base import Agent
 from loony_dev.agents.claude_quota import ClaudeQuotaMixin
@@ -60,13 +62,16 @@ class TestParseResetTime(unittest.TestCase):
     """ClaudeQuotaMixin._parse_reset_time should handle multiple message formats."""
 
     def test_resets_without_at(self) -> None:
-        """The format from the bug report: 'resets 7:30pm (Asia/Calcutta)'."""
+        """The format from the bug report: 'resets 7:30pm (Asia/Calcutta)'.
+
+        Asia/Calcutta is a deprecated IANA name; the alias map resolves it
+        to Asia/Kolkata so it works even on hosts without the legacy entry.
+        """
         msg = "You've hit your limit · resets 7:30pm (Asia/Calcutta)"
         result = ClaudeQuotaMixin._parse_reset_time(msg)
         self.assertIsNotNone(result)
         self.assertEqual(result.hour, 19)
         self.assertEqual(result.minute, 30)
-        self.assertEqual(str(result.tzinfo), "Asia/Calcutta")
 
     def test_resets_with_at(self) -> None:
         """The original expected format: 'reset at 2pm (America/New_York)'."""
@@ -82,6 +87,22 @@ class TestParseResetTime(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.hour, 22)
         self.assertEqual(result.minute, 45)
+
+    def test_deprecated_tz_asia_calcutta(self) -> None:
+        """Deprecated 'Asia/Calcutta' alias must be resolved to Asia/Kolkata."""
+        msg = "You've hit your limit · resets 1:30pm (Asia/Calcutta)"
+        result = ClaudeQuotaMixin._parse_reset_time(msg)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.hour, 13)
+        self.assertEqual(result.minute, 30)
+
+    def test_deprecated_tz_us_eastern(self) -> None:
+        """Deprecated 'US/Eastern' alias must be resolved to America/New_York."""
+        msg = "resets 3pm (US/Eastern)"
+        result = ClaudeQuotaMixin._parse_reset_time(msg)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.hour, 15)
+        self.assertEqual(result.minute, 0)
 
     def test_no_match(self) -> None:
         self.assertIsNone(ClaudeQuotaMixin._parse_reset_time("some random error"))
@@ -125,15 +146,85 @@ class TestDisabledUntil(unittest.TestCase):
         agent = _DummyClaudeAgent()
         agent._handle_quota_error("some unknown error")
         self.assertTrue(agent.is_disabled())
-        # Fallback should be roughly QUOTA_FALLBACK_SECONDS from now
+        # Fallback should be roughly quota_fallback_seconds (default 1800s) from now
         delta = (agent._disabled_until - datetime.now(timezone.utc)).total_seconds()
         self.assertGreater(delta, 200)
-        self.assertLess(delta, agent.QUOTA_FALLBACK_SECONDS + 10)
+        self.assertLess(delta, 1800 + 10)
+
+    def test_fallback_duration_default_is_at_least_30_minutes(self) -> None:
+        """Default quota_fallback_seconds must be >= 1800 (30 minutes)."""
+        from loony_dev import config
+        fallback = int(config.settings.get("quota_fallback_seconds", 30 * 60))
+        self.assertGreaterEqual(fallback, 1800)
+
+    def test_handle_quota_error_fallback_logs_raw_output(self) -> None:
+        """When parse fails the warning log must include the raw output."""
+        agent = _DummyClaudeAgent()
+        unparseable = "some completely unrecognised quota message xyz"
+        with patch("loony_dev.agents.claude_quota.logger") as mock_logger:
+            agent._handle_quota_error(unparseable)
+        mock_logger.warning.assert_called_once()
+        call_args = str(mock_logger.warning.call_args)
+        self.assertIn(unparseable, call_args)
 
     def test_plain_agent_never_disabled(self) -> None:
         """Agent without the mixin is never disabled."""
         agent = _DummyPlainAgent()
         self.assertTrue(agent.can_handle(None))  # type: ignore[arg-type]
+
+
+class TestQuotaWorkerGracefulHandling(unittest.TestCase):
+    """Quota errors must not raise or exit the worker; they return TaskResult(success=False)."""
+
+    def _make_popen_mock(self, stdout: str, stderr: str, returncode: int) -> MagicMock:
+        mock_proc = MagicMock()
+        mock_proc.__enter__.return_value = mock_proc
+        mock_proc.__exit__.return_value = False
+        mock_proc.communicate.return_value = (stdout, stderr)
+        mock_proc.returncode = returncode
+        return mock_proc
+
+    def test_quota_error_returns_task_result_not_raises(self) -> None:
+        """execute() with a quota-error response must return TaskResult without raising."""
+        from loony_dev.agents.coding import CodingAgent
+        from loony_dev.models import TaskResult
+
+        agent = CodingAgent(work_dir=Path("/tmp"))
+        quota_stderr = "You've hit your limit · resets 7:30pm (Asia/Calcutta)"
+        mock_proc = self._make_popen_mock(stdout="", stderr=quota_stderr, returncode=1)
+
+        mock_task = MagicMock()
+        mock_task.describe.return_value = "implement test feature"
+        mock_task.task_type = "implement_issue"
+
+        with patch("subprocess.Popen", return_value=mock_proc), \
+             patch("subprocess.check_output", return_value=b"abc123\n"):
+            result = agent.execute(mock_task)
+
+        self.assertIsInstance(result, TaskResult)
+        self.assertFalse(result.success)
+        self.assertTrue(agent.is_disabled())
+
+    def test_quota_error_is_disabled_not_crashed(self) -> None:
+        """After a quota error the agent must be disabled, not in an error state."""
+        from loony_dev.agents.coding import CodingAgent
+
+        agent = CodingAgent(work_dir=Path("/tmp"))
+        mock_proc = self._make_popen_mock(
+            stdout="rate limit exceeded",
+            stderr="",
+            returncode=1,
+        )
+
+        mock_task = MagicMock()
+        mock_task.describe.return_value = "implement test feature"
+
+        with patch("subprocess.Popen", return_value=mock_proc), \
+             patch("subprocess.check_output", return_value=b"deadbeef\n"):
+            agent.execute(mock_task)
+
+        self.assertTrue(agent.is_disabled())
+        self.assertFalse(agent.can_handle(mock_task))
 
 
 if __name__ == "__main__":

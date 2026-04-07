@@ -6,7 +6,15 @@ from typing import TYPE_CHECKING
 
 from loony_dev.github import is_authorized
 from loony_dev.models import Comment, PullRequest, truncate_for_log
-from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, Task
+from loony_dev.tasks.base import (
+    FAILURE_MARKER,
+    FAILURE_MARKER_PREFIX,
+    SUCCESS_MARKER,
+    SUCCESS_MARKER_PREFIX,
+    Task,
+    decode_last_seen,
+    encode_marker,
+)
 
 if TYPE_CHECKING:
     from loony_dev.github import GitHubClient
@@ -31,6 +39,9 @@ class PRReviewTask(Task):
         """Yield PRs that have new review comments from authorized users since the bot last responded."""
         for item in github.list_open_prs():
             pr_number = item["number"]
+            if not github.is_assigned_to_bot(item):
+                logger.debug("PR #%d is not assigned to bot — skipping", pr_number)
+                continue
             labels = [l["name"] for l in item.get("labels", [])]
             logger.debug("Examining PR #%d: %s (labels=%s)", pr_number, item.get("title", ""), labels)
             if "in-progress" in labels:
@@ -92,15 +103,36 @@ class PRReviewTask(Task):
 
     @staticmethod
     def _new_since_bot(comments: list[Comment], bot_name: str) -> list[Comment]:
-        """Return non-bot comments after the bot's last *successful* response."""
+        """Return non-bot comments after the bot's last *successful* response.
+
+        When the marker encodes a ``last-seen`` timestamp, comments are filtered
+        by timestamp (strictly after last-seen) so that comments posted *during*
+        the previous task run are not permanently missed.  Old markers without
+        ``last-seen`` fall back to position-based filtering for backward
+        compatibility.
+        """
         bot_last_success_idx = -1
+        bot_last_success_body: str | None = None
         for i, c in enumerate(comments):
-            if c.author == bot_name and c.body.startswith(SUCCESS_MARKER):
+            if c.author == bot_name and c.body.startswith(SUCCESS_MARKER_PREFIX):
                 bot_last_success_idx = i
+                bot_last_success_body = c.body
 
         if bot_last_success_idx == -1:
-            return [c for c in comments if c.author != bot_name]
-        return [c for c in comments[bot_last_success_idx + 1:] if c.author != bot_name]
+            result = [c for c in comments if c.author != bot_name]
+        else:
+            last_seen = decode_last_seen(bot_last_success_body or "")
+            if last_seen is not None:
+                result = [c for c in comments if c.author != bot_name and c.created_at > last_seen]
+            else:
+                # Backward compat: old marker without last-seen → position-based filter.
+                result = [c for c in comments[bot_last_success_idx + 1:] if c.author != bot_name]
+
+        logger.debug(
+            "_new_since_bot: last success marker at index %d, returning %d new comment(s)",
+            bot_last_success_idx, len(result),
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Task interface
@@ -138,10 +170,12 @@ class PRReviewTask(Task):
         logger.debug("PR #%d: removing 'in-progress'", self.pr.number)
         github.remove_label(self.pr.number, "in-progress")
         if result.post_summary:
+            last_seen_ts = max((c.created_at for c in self.pr.new_comments), default="")
+            marker = encode_marker(SUCCESS_MARKER_PREFIX, last_seen_ts) if last_seen_ts else SUCCESS_MARKER
             logger.debug("Completion comment body: %s", truncate_for_log(result.summary))
             github.post_comment(
                 self.pr.number,
-                f"{SUCCESS_MARKER}\n\nReview comments addressed.\n\n{result.summary}",
+                f"{marker}\n\nReview comments addressed.\n\n{result.summary}",
             )
         else:
             logger.debug("PR #%d: no code changes detected — skipping summary comment", self.pr.number)
@@ -149,7 +183,9 @@ class PRReviewTask(Task):
     def on_failure(self, github: GitHubClient, error: Exception) -> None:
         logger.debug("PR #%d: task failed (%s), removing 'in-progress'", self.pr.number, error)
         github.remove_label(self.pr.number, "in-progress")
+        last_seen_ts = max((c.created_at for c in self.pr.new_comments), default="")
+        marker = encode_marker(FAILURE_MARKER_PREFIX, last_seen_ts) if last_seen_ts else FAILURE_MARKER
         github.post_comment(
             self.pr.number,
-            f"{FAILURE_MARKER}\n\nFailed to address review comments: {error}",
+            f"{marker}\n\nFailed to address review comments: {error}",
         )

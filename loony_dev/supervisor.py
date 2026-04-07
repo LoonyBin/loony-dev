@@ -8,9 +8,11 @@ import signal
 import subprocess
 import sys
 import time
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from loony_dev import config
 from loony_dev.github import GitHubClient
 
 logger = logging.getLogger(__name__)
@@ -35,6 +37,90 @@ def _remove_pid_file(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError as exc:
         logger.warning("Failed to remove PID file %s: %s", path, exc)
+
+
+# ---------------------------------------------------------------------------
+# Invitation acceptance
+# ---------------------------------------------------------------------------
+
+def list_pending_invitations() -> list[dict]:
+    """Return all pending repository invitation objects for the authenticated user."""
+    import json
+    try:
+        result = subprocess.run(
+            ["gh", "api", "/user/repository_invitations", "--paginate"],
+            capture_output=True, text=True, check=True,
+        )
+        # --paginate emits one JSON array per page; merge them all
+        invitations: list[dict] = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                chunk = json.loads(line)
+                if isinstance(chunk, list):
+                    invitations.extend(chunk)
+            except json.JSONDecodeError as exc:
+                logger.warning("Failed to parse invitation response chunk: %s", exc)
+        return invitations
+    except subprocess.CalledProcessError as exc:
+        logger.error("Failed to list pending invitations: %s", exc.stderr.strip())
+        return []
+    except Exception:
+        logger.exception("Unexpected error listing pending invitations")
+        return []
+
+
+def accept_pending_invitations() -> list[str]:
+    """Accept pending repository invitations from configured users.
+
+    Reads ``config.settings.accept_invites_from`` to determine which inviters
+    are trusted.  Returns a list of accepted 'owner/repo' strings.
+    """
+    accept_from: tuple[str, ...] = config.settings.get("accept_invites_from") or ()
+    if not accept_from:
+        return []
+
+    wildcard = accept_from == ("*",)
+    if wildcard:
+        logger.warning(
+            "--accept-invites-from='*' is set. The agent will accept repository invitations "
+            "from ANY GitHub user. This allows anyone to inject arbitrary repositories into this "
+            "agent's workspace. Only use this in fully trusted environments."
+        )
+
+    invitations = list_pending_invitations()
+    if not invitations:
+        return []
+
+    accepted: list[str] = []
+    skipped = 0
+
+    for inv in invitations:
+        inv_id = inv.get("id")
+        repo = (inv.get("repository") or {}).get("full_name", "<unknown>")
+        inviter = (inv.get("inviter") or {}).get("login", "<unknown>")
+
+        if not wildcard and inviter not in accept_from:
+            logger.debug("Skipping invitation to %s from %s (not in accept_invites_from)", repo, inviter)
+            skipped += 1
+            continue
+
+        try:
+            subprocess.run(
+                ["gh", "api", "--method", "PATCH", f"/user/repository_invitations/{inv_id}"],
+                capture_output=True, text=True, check=True,
+            )
+            logger.info("Accepted invitation to %s from %s", repo, inviter)
+            accepted.append(repo)
+        except subprocess.CalledProcessError as exc:
+            logger.warning("Failed to accept invitation %s to %s: %s", inv_id, repo, exc.stderr.strip())
+
+    if skipped and not accepted:
+        logger.info("No pending invitations from configured users")
+
+    return accepted
 
 
 # ---------------------------------------------------------------------------
@@ -183,56 +269,34 @@ class WorkerProcess:
     restart_count: int = field(default=0)
 
 
-def _worker_command(
-    repo: str,
-    work_dir: Path,
-    worker_interval: int,
-    bot_name: str | None,
-    verbose: bool,
-    log_file: Path,
-    allowed_users: list[str] | None = None,
-    min_role: str = "triage",
-) -> list[str]:
-    """Build the argv list for a worker subprocess."""
-    # Prefer the installed entry point; fall back to running the module directly.
+def _worker_command(repo: str, work_dir: Path, log_file: Path) -> list[str]:
+    """Build the argv list for a worker subprocess.
+
+    Any unprocessed arguments collected after ``--`` by the supervisor command
+    (``config.settings.worker_args``) are appended verbatim to the worker
+    invocation so users can forward worker options without duplicating them as
+    ``--worker-*`` supervisor options.
+    """
     cmd_prefix: list[str]
     if shutil.which("loony-dev"):
         cmd_prefix = ["loony-dev"]
     else:
         cmd_prefix = [sys.executable, "-m", "loony_dev.cli"]
 
-    cmd = cmd_prefix + [
-        "worker",
-        "--repo", repo,
-        "--work-dir", str(work_dir),
-        "--interval", str(worker_interval),
-    ]
-    if bot_name:
-        cmd += ["--bot-name", bot_name]
-    if verbose:
-        cmd += ["--verbose"]
-    for user in (allowed_users or []):
-        cmd += ["--allowed-users", user]
-    if min_role != "triage":
-        cmd += ["--min-role", min_role]
+    cmd = cmd_prefix + ["worker", "--repo", repo, "--work-dir", str(work_dir)]
+
+    extra = config.settings.get("worker_args") or ()
+    if extra:
+        cmd += list(extra)
+
     return cmd
 
 
-def launch_worker(
-    repo: str,
-    work_dir: Path,
-    log_file: Path,
-    pid_file: Path,
-    worker_interval: int,
-    bot_name: str | None,
-    verbose: bool,
-    allowed_users: list[str] | None = None,
-    min_role: str = "triage",
-) -> WorkerProcess:
+def launch_worker(repo: str, work_dir: Path, log_file: Path, pid_file: Path) -> WorkerProcess:
     """Spawn a worker subprocess; stdout/stderr are redirected to *log_file*."""
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
-    cmd = _worker_command(repo, work_dir, worker_interval, bot_name, verbose, log_file, allowed_users, min_role)
+    cmd = _worker_command(repo, work_dir, log_file)
     logger.info("Launching worker for %s (log: %s)", repo, log_file)
 
     log_fh = open(log_file, "a")  # noqa: SIM115  — intentionally kept open
@@ -277,30 +341,15 @@ def _terminate_worker(wp: WorkerProcess, timeout: float = 10.0) -> None:
     _remove_pid_file(wp.pid_file)
 
 
-def run_supervisor(
-    base_dir: Path,
-    interval: int,
-    worker_interval: int,
-    bot_name: str | None,
-    verbose: bool,
-    log_file: str | None,
-    min_restart_delay: float,
-    max_restart_delay: float,
-    include: list[str] | None,
-    exclude: list[str] | None,
-    refresh_interval: int,
-    allowed_users: list[str] | None = None,
-    min_role: str = "triage",
-) -> None:
+def run_supervisor() -> None:
     """Discover repositories, check them out, and run a worker for each.
 
     Runs until interrupted by SIGINT or SIGTERM.
     """
-    base_dir.mkdir(parents=True, exist_ok=True)
-    logs_dir = base_dir / ".logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    config.settings.base_dir.mkdir(parents=True, exist_ok=True)
+    (config.settings.base_dir / ".logs").mkdir(parents=True, exist_ok=True)
 
-    supervisor_pid_file = logs_dir / "supervisor.pid"
+    supervisor_pid_file = config.settings.base_dir / ".logs" / "supervisor.pid"
     _write_pid_file(supervisor_pid_file, os.getpid())
 
     workers: dict[str, WorkerProcess] = {}
@@ -325,12 +374,12 @@ def run_supervisor(
 
     logger.info(
         "Supervisor started. base_dir=%s interval=%ds refresh=%ds",
-        base_dir, interval, refresh_interval,
+        config.settings.base_dir, config.settings.interval, config.settings.refresh_interval,
     )
-    if include:
-        logger.info("Include patterns: %s", include)
-    if exclude:
-        logger.info("Exclude patterns: %s", exclude)
+    if config.settings.include:
+        logger.info("Include patterns: %s", config.settings.include)
+    if config.settings.exclude:
+        logger.info("Exclude patterns: %s", config.settings.exclude)
 
     while not shutdown_requested:
         now = time.monotonic()
@@ -338,15 +387,16 @@ def run_supervisor(
         # ------------------------------------------------------------------ #
         # Discovery phase
         # ------------------------------------------------------------------ #
-        if now - last_discovery >= refresh_interval:
+        if now - last_discovery >= config.settings.refresh_interval:
             last_discovery = now
             logger.info("Running repo discovery…")
 
+            accept_pending_invitations()
             all_repos = list_accessible_repos()
             if not all_repos:
                 logger.warning("No repos discovered (gh returned nothing or failed). Will retry on next refresh.")
             else:
-                active = filter_repos(all_repos, include, exclude)
+                active = filter_repos(all_repos, config.settings.include, config.settings.exclude)
                 logger.info(
                     "Discovered %d repos; %d match filters.",
                     len(all_repos), len(active),
@@ -365,21 +415,18 @@ def run_supervisor(
                     if repo in workers:
                         continue
                     try:
-                        work_dir = ensure_repo_checked_out(repo, base_dir)
+                        work_dir = ensure_repo_checked_out(repo, config.settings.base_dir)
                     except Exception:
                         logger.error("Skipping %s this cycle due to clone failure.", repo)
                         continue
 
-                    GitHubClient(repo, bot_name or "").ensure_required_labels()
-
                     owner, name = repo.split("/", 1)
-                    log_path = base_dir / ".logs" / owner / name / "loony-worker.log"
-                    pid_path = base_dir / ".logs" / owner / name / "loony-worker.pid"
+                    log_path = config.settings.base_dir / ".logs" / owner / name / "loony-worker.log"
+                    pid_path = config.settings.base_dir / ".logs" / owner / name / "loony-worker.pid"
                     log_path.parent.mkdir(parents=True, exist_ok=True)
 
                     try:
-                        client = GitHubClient(repo, bot_name or "")
-                        client.ensure_required_labels()
+                        GitHubClient(repo).ensure_required_labels()
                     except Exception:
                         logger.warning("Label provisioning failed for %s; continuing to launch worker.", repo)
 
@@ -389,11 +436,6 @@ def run_supervisor(
                             work_dir=work_dir,
                             log_file=log_path,
                             pid_file=pid_path,
-                            worker_interval=worker_interval,
-                            bot_name=bot_name,
-                            verbose=verbose,
-                            allowed_users=allowed_users,
-                            min_role=min_role,
                         )
                         workers[repo] = wp
                     except Exception:
@@ -408,7 +450,7 @@ def run_supervisor(
                         repo, wp.log_file.parent,
                     )
                     _terminate_worker(wp)
-                    remove_repo(repo, base_dir)
+                    remove_repo(repo, config.settings.base_dir)
 
         if shutdown_requested:
             break
@@ -434,7 +476,10 @@ def run_supervisor(
             )
             _remove_pid_file(wp.pid_file)
 
-            delay = min(min_restart_delay * (2 ** wp.restart_count), max_restart_delay)
+            delay = min(
+                config.settings.min_restart_delay * (2 ** wp.restart_count),
+                config.settings.max_restart_delay,
+            )
             logger.info("Restarting worker for %s in %.1fs…", repo, delay)
 
             # Interruptible delay
@@ -451,11 +496,6 @@ def run_supervisor(
                     work_dir=wp.work_dir,
                     log_file=wp.log_file,
                     pid_file=wp.pid_file,
-                    worker_interval=worker_interval,
-                    bot_name=bot_name,
-                    verbose=verbose,
-                    allowed_users=allowed_users,
-                    min_role=min_role,
                 )
                 new_wp.restart_count = wp.restart_count + 1
                 workers[repo] = new_wp
@@ -466,7 +506,7 @@ def run_supervisor(
             break
 
         # Interruptible sleep for the health-check interval
-        sleep_deadline = time.monotonic() + interval
+        sleep_deadline = time.monotonic() + config.settings.interval
         while not shutdown_requested and time.monotonic() < sleep_deadline:
             time.sleep(min(1.0, sleep_deadline - time.monotonic()))
 

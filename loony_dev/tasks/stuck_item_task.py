@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -33,12 +32,9 @@ class StuckItemCleanupTask(Task):
 
     @staticmethod
     def discover(github: GitHubClient) -> Iterator[StuckItemCleanupTask]:
-        """Yield cleanup tasks for issues and PRs stuck in-progress past the threshold.
-
-        The threshold is read from the ``LOONY_STUCK_THRESHOLD_HOURS`` environment
-        variable (default: 12 hours).
-        """
-        threshold_hours = int(os.environ.get("LOONY_STUCK_THRESHOLD_HOURS", "12"))
+        """Yield cleanup tasks for issues and PRs stuck in-progress past the threshold."""
+        from loony_dev import config
+        threshold_hours = int(config.settings.get("stuck_threshold_hours", 12))
         cutoff = datetime.now(timezone.utc) - timedelta(hours=threshold_hours)
 
         for issue, _ in github.list_issues(label="in-progress"):
@@ -50,6 +46,8 @@ class StuckItemCleanupTask(Task):
                 yield StuckItemCleanupTask(issue, threshold_hours)
 
         for item in github.list_open_prs():
+            if not github.is_assigned_to_bot(item):
+                continue
             labels = [label["name"] for label in item.get("labels", [])]
             if "in-progress" not in labels:
                 continue
