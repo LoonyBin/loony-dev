@@ -589,8 +589,8 @@ class GitHubClient:
         ``development``).  Falls back to ``"main"`` if detection fails.
         """
         try:
-            branch = self._gh(
-                "repo", "view",
+            branch = _run_gh(
+                "gh", "repo", "view", self.repo,
                 "--json", "defaultBranchRef",
                 "-q", ".defaultBranchRef.name",
             )
