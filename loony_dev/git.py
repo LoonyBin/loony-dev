@@ -15,7 +15,17 @@ class GitRepo:
     def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
         cmd = ["git", *args]
         logger.debug("Running: %s", " ".join(cmd))
-        return subprocess.run(cmd, cwd=self.work_dir, capture_output=True, text=True, check=True)
+        try:
+            return subprocess.run(cmd, cwd=self.work_dir, capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as exc:
+            logger.debug(
+                "git command failed (exit %d): %s\nstdout: %s\nstderr: %s",
+                exc.returncode,
+                " ".join(cmd),
+                (exc.stdout or "").strip(),
+                (exc.stderr or "").strip(),
+            )
+            raise
 
     def ensure_main_up_to_date(self) -> None:
         """Checkout the default branch and pull latest."""
