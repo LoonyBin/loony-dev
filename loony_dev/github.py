@@ -5,7 +5,9 @@ import json
 import logging
 import subprocess
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
 from loony_dev.models import CheckRun, Comment, Issue, truncate_for_log
 from loony_dev.sanitize import InjectionType, sanitize_user_content
@@ -23,6 +25,14 @@ _ROLE_HIERARCHY = ["none", "read", "triage", "write", "admin"]
 _DEFAULT_AUTHORIZED_ROLES = {"admin", "write", "triage"}
 
 _PERMISSION_CACHE_TTL = 600  # 10 minutes
+_CHECK_RUNS_CACHE_TTL = 300  # 5 minutes
+
+
+@dataclass
+class _CheckRunsCacheEntry:
+    failing_runs: list[CheckRun]
+    all_completed: bool  # True iff every check run had status=="completed"
+    cached_at: float  # time.monotonic()
 
 
 def _roles_at_or_above(min_role: str) -> set[str]:
@@ -92,6 +102,10 @@ class GitHubClient:
         )
         # Cache: username -> (permission_level, monotonic_timestamp)
         self._permission_cache: dict[str, tuple[str | None, float]] = {}
+        # Tick-scoped cache: cleared at the start of each tick
+        self._tick_cache: dict[str, Any] = {}
+        # Cross-tick cache: head_sha -> _CheckRunsCacheEntry
+        self._check_runs_cache: dict[str, _CheckRunsCacheEntry] = {}
 
     def _gh(self, *args: str) -> str:
         """Run a gh CLI command and return stdout."""
@@ -221,6 +235,23 @@ class GitHubClient:
         if stale:
             logger.debug("Evicted %d stale permission cache entries", len(stale))
 
+    # --- Tick-scoped cache ---
+
+    def clear_tick_cache(self) -> None:
+        """Discard all per-tick cached data. Call at the start of each tick."""
+        self._tick_cache.clear()
+
+    # --- Cross-tick check-runs cache ---
+
+    def evict_stale_check_runs_cache(self) -> None:
+        """Remove expired entries from the check-runs cache."""
+        now = time.monotonic()
+        stale = [sha for sha, entry in self._check_runs_cache.items() if now - entry.cached_at >= _CHECK_RUNS_CACHE_TTL]
+        for sha in stale:
+            del self._check_runs_cache[sha]
+        if stale:
+            logger.debug("Evicted %d stale check-runs cache entries", len(stale))
+
     # --- Issues ---
 
     def list_issues(self, label: str) -> list[tuple[Issue, list[str]]]:
@@ -270,7 +301,14 @@ class GitHubClient:
 
         User-controlled string fields (title, comment/review bodies) are
         sanitized for prompt injection before being returned.
+
+        Results are cached for the duration of the current tick (cleared by
+        ``clear_tick_cache()`` at the start of each tick).
         """
+        cached = self._tick_cache.get("open_prs")
+        if cached is not None:
+            logger.debug("list_open_prs() tick-cache hit (%d PRs)", len(cached))
+            return cached
         items = self._gh_json(
             "pr", "list",
             "--state", "open",
@@ -297,6 +335,7 @@ class GitHubClient:
             ]
             sanitized.append(item)
         logger.debug("list_open_prs() returned %d open PR(s)", len(sanitized))
+        self._tick_cache["open_prs"] = sanitized
         return sanitized
 
     def is_assigned_to_bot(self, pr: dict) -> bool:
@@ -360,13 +399,24 @@ class GitHubClient:
 
         Filters for status == "completed" and conclusion in ("failure", "timed_out").
         Excludes checks whose name is in self.skip_ci_checks.
+
+        Results for SHAs where all checks have completed are cached for
+        ``_CHECK_RUNS_CACHE_TTL`` seconds across ticks.
         """
+        now = time.monotonic()
+        entry = self._check_runs_cache.get(head_sha)
+        if entry is not None and entry.all_completed and now - entry.cached_at < _CHECK_RUNS_CACHE_TTL:
+            logger.debug("get_pr_check_runs(%r) cache hit (%d failing)", head_sha, len(entry.failing_runs))
+            return entry.failing_runs
+
         try:
             data = self._gh_api(f"commits/{head_sha}/check-runs")
             if not isinstance(data, dict):
                 return []
+            all_runs = data.get("check_runs", [])
+            all_completed = all(r.get("status") == "completed" for r in all_runs)
             runs = []
-            for run in data.get("check_runs", []):
+            for run in all_runs:
                 name = run.get("name", "")
                 if name in self.skip_ci_checks:
                     continue
@@ -379,7 +429,12 @@ class GitHubClient:
                         conclusion=conclusion,
                         details_url=run.get("details_url", run.get("html_url", "")),
                     ))
-            logger.debug("get_pr_check_runs(%r) returned %d failing run(s)", head_sha, len(runs))
+            self._check_runs_cache[head_sha] = _CheckRunsCacheEntry(
+                failing_runs=runs,
+                all_completed=all_completed,
+                cached_at=now,
+            )
+            logger.debug("get_pr_check_runs(%r) returned %d failing run(s) (all_completed=%s)", head_sha, len(runs), all_completed)
             return runs
         except subprocess.CalledProcessError:
             logger.warning("Failed to fetch check runs for SHA %r", head_sha)

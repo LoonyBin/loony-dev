@@ -93,7 +93,9 @@ class Orchestrator:
                 logger.exception("Failed to clean up GitHub state on shutdown")
 
     def _tick(self) -> None:
+        self.github.clear_tick_cache()
         self.github.evict_stale_permission_cache()
+        self.github.evict_stale_check_runs_cache()
         result = self._find_work()
         if result is None:
             logger.debug("No tasks found.")
