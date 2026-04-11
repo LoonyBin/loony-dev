@@ -6,7 +6,7 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from loony_dev.github import GitHubClient, _CHECK_RUNS_CACHE_TTL, _GH_MAX_RETRIES
+from loony_dev.github import GitHubClient, _CHECK_RUNS_CACHE_TTL, _GH_MAX_RETRIES, _is_retryable_gh_error
 
 
 def _make_client() -> GitHubClient:
@@ -141,6 +141,7 @@ class TestGhRetry(unittest.TestCase):
     @patch("loony_dev.github.time.sleep")
     @patch("loony_dev.github.subprocess.run")
     def test_retries_on_rate_limit_then_succeeds(self, mock_run: MagicMock, mock_sleep: MagicMock) -> None:
+        """_gh delegates to _run_gh which retries on rate-limit errors."""
         ok = MagicMock(stdout="ok\n", stderr="")
         mock_run.side_effect = [_rate_limit_error(), _rate_limit_error(), ok]
 
@@ -181,11 +182,11 @@ class TestGhRetry(unittest.TestCase):
     def test_is_retryable_detects_rate_limit_patterns(self) -> None:
         for msg in ["API rate limit exceeded", "abuse detection mechanism", "secondary rate limit", "HTTP 403", "HTTP 429"]:
             exc = _rate_limit_error(msg)
-            assert GitHubClient._is_retryable_error(exc), f"Should detect: {msg}"
+            assert _is_retryable_gh_error(exc), f"Should detect: {msg}"
 
     def test_is_retryable_rejects_normal_errors(self) -> None:
         exc = _non_retryable_error()
-        assert not GitHubClient._is_retryable_error(exc)
+        assert not _is_retryable_gh_error(exc)
 
 
 if __name__ == "__main__":

@@ -40,6 +40,38 @@ class _CheckRunsCacheEntry:
     cached_at: float  # time.monotonic()
 
 
+def _is_retryable_gh_error(exc: subprocess.CalledProcessError) -> bool:
+    """Return True if the gh CLI error looks like a rate-limit or transient server error."""
+    combined = ((exc.stdout or "") + (exc.stderr or "")).lower()
+    return any(p in combined for p in _GH_RATE_LIMIT_PATTERNS)
+
+
+def _run_gh(*cmd: str) -> str:
+    """Run a gh CLI command with retry and exponential backoff on rate-limit errors.
+
+    Retries up to ``_GH_MAX_RETRIES`` times. Non-retryable errors are raised
+    immediately.
+    """
+    logger.debug("Running: %s", " ".join(cmd))
+    backoff = _GH_INITIAL_BACKOFF
+    for attempt in range(_GH_MAX_RETRIES + 1):
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            return result.stdout.strip()
+        except subprocess.CalledProcessError as exc:
+            if attempt < _GH_MAX_RETRIES and _is_retryable_gh_error(exc):
+                logger.warning(
+                    "gh rate-limited (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt + 1, _GH_MAX_RETRIES + 1, backoff,
+                    (exc.stderr or exc.stdout or "").strip()[:200],
+                )
+                time.sleep(backoff)
+                backoff *= 2
+            else:
+                raise
+    raise RuntimeError("unreachable")  # pragma: no cover
+
+
 def _roles_at_or_above(min_role: str) -> set[str]:
     """Return the set of role names that are >= min_role in the hierarchy."""
     try:
@@ -112,40 +144,12 @@ class GitHubClient:
         # Cross-tick cache: head_sha -> _CheckRunsCacheEntry
         self._check_runs_cache: dict[str, _CheckRunsCacheEntry] = {}
 
-    @staticmethod
-    def _is_retryable_error(exc: subprocess.CalledProcessError) -> bool:
-        """Return True if the gh CLI error looks like a rate-limit or transient server error."""
-        combined = ((exc.stdout or "") + (exc.stderr or "")).lower()
-        return any(p in combined for p in _GH_RATE_LIMIT_PATTERNS)
-
     def _gh(self, *args: str) -> str:
-        """Run a gh CLI command and return stdout.
-
-        Retries up to ``_GH_MAX_RETRIES`` times with exponential backoff when
-        the failure looks like a GitHub rate-limit or transient server error.
-        """
+        """Run a gh CLI command and return stdout (with retry on rate-limit)."""
         cmd = ["gh", *args]
         if args and args[0] != "api":
             cmd += ["-R", self.repo]
-        logger.debug("Running: %s", " ".join(cmd))
-
-        backoff = _GH_INITIAL_BACKOFF
-        for attempt in range(_GH_MAX_RETRIES + 1):
-            try:
-                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-                return result.stdout.strip()
-            except subprocess.CalledProcessError as exc:
-                if attempt < _GH_MAX_RETRIES and self._is_retryable_error(exc):
-                    logger.warning(
-                        "gh rate-limited (attempt %d/%d), retrying in %.1fs: %s",
-                        attempt + 1, _GH_MAX_RETRIES + 1, backoff,
-                        (exc.stderr or exc.stdout or "").strip()[:200],
-                    )
-                    time.sleep(backoff)
-                    backoff *= 2
-                else:
-                    raise
-        raise RuntimeError("unreachable")  # pragma: no cover
+        return _run_gh(*cmd)
 
     def _gh_api(self, endpoint: str) -> list | dict:
         """Call gh api for this repo and parse JSON output."""
@@ -240,14 +244,11 @@ class GitHubClient:
                 return cached_perm
 
         try:
-            output = subprocess.run(
-                [
-                    "gh", "api",
-                    f"repos/{self.repo}/collaborators/{username}/permission",
-                    "-q", ".permission",
-                ],
-                capture_output=True, text=True, check=True,
-            ).stdout.strip()
+            output = self._gh(
+                "api",
+                f"repos/{self.repo}/collaborators/{username}/permission",
+                "-q", ".permission",
+            )
             permission: str | None = output if output else None
         except subprocess.CalledProcessError:
             # 404 means the user is not a collaborator.
@@ -560,21 +561,13 @@ class GitHubClient:
     @staticmethod
     def detect_repo() -> str:
         """Detect owner/repo from git remote URL."""
-        result = subprocess.run(
-            ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
-            capture_output=True, text=True, check=True,
-        )
-        return result.stdout.strip()
+        return _run_gh("gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner")
 
     @staticmethod
     @functools.lru_cache(maxsize=1)
     def detect_bot_name() -> str:
         """Detect the authenticated GitHub user's login via the gh CLI."""
-        result = subprocess.run(
-            ["gh", "api", "user", "-q", ".login"],
-            capture_output=True, text=True, check=True,
-        )
-        return result.stdout.strip()
+        return _run_gh("gh", "api", "user", "-q", ".login")
 
     def detect_default_branch(self) -> str:
         """Detect the repository's default branch via the gh CLI.
@@ -583,15 +576,11 @@ class GitHubClient:
         ``development``).  Falls back to ``"main"`` if detection fails.
         """
         try:
-            result = subprocess.run(
-                [
-                    "gh", "repo", "view", self.repo,
-                    "--json", "defaultBranchRef",
-                    "-q", ".defaultBranchRef.name",
-                ],
-                capture_output=True, text=True, check=True,
+            branch = self._gh(
+                "repo", "view",
+                "--json", "defaultBranchRef",
+                "-q", ".defaultBranchRef.name",
             )
-            branch = result.stdout.strip()
             if branch:
                 return branch
         except subprocess.CalledProcessError:
