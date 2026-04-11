@@ -27,6 +27,11 @@ _DEFAULT_AUTHORIZED_ROLES = {"admin", "write", "triage"}
 _PERMISSION_CACHE_TTL = 600  # 10 minutes
 _CHECK_RUNS_CACHE_TTL = 300  # 5 minutes
 
+# Retry / backoff for transient gh CLI failures (rate-limit, server errors).
+_GH_MAX_RETRIES = 3
+_GH_INITIAL_BACKOFF = 2.0  # seconds
+_GH_RATE_LIMIT_PATTERNS = ("rate limit", "abuse detection", "secondary rate", "403", "429")
+
 
 @dataclass
 class _CheckRunsCacheEntry:
@@ -107,14 +112,40 @@ class GitHubClient:
         # Cross-tick cache: head_sha -> _CheckRunsCacheEntry
         self._check_runs_cache: dict[str, _CheckRunsCacheEntry] = {}
 
+    @staticmethod
+    def _is_retryable_error(exc: subprocess.CalledProcessError) -> bool:
+        """Return True if the gh CLI error looks like a rate-limit or transient server error."""
+        combined = ((exc.stdout or "") + (exc.stderr or "")).lower()
+        return any(p in combined for p in _GH_RATE_LIMIT_PATTERNS)
+
     def _gh(self, *args: str) -> str:
-        """Run a gh CLI command and return stdout."""
+        """Run a gh CLI command and return stdout.
+
+        Retries up to ``_GH_MAX_RETRIES`` times with exponential backoff when
+        the failure looks like a GitHub rate-limit or transient server error.
+        """
         cmd = ["gh", *args]
         if args and args[0] != "api":
             cmd += ["-R", self.repo]
         logger.debug("Running: %s", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        return result.stdout.strip()
+
+        backoff = _GH_INITIAL_BACKOFF
+        for attempt in range(_GH_MAX_RETRIES + 1):
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                return result.stdout.strip()
+            except subprocess.CalledProcessError as exc:
+                if attempt < _GH_MAX_RETRIES and self._is_retryable_error(exc):
+                    logger.warning(
+                        "gh rate-limited (attempt %d/%d), retrying in %.1fs: %s",
+                        attempt + 1, _GH_MAX_RETRIES + 1, backoff,
+                        (exc.stderr or exc.stdout or "").strip()[:200],
+                    )
+                    time.sleep(backoff)
+                    backoff *= 2
+                else:
+                    raise
+        raise RuntimeError("unreachable")  # pragma: no cover
 
     def _gh_api(self, endpoint: str) -> list | dict:
         """Call gh api for this repo and parse JSON output."""

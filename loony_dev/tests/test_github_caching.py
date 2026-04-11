@@ -1,11 +1,12 @@
-"""Tests for GitHubClient tick-scoped and cross-tick caching."""
+"""Tests for GitHubClient caching and retry logic."""
 from __future__ import annotations
 
+import subprocess
 import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from loony_dev.github import GitHubClient, _CHECK_RUNS_CACHE_TTL
+from loony_dev.github import GitHubClient, _CHECK_RUNS_CACHE_TTL, _GH_MAX_RETRIES
 
 
 def _make_client() -> GitHubClient:
@@ -113,6 +114,78 @@ class TestCheckRunsCache(unittest.TestCase):
 
         client.evict_stale_check_runs_cache()
         assert "abc123" not in client._check_runs_cache
+
+
+# ---------------------------------------------------------------------------
+# Exponential backoff: _gh retries on rate-limit errors
+# ---------------------------------------------------------------------------
+
+
+def _rate_limit_error(stderr: str = "API rate limit exceeded") -> subprocess.CalledProcessError:
+    exc = subprocess.CalledProcessError(1, "gh")
+    exc.stdout = ""
+    exc.stderr = stderr
+    return exc
+
+
+def _non_retryable_error() -> subprocess.CalledProcessError:
+    exc = subprocess.CalledProcessError(1, "gh")
+    exc.stdout = ""
+    exc.stderr = "not found"
+    return exc
+
+
+class TestGhRetry(unittest.TestCase):
+    """_gh should retry with backoff on rate-limit errors."""
+
+    @patch("loony_dev.github.time.sleep")
+    @patch("loony_dev.github.subprocess.run")
+    def test_retries_on_rate_limit_then_succeeds(self, mock_run: MagicMock, mock_sleep: MagicMock) -> None:
+        ok = MagicMock(stdout="ok\n", stderr="")
+        mock_run.side_effect = [_rate_limit_error(), _rate_limit_error(), ok]
+
+        client = _make_client()
+        result = client._gh("api", "repos/owner/repo/issues")
+
+        assert result == "ok"
+        assert mock_run.call_count == 3
+        assert mock_sleep.call_count == 2
+        # Verify exponential backoff: 2.0, 4.0
+        assert mock_sleep.call_args_list[0][0][0] == 2.0
+        assert mock_sleep.call_args_list[1][0][0] == 4.0
+
+    @patch("loony_dev.github.time.sleep")
+    @patch("loony_dev.github.subprocess.run")
+    def test_raises_after_max_retries(self, mock_run: MagicMock, mock_sleep: MagicMock) -> None:
+        mock_run.side_effect = [_rate_limit_error() for _ in range(_GH_MAX_RETRIES + 1)]
+
+        client = _make_client()
+        with self.assertRaises(subprocess.CalledProcessError):
+            client._gh("api", "repos/owner/repo/issues")
+
+        assert mock_run.call_count == _GH_MAX_RETRIES + 1
+        assert mock_sleep.call_count == _GH_MAX_RETRIES
+
+    @patch("loony_dev.github.time.sleep")
+    @patch("loony_dev.github.subprocess.run")
+    def test_no_retry_on_non_retryable_error(self, mock_run: MagicMock, mock_sleep: MagicMock) -> None:
+        mock_run.side_effect = _non_retryable_error()
+
+        client = _make_client()
+        with self.assertRaises(subprocess.CalledProcessError):
+            client._gh("api", "repos/owner/repo/issues")
+
+        mock_run.assert_called_once()
+        mock_sleep.assert_not_called()
+
+    def test_is_retryable_detects_rate_limit_patterns(self) -> None:
+        for msg in ["API rate limit exceeded", "abuse detection mechanism", "secondary rate limit", "HTTP 403", "HTTP 429"]:
+            exc = _rate_limit_error(msg)
+            assert GitHubClient._is_retryable_error(exc), f"Should detect: {msg}"
+
+    def test_is_retryable_rejects_normal_errors(self) -> None:
+        exc = _non_retryable_error()
+        assert not GitHubClient._is_retryable_error(exc)
 
 
 if __name__ == "__main__":
