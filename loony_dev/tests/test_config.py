@@ -230,6 +230,26 @@ def test_settings_populated_via_clickgroup(tmp_path, monkeypatch):
     assert observed[0] == 7
 
 
+def test_settings_includes_shared_sections(tmp_path, monkeypatch):
+    """Non-command config sections (e.g. [github]) are available via config.settings."""
+    import click
+
+    monkeypatch.chdir(tmp_path)
+    toml_content = b'[github]\nmax_retries = 5\ninitial_backoff = 1.0\n'
+    (tmp_path / ".loony-dev.toml").write_bytes(toml_content)
+    observed: list = []
+
+    @click.command(cls=config.ClickCommand)
+    @click.option("--val", default=1)
+    def cmd(**_) -> None:
+        observed.append(config.settings.get("github"))
+
+    runner = CliRunner()
+    result = runner.invoke(cmd, [])
+    assert result.exit_code == 0
+    assert observed[0] == {"max_retries": 5, "initial_backoff": 1.0}
+
+
 # ---------------------------------------------------------------------------
 # Settings helpers
 # ---------------------------------------------------------------------------

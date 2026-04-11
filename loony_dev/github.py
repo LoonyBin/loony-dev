@@ -5,7 +5,9 @@ import json
 import logging
 import subprocess
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
 from loony_dev.models import CheckRun, Comment, Issue, truncate_for_log
 from loony_dev.sanitize import InjectionType, sanitize_user_content
@@ -22,7 +24,65 @@ _ROLE_HIERARCHY = ["none", "read", "triage", "write", "admin"]
 # Roles that are authorized when min_role="triage" (the default).
 _DEFAULT_AUTHORIZED_ROLES = {"admin", "write", "triage"}
 
-_PERMISSION_CACHE_TTL = 600  # 10 minutes
+# Defaults for the [github] config section.  Used when a key is absent from
+# config.settings["github"] (or when settings haven't been populated yet).
+_DEFAULTS: dict[str, int | float] = {
+    "permission_cache_ttl": 600,       # seconds
+    "check_runs_cache_ttl": 3600,      # seconds (1 hour)
+    "max_retries": 5,
+    "initial_backoff": 2.0,            # seconds
+}
+
+_GH_RATE_LIMIT_PATTERNS = ("rate limit", "abuse detection", "secondary rate", "403", "429")
+
+
+def _gh_setting(key: str) -> int | float:
+    """Read a ``[github]`` config value, falling back to ``_DEFAULTS``."""
+    from loony_dev import config
+    section = config.settings.get("github")
+    if isinstance(section, dict) and key in section:
+        return type(_DEFAULTS[key])(section[key])
+    return _DEFAULTS[key]
+
+
+@dataclass
+class _CheckRunsCacheEntry:
+    failing_runs: list[CheckRun]
+    all_completed: bool  # True iff every check run had status=="completed"
+    cached_at: float  # time.monotonic()
+
+
+def _is_retryable_gh_error(exc: subprocess.CalledProcessError) -> bool:
+    """Return True if the gh CLI error looks like a rate-limit or transient server error."""
+    combined = ((exc.stdout or "") + (exc.stderr or "")).lower()
+    return any(p in combined for p in _GH_RATE_LIMIT_PATTERNS)
+
+
+def _run_gh(*cmd: str) -> str:
+    """Run a gh CLI command with retry and exponential backoff on rate-limit errors.
+
+    Reads ``max_retries`` and ``initial_backoff`` from the ``[github]`` config
+    section.  Non-retryable errors are raised immediately.
+    """
+    max_retries = int(_gh_setting("max_retries"))
+    logger.debug("Running: %s", " ".join(cmd))
+    backoff = float(_gh_setting("initial_backoff"))
+    for attempt in range(max_retries + 1):
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            return result.stdout.strip()
+        except subprocess.CalledProcessError as exc:
+            if attempt < max_retries and _is_retryable_gh_error(exc):
+                logger.warning(
+                    "gh rate-limited (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt + 1, max_retries + 1, backoff,
+                    (exc.stderr or exc.stdout or "").strip()[:200],
+                )
+                time.sleep(backoff)
+                backoff *= 2
+            else:
+                raise
+    raise RuntimeError("unreachable")  # pragma: no cover
 
 
 def _roles_at_or_above(min_role: str) -> set[str]:
@@ -92,15 +152,17 @@ class GitHubClient:
         )
         # Cache: username -> (permission_level, monotonic_timestamp)
         self._permission_cache: dict[str, tuple[str | None, float]] = {}
+        # Tick-scoped cache: cleared at the start of each tick
+        self._tick_cache: dict[str, Any] = {}
+        # Cross-tick cache: head_sha -> _CheckRunsCacheEntry
+        self._check_runs_cache: dict[str, _CheckRunsCacheEntry] = {}
 
     def _gh(self, *args: str) -> str:
-        """Run a gh CLI command and return stdout."""
+        """Run a gh CLI command and return stdout (with retry on rate-limit)."""
         cmd = ["gh", *args]
         if args and args[0] != "api":
             cmd += ["-R", self.repo]
-        logger.debug("Running: %s", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        return result.stdout.strip()
+        return _run_gh(*cmd)
 
     def _gh_api(self, endpoint: str) -> list | dict:
         """Call gh api for this repo and parse JSON output."""
@@ -185,24 +247,21 @@ class GitHubClient:
         """Return the user's repository permission level, or None if not a collaborator.
 
         Possible values: 'admin', 'write', 'triage', 'read', 'none'.
-        Results are cached for ``_PERMISSION_CACHE_TTL`` seconds.
+        Results are cached for ``permission_cache_ttl`` seconds (see ``[github]`` config).
         """
         now = time.monotonic()
         if username in self._permission_cache:
             cached_perm, cached_at = self._permission_cache[username]
-            if now - cached_at < _PERMISSION_CACHE_TTL:
+            if now - cached_at < _gh_setting("permission_cache_ttl"):
                 logger.debug("Permission cache hit for %r: %r", username, cached_perm)
                 return cached_perm
 
         try:
-            output = subprocess.run(
-                [
-                    "gh", "api",
-                    f"repos/{self.repo}/collaborators/{username}/permission",
-                    "-q", ".permission",
-                ],
-                capture_output=True, text=True, check=True,
-            ).stdout.strip()
+            output = self._gh(
+                "api",
+                f"repos/{self.repo}/collaborators/{username}/permission",
+                "-q", ".permission",
+            )
             permission: str | None = output if output else None
         except subprocess.CalledProcessError:
             # 404 means the user is not a collaborator.
@@ -215,11 +274,28 @@ class GitHubClient:
     def evict_stale_permission_cache(self) -> None:
         """Remove expired entries from the permission cache."""
         now = time.monotonic()
-        stale = [u for u, (_, ts) in self._permission_cache.items() if now - ts >= _PERMISSION_CACHE_TTL]
+        stale = [u for u, (_, ts) in self._permission_cache.items() if now - ts >= _gh_setting("permission_cache_ttl")]
         for u in stale:
             del self._permission_cache[u]
         if stale:
             logger.debug("Evicted %d stale permission cache entries", len(stale))
+
+    # --- Tick-scoped cache ---
+
+    def clear_tick_cache(self) -> None:
+        """Discard all per-tick cached data. Call at the start of each tick."""
+        self._tick_cache.clear()
+
+    # --- Cross-tick check-runs cache ---
+
+    def evict_stale_check_runs_cache(self) -> None:
+        """Remove expired entries from the check-runs cache."""
+        now = time.monotonic()
+        stale = [sha for sha, entry in self._check_runs_cache.items() if now - entry.cached_at >= _gh_setting("check_runs_cache_ttl")]
+        for sha in stale:
+            del self._check_runs_cache[sha]
+        if stale:
+            logger.debug("Evicted %d stale check-runs cache entries", len(stale))
 
     # --- Issues ---
 
@@ -270,7 +346,14 @@ class GitHubClient:
 
         User-controlled string fields (title, comment/review bodies) are
         sanitized for prompt injection before being returned.
+
+        Results are cached for the duration of the current tick (cleared by
+        ``clear_tick_cache()`` at the start of each tick).
         """
+        cached = self._tick_cache.get("open_prs")
+        if cached is not None:
+            logger.debug("list_open_prs() tick-cache hit (%d PRs)", len(cached))
+            return cached
         items = self._gh_json(
             "pr", "list",
             "--state", "open",
@@ -297,6 +380,7 @@ class GitHubClient:
             ]
             sanitized.append(item)
         logger.debug("list_open_prs() returned %d open PR(s)", len(sanitized))
+        self._tick_cache["open_prs"] = sanitized
         return sanitized
 
     def is_assigned_to_bot(self, pr: dict) -> bool:
@@ -360,13 +444,24 @@ class GitHubClient:
 
         Filters for status == "completed" and conclusion in ("failure", "timed_out").
         Excludes checks whose name is in self.skip_ci_checks.
+
+        Results for SHAs where all checks have completed are cached for
+        ``check_runs_cache_ttl`` seconds across ticks (see ``[github]`` config).
         """
+        now = time.monotonic()
+        entry = self._check_runs_cache.get(head_sha)
+        if entry is not None and entry.all_completed and now - entry.cached_at < _gh_setting("check_runs_cache_ttl"):
+            logger.debug("get_pr_check_runs(%r) cache hit (%d failing)", head_sha, len(entry.failing_runs))
+            return entry.failing_runs
+
         try:
             data = self._gh_api(f"commits/{head_sha}/check-runs")
             if not isinstance(data, dict):
                 return []
+            all_runs = data.get("check_runs", [])
+            all_completed = all(r.get("status") == "completed" for r in all_runs)
             runs = []
-            for run in data.get("check_runs", []):
+            for run in all_runs:
                 name = run.get("name", "")
                 if name in self.skip_ci_checks:
                     continue
@@ -379,7 +474,12 @@ class GitHubClient:
                         conclusion=conclusion,
                         details_url=run.get("details_url", run.get("html_url", "")),
                     ))
-            logger.debug("get_pr_check_runs(%r) returned %d failing run(s)", head_sha, len(runs))
+            self._check_runs_cache[head_sha] = _CheckRunsCacheEntry(
+                failing_runs=runs,
+                all_completed=all_completed,
+                cached_at=now,
+            )
+            logger.debug("get_pr_check_runs(%r) returned %d failing run(s) (all_completed=%s)", head_sha, len(runs), all_completed)
             return runs
         except subprocess.CalledProcessError:
             logger.warning("Failed to fetch check runs for SHA %r", head_sha)
@@ -474,21 +574,13 @@ class GitHubClient:
     @staticmethod
     def detect_repo() -> str:
         """Detect owner/repo from git remote URL."""
-        result = subprocess.run(
-            ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
-            capture_output=True, text=True, check=True,
-        )
-        return result.stdout.strip()
+        return _run_gh("gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner")
 
     @staticmethod
     @functools.lru_cache(maxsize=1)
     def detect_bot_name() -> str:
         """Detect the authenticated GitHub user's login via the gh CLI."""
-        result = subprocess.run(
-            ["gh", "api", "user", "-q", ".login"],
-            capture_output=True, text=True, check=True,
-        )
-        return result.stdout.strip()
+        return _run_gh("gh", "api", "user", "-q", ".login")
 
     def detect_default_branch(self) -> str:
         """Detect the repository's default branch via the gh CLI.
@@ -497,15 +589,11 @@ class GitHubClient:
         ``development``).  Falls back to ``"main"`` if detection fails.
         """
         try:
-            result = subprocess.run(
-                [
-                    "gh", "repo", "view", self.repo,
-                    "--json", "defaultBranchRef",
-                    "-q", ".defaultBranchRef.name",
-                ],
-                capture_output=True, text=True, check=True,
+            branch = self._gh(
+                "repo", "view",
+                "--json", "defaultBranchRef",
+                "-q", ".defaultBranchRef.name",
             )
-            branch = result.stdout.strip()
             if branch:
                 return branch
         except subprocess.CalledProcessError:

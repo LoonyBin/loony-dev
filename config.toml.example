@@ -59,6 +59,27 @@
 
 
 # ---------------------------------------------------------------------------
+# [github] — GitHub API client tuning (shared across all commands)
+# ---------------------------------------------------------------------------
+
+[github]
+
+# Seconds to cache a user's repository permission level.
+# permission_cache_ttl = 600
+
+# Seconds to cache completed check-run results for a given commit SHA.
+# check_runs_cache_ttl = 3600
+
+# Maximum number of retries when a gh CLI call hits a rate-limit or
+# transient server error (403, 429, "abuse detection", etc.).
+# max_retries = 5
+
+# Initial backoff delay in seconds before the first retry.
+# Subsequent retries double the delay (exponential backoff).
+# initial_backoff = 2.0
+
+
+# ---------------------------------------------------------------------------
 # [supervisor] — loony-dev supervisor
 # ---------------------------------------------------------------------------
 
