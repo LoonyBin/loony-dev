@@ -30,7 +30,16 @@ class GitRepo:
     def ensure_main_up_to_date(self) -> None:
         """Checkout the default branch and pull latest."""
         self._run("checkout", self.default_branch)
-        self._run("pull", "--ff-only")
+        self._run("fetch", "origin", self.default_branch)
+        try:
+            self._run("pull", "--ff-only")
+        except subprocess.CalledProcessError:
+            logger.warning(
+                "Fast-forward pull failed; resetting local %s to origin/%s",
+                self.default_branch,
+                self.default_branch,
+            )
+            self._run("reset", "--hard", f"origin/{self.default_branch}")
 
     def has_uncommitted_changes(self) -> bool:
         result = self._run("status", "--porcelain")
