@@ -6,7 +6,7 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from loony_dev.github import GitHubClient, _CHECK_RUNS_CACHE_TTL, _GH_MAX_RETRIES, _is_retryable_gh_error
+from loony_dev.github import GitHubClient, _DEFAULTS, _gh_setting, _is_retryable_gh_error
 
 
 def _make_client() -> GitHubClient:
@@ -92,7 +92,7 @@ class TestCheckRunsCache(unittest.TestCase):
 
         # Advance cached_at past TTL
         entry = client._check_runs_cache["abc123"]
-        entry.cached_at = time.monotonic() - _CHECK_RUNS_CACHE_TTL - 1
+        entry.cached_at = time.monotonic() - _gh_setting("check_runs_cache_ttl") - 1
 
         client.get_pr_check_runs("abc123")
 
@@ -110,7 +110,7 @@ class TestCheckRunsCache(unittest.TestCase):
 
         # Make entry stale
         entry = client._check_runs_cache["abc123"]
-        entry.cached_at = time.monotonic() - _CHECK_RUNS_CACHE_TTL - 1
+        entry.cached_at = time.monotonic() - _gh_setting("check_runs_cache_ttl") - 1
 
         client.evict_stale_check_runs_cache()
         assert "abc123" not in client._check_runs_cache
@@ -138,6 +138,17 @@ def _non_retryable_error() -> subprocess.CalledProcessError:
 class TestGhRetry(unittest.TestCase):
     """_gh should retry with backoff on rate-limit errors."""
 
+    def setUp(self) -> None:
+        """Pin config to defaults so tests are independent of config file state."""
+        import loony_dev.config as config_mod
+        from loony_dev.config import Settings
+        self._original_settings = config_mod.settings
+        config_mod.settings = Settings({})
+
+    def tearDown(self) -> None:
+        import loony_dev.config as config_mod
+        config_mod.settings = self._original_settings
+
     @patch("loony_dev.github.time.sleep")
     @patch("loony_dev.github.subprocess.run")
     def test_retries_on_rate_limit_then_succeeds(self, mock_run: MagicMock, mock_sleep: MagicMock) -> None:
@@ -151,21 +162,22 @@ class TestGhRetry(unittest.TestCase):
         assert result == "ok"
         assert mock_run.call_count == 3
         assert mock_sleep.call_count == 2
-        # Verify exponential backoff: 2.0, 4.0
+        # Verify exponential backoff: 2.0, 4.0 (defaults)
         assert mock_sleep.call_args_list[0][0][0] == 2.0
         assert mock_sleep.call_args_list[1][0][0] == 4.0
 
     @patch("loony_dev.github.time.sleep")
     @patch("loony_dev.github.subprocess.run")
     def test_raises_after_max_retries(self, mock_run: MagicMock, mock_sleep: MagicMock) -> None:
-        mock_run.side_effect = [_rate_limit_error() for _ in range(_GH_MAX_RETRIES + 1)]
+        max_retries = int(_DEFAULTS["max_retries"])
+        mock_run.side_effect = [_rate_limit_error() for _ in range(max_retries + 1)]
 
         client = _make_client()
         with self.assertRaises(subprocess.CalledProcessError):
             client._gh("api", "repos/owner/repo/issues")
 
-        assert mock_run.call_count == _GH_MAX_RETRIES + 1
-        assert mock_sleep.call_count == _GH_MAX_RETRIES
+        assert mock_run.call_count == max_retries + 1
+        assert mock_sleep.call_count == max_retries
 
     @patch("loony_dev.github.time.sleep")
     @patch("loony_dev.github.subprocess.run")
@@ -187,6 +199,41 @@ class TestGhRetry(unittest.TestCase):
     def test_is_retryable_rejects_normal_errors(self) -> None:
         exc = _non_retryable_error()
         assert not _is_retryable_gh_error(exc)
+
+
+# ---------------------------------------------------------------------------
+# [github] config section
+# ---------------------------------------------------------------------------
+
+
+class TestGithubConfig(unittest.TestCase):
+    """_gh_setting reads from config.settings['github'], falling back to _DEFAULTS."""
+
+    def test_defaults_when_no_github_section(self) -> None:
+        """Without a [github] section, _gh_setting returns built-in defaults."""
+        import loony_dev.config as config_mod
+        from loony_dev.config import Settings
+        original = config_mod.settings
+        try:
+            config_mod.settings = Settings({})
+            for key, default in _DEFAULTS.items():
+                assert _gh_setting(key) == default, f"{key} should be {default}"
+        finally:
+            config_mod.settings = original
+
+    def test_overrides_from_settings(self) -> None:
+        """Values in config.settings['github'] override defaults."""
+        import loony_dev.config as config_mod
+        from loony_dev.config import Settings
+        original = config_mod.settings
+        try:
+            config_mod.settings = Settings({"github": {"max_retries": 5, "initial_backoff": 10.0}})
+            assert _gh_setting("max_retries") == 5
+            assert _gh_setting("initial_backoff") == 10.0
+            # Unset keys still have defaults
+            assert _gh_setting("permission_cache_ttl") == _DEFAULTS["permission_cache_ttl"]
+        finally:
+            config_mod.settings = original
 
 
 if __name__ == "__main__":
