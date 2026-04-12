@@ -10,5 +10,11 @@ dependencies = [
 [project.scripts]
 loony-dev = "loony_dev.cli:cli"
 
+[project.entry-points."loony_dev.task_plugins"]
+github = "loony_dev.tasks.plugins:GithubTaskPlugin"
+
+[project.entry-points."loony_dev.agent_plugins"]
+claude = "loony_dev.agents.plugins:ClaudeAgentPlugin"
+
 [tool.setuptools.packages.find]
 include = ["loony_dev*"]

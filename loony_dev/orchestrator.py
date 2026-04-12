@@ -5,14 +5,8 @@ import signal
 import time
 from typing import TYPE_CHECKING
 
-from loony_dev.tasks.ci_failure_task import CIFailureTask
-from loony_dev.tasks.conflict_task import ConflictResolutionTask
-from loony_dev.tasks.issue_task import IssueTask
-from loony_dev.tasks.planning_task import PlanningTask
-from loony_dev.tasks.pr_review_task import PRReviewTask
-from loony_dev.tasks.stuck_item_task import StuckItemCleanupTask
-
 from loony_dev.models import RateLimitedError
+
 
 if TYPE_CHECKING:
     from loony_dev.agents.base import Agent
@@ -22,14 +16,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Task classes ordered by priority (lowest number = highest priority).
-# The orchestrator iterates these in order, stopping as soon as it finds
-# a task that some configured agent can handle.
-TASK_CLASSES = sorted(
-    [StuckItemCleanupTask, ConflictResolutionTask, CIFailureTask, PRReviewTask, PlanningTask, IssueTask],
-    key=lambda tc: tc.priority,
-)
-
 
 class Orchestrator:
     def __init__(
@@ -37,12 +23,18 @@ class Orchestrator:
         github: GitHubClient,
         git: GitRepo,
         agents: list[Agent],
+        task_classes: list[type[Task]] | None = None,
         interval: int | None = None,
     ) -> None:
         from loony_dev import config
         self.github = github
         self.git = git
         self.agents = agents
+        self.task_classes: list[type[Task]] = (
+            sorted(task_classes, key=lambda tc: tc.priority)
+            if task_classes is not None
+            else []
+        )
         self.interval = interval if interval is not None else config.settings.get("interval", 60)
         self._shutdown_requested: bool = False
         self._graceful_shutdown: bool = False
@@ -113,7 +105,7 @@ class Orchestrator:
         Each task class's discover() is an iterator so discovery stops as soon
         as a handleable task is found — avoiding unnecessary GitHub API calls.
         """
-        for task_class in TASK_CLASSES:
+        for task_class in self.task_classes:
             logger.debug("Checking %s for work...", task_class.__name__)
             found_in_class = 0
             for task in task_class.discover(self.github):
