@@ -55,10 +55,19 @@ def _populate_settings(ctx: click.Context) -> None:
     Called from :meth:`ClickCommand.invoke` so that all code inside the
     command body can read configuration via ``config.settings`` instead of
     relying on the command function's parameter list.
+
+    In addition to the command's own parameters, any shared (non-command)
+    config sections (e.g. ``[github]``) are included as nested dicts so
+    that ``config.settings["github"]`` works without extra loading.
     """
     import loony_dev.config as _config_module
     data = dict(ctx.params)
     _apply_legacy_env_vars(data)
+    # Include shared config sections (dict values whose key isn't already a
+    # CLI param) so cross-cutting config like [github] is accessible.
+    for key, value in _load_config().items():
+        if isinstance(value, dict) and key not in data:
+            data[key] = value
     _config_module.settings = Settings(data)
 
 

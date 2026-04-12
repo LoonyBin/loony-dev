@@ -48,9 +48,19 @@ class CheckRun:
     details_url: str   # Link to the CI run log
 
 
+class RateLimitedError(Exception):
+    """Raised when an agent task fails due to rate limiting / quota exhaustion.
+
+    Using a distinct exception type lets ``on_failure`` handlers restore GitHub
+    state (labels, assignment) without posting an alarming error comment — the
+    quota will clear on its own.
+    """
+
+
 @dataclass
 class TaskResult:
     success: bool
     output: str
     summary: str
     post_summary: bool = True
+    rate_limited: bool = False

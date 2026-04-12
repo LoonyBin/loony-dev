@@ -4,7 +4,7 @@ import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
-from loony_dev.models import truncate_for_log
+from loony_dev.models import RateLimitedError, truncate_for_log
 from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, Task
 from loony_dev.tasks.planning_task import PLAN_MARKER, PLAN_MARKER_PREFIX
 
@@ -119,6 +119,12 @@ class IssueTask(Task):
         )
         github.remove_label(self.issue.number, "in-progress")
         github.add_label(self.issue.number, "ready-for-development")
+        if isinstance(error, RateLimitedError):
+            logger.info(
+                "Issue #%d: rate-limited — skipping error comment (quota will reset automatically)",
+                self.issue.number,
+            )
+            return
         github.post_comment(
             self.issue.number,
             f"{FAILURE_MARKER}\n\nImplementation failed: {error}",

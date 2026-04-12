@@ -57,12 +57,14 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
 
         if returncode != 0:
             combined = f"{stdout}\n{stderr}"
-            if self._is_quota_error(combined):
+            is_quota = self._is_quota_error(combined)
+            if is_quota:
                 self._handle_quota_error(combined)
             return TaskResult(
                 success=False,
                 output=combined,
                 summary=f"Agent exited with code {returncode}",
+                rate_limited=is_quota,
             )
 
         summary = self._generate_summary(stdout)

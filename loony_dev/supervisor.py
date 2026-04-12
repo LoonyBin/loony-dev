@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import multiprocessing
 import os
 import shutil
 import signal
@@ -200,6 +201,24 @@ def filter_repos(
 # Repository checkout / removal
 # ---------------------------------------------------------------------------
 
+def _configure_git_hooks(repo: str, repo_dir: Path) -> None:
+    """If *repo_dir* contains a .githooks directory, configure git to use it."""
+    githooks_dir = repo_dir / ".githooks"
+    if not githooks_dir.is_dir():
+        return
+    try:
+        subprocess.run(
+            ["git", "config", "core.hooksPath", ".githooks"],
+            cwd=repo_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        logger.info("Configured .githooks as hooks path for %s", repo)
+    except subprocess.CalledProcessError as exc:
+        logger.warning("Failed to configure .githooks for %s: %s", repo, exc.stderr.strip())
+
+
 def ensure_repo_checked_out(repo: str, base_dir: Path) -> Path:
     """Ensure 'owner/repo' is cloned at base_dir/owner/repo.
 
@@ -264,44 +283,56 @@ class WorkerProcess:
     work_dir: Path
     log_file: Path
     pid_file: Path
-    process: subprocess.Popen
+    process: multiprocessing.Process
     started_at: float
     restart_count: int = field(default=0)
 
 
-def _worker_command(repo: str, work_dir: Path, log_file: Path) -> list[str]:
-    """Build the argv list for a worker subprocess.
+def _run_worker_process(log_file: Path, cmd_args: list[str]) -> None:
+    """Entry point for a worker multiprocessing.Process.
 
-    Any unprocessed arguments collected after ``--`` by the supervisor command
-    (``config.settings.worker_args``) are appended verbatim to the worker
-    invocation so users can forward worker options without duplicating them as
-    ``--worker-*`` supervisor options.
+    Redirects sys.stdout and sys.stderr to *log_file*, then invokes the CLI.
     """
-    cmd_prefix: list[str]
-    if shutil.which("loony-dev"):
-        cmd_prefix = ["loony-dev"]
-    else:
-        cmd_prefix = [sys.executable, "-m", "loony_dev.cli"]
+    import os
+    import sys
 
-    cmd = cmd_prefix + ["worker", "--repo", repo, "--work-dir", str(work_dir)]
+    # Duplicate file descriptors so subprocesses (e.g. claude) log here too.
+    with open(log_file, "a") as f:
+        os.dup2(f.fileno(), sys.stdout.fileno())
+        os.dup2(f.fileno(), sys.stderr.fileno())
 
-    extra = config.settings.get("worker_args") or ()
-    if extra:
-        cmd += list(extra)
+    # Update Python-level standard streams just in case
+    log_file_obj = open(log_file, "a")
+    sys.stdout = log_file_obj
+    sys.stderr = log_file_obj
 
-    return cmd
+    from loony_dev.cli import cli
+    try:
+        cli.main(args=cmd_args, prog_name="loony-dev")
+    except Exception:
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
 
 
 def launch_worker(repo: str, work_dir: Path, log_file: Path, pid_file: Path) -> WorkerProcess:
-    """Spawn a worker subprocess; stdout/stderr are redirected to *log_file*."""
+    """Spawn a worker multiprocessing.Process; stdout/stderr are redirected to *log_file*."""
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
-    cmd = _worker_command(repo, work_dir, log_file)
+    cmd_args = ["worker", "--repo", repo, "--work-dir", str(work_dir)]
+    extra = config.settings.get("worker_args") or ()
+    if extra:
+        cmd_args += list(extra)
+
     logger.info("Launching worker for %s (log: %s)", repo, log_file)
 
-    log_fh = open(log_file, "a")  # noqa: SIM115  — intentionally kept open
-    process = subprocess.Popen(cmd, stdout=log_fh, stderr=log_fh)
-    log_fh.close()  # Popen inherits the fd; close our copy
+    ctx = multiprocessing.get_context("spawn")
+    process = ctx.Process(
+        target=_run_worker_process,
+        args=(log_file, cmd_args),
+        name=f"worker-{repo.replace('/', '-')}"
+    )
+    process.start()
 
     _write_pid_file(pid_file, process.pid)
 
@@ -327,16 +358,19 @@ def _terminate_worker(wp: WorkerProcess, timeout: float = 10.0) -> None:
         _remove_pid_file(wp.pid_file)
         return
     try:
-        wp.process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
+        wp.process.join(timeout=timeout)
+    except Exception:
+        pass
+        
+    if wp.process.exitcode is None:
         logger.warning("Worker for %s did not stop in %.0fs; killing.", wp.repo, timeout)
         try:
             wp.process.kill()
         except OSError:
             pass
         try:
-            wp.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
+            wp.process.join(timeout=5)
+        except Exception:
             pass
     _remove_pid_file(wp.pid_file)
 
@@ -420,6 +454,8 @@ def run_supervisor() -> None:
                         logger.error("Skipping %s this cycle due to clone failure.", repo)
                         continue
 
+                    _configure_git_hooks(repo, work_dir)
+
                     owner, name = repo.split("/", 1)
                     log_path = config.settings.base_dir / ".logs" / owner / name / "loony-worker.log"
                     pid_path = config.settings.base_dir / ".logs" / owner / name / "loony-worker.pid"
@@ -459,7 +495,7 @@ def run_supervisor() -> None:
         # Health-check phase
         # ------------------------------------------------------------------ #
         for repo, wp in list(workers.items()):
-            rc = wp.process.poll()
+            rc = wp.process.exitcode
             if rc is None:
                 continue  # Still running
 
@@ -518,7 +554,8 @@ def run_supervisor() -> None:
         logger.info("Stopping worker for %s", repo)
         if graceful_shutdown:
             try:
-                wp.process.send_signal(signal.SIGQUIT)
+                if wp.process.pid:
+                    os.kill(wp.process.pid, signal.SIGQUIT)
             except OSError:
                 pass
         else:
@@ -527,7 +564,7 @@ def run_supervisor() -> None:
     if graceful_shutdown:
         logger.info("Waiting for all workers to finish current tasks…")
         for repo, wp in workers.items():
-            wp.process.wait()
+            wp.process.join()
             logger.info("Worker %s has exited.", repo)
             _remove_pid_file(wp.pid_file)
 

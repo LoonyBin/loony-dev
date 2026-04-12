@@ -15,12 +15,31 @@ class GitRepo:
     def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
         cmd = ["git", *args]
         logger.debug("Running: %s", " ".join(cmd))
-        return subprocess.run(cmd, cwd=self.work_dir, capture_output=True, text=True, check=True)
+        try:
+            return subprocess.run(cmd, cwd=self.work_dir, capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as exc:
+            logger.debug(
+                "git command failed (exit %d): %s\nstdout: %s\nstderr: %s",
+                exc.returncode,
+                " ".join(cmd),
+                (exc.stdout or "").strip(),
+                (exc.stderr or "").strip(),
+            )
+            raise
 
     def ensure_main_up_to_date(self) -> None:
         """Checkout the default branch and pull latest."""
         self._run("checkout", self.default_branch)
-        self._run("pull", "--ff-only")
+        self._run("fetch", "origin", self.default_branch)
+        try:
+            self._run("pull", "--ff-only")
+        except subprocess.CalledProcessError:
+            logger.warning(
+                "Fast-forward pull failed; resetting local %s to origin/%s",
+                self.default_branch,
+                self.default_branch,
+            )
+            self._run("reset", "--hard", f"origin/{self.default_branch}")
 
     def has_uncommitted_changes(self) -> bool:
         result = self._run("status", "--porcelain")

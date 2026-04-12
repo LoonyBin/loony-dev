@@ -5,6 +5,9 @@ import signal
 import time
 from typing import TYPE_CHECKING
 
+from loony_dev.models import RateLimitedError
+
+
 if TYPE_CHECKING:
     from loony_dev.agents.base import Agent
     from loony_dev.git import GitRepo
@@ -84,7 +87,9 @@ class Orchestrator:
                 logger.exception("Failed to clean up GitHub state on shutdown")
 
     def _tick(self) -> None:
+        self.github.clear_tick_cache()
         self.github.evict_stale_permission_cache()
+        self.github.evict_stale_check_runs_cache()
         result = self._find_work()
         if result is None:
             logger.debug("No tasks found.")
@@ -121,10 +126,11 @@ class Orchestrator:
     def dispatch(self, agent: Agent, task: Task) -> None:
         logger.debug("Task description:\n%s", task.describe())
         task.on_start(self.github)
-        branch = self.git.current_branch()
-        logger.debug("Current branch before sync: %s", branch)
-        has_changes = self.git.has_uncommitted_changes()
-        logger.debug("Uncommitted changes before sync: %s", has_changes)
+        try:
+            logger.debug("Current branch before sync: %s", self.git.current_branch())
+            logger.debug("Uncommitted changes before sync: %s", self.git.has_uncommitted_changes())
+        except Exception:
+            logger.debug("Could not read git state before sync", exc_info=True)
         self.git.ensure_main_up_to_date()
 
         self._active_agent = agent
@@ -134,6 +140,8 @@ class Orchestrator:
             self._cleanup()
             if result.success:
                 task.on_complete(self.github, result)
+            elif result.rate_limited:
+                task.on_failure(self.github, RateLimitedError(result.summary))
             else:
                 task.on_failure(self.github, RuntimeError(result.summary))
         except Exception as e:
