@@ -12,6 +12,8 @@ from loony_dev.tasks.planning_task import PlanningTask
 from loony_dev.tasks.pr_review_task import PRReviewTask
 from loony_dev.tasks.stuck_item_task import StuckItemCleanupTask
 
+from loony_dev.models import RateLimitedError
+
 if TYPE_CHECKING:
     from loony_dev.agents.base import Agent
     from loony_dev.git import GitRepo
@@ -146,6 +148,8 @@ class Orchestrator:
             self._cleanup()
             if result.success:
                 task.on_complete(self.github, result)
+            elif result.rate_limited:
+                task.on_failure(self.github, RateLimitedError(result.summary))
             else:
                 task.on_failure(self.github, RuntimeError(result.summary))
         except Exception as e:

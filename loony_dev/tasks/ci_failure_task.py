@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from loony_dev.github import CI_FAILURE_MARKER
-from loony_dev.models import CheckRun, PullRequest
+from loony_dev.models import CheckRun, PullRequest, RateLimitedError
 from loony_dev.tasks.base import Task
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from loony_dev.github import GitHubClient
@@ -109,6 +112,12 @@ class CIFailureTask(Task):
 
     def on_failure(self, github: GitHubClient, error: Exception) -> None:
         github.remove_label(self.pr.number, "in-progress")
+        if isinstance(error, RateLimitedError):
+            logger.info(
+                "PR #%d: rate-limited — skipping error comment (quota will reset automatically)",
+                self.pr.number,
+            )
+            return
         github.post_comment(
             self.pr.number,
             f"{CI_FAILURE_MARKER}\n\nFailed to fix CI failures: {error}\n\nManual intervention is required.",

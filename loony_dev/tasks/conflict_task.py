@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
-from loony_dev.models import PullRequest
+from loony_dev.models import PullRequest, RateLimitedError
 from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, Task
 
 if TYPE_CHECKING:
     from loony_dev.github import GitHubClient
     from loony_dev.models import TaskResult
+
+logger = logging.getLogger(__name__)
 
 
 class ConflictResolutionTask(Task):
@@ -79,6 +82,12 @@ class ConflictResolutionTask(Task):
 
     def on_failure(self, github: GitHubClient, error: Exception) -> None:
         github.remove_label(self.pr.number, "in-progress")
+        if isinstance(error, RateLimitedError):
+            logger.info(
+                "PR #%d: rate-limited — skipping error comment (quota will reset automatically)",
+                self.pr.number,
+            )
+            return
         github.post_comment(
             self.pr.number,
             f"{FAILURE_MARKER}\n\nFailed to resolve merge conflicts: {error}\n\nManual intervention is required.",
