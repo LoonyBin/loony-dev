@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from loony_dev.github import is_authorized
-from loony_dev.models import Comment, truncate_for_log
+from loony_dev.models import Comment, RateLimitedError, truncate_for_log
 from loony_dev.tasks.base import FAILURE_MARKER, Task, decode_last_seen, encode_marker
 
 if TYPE_CHECKING:
@@ -162,6 +162,12 @@ class PlanningTask(Task):
 
     def on_failure(self, github: GitHubClient, error: Exception) -> None:
         logger.debug("Issue #%d: planning failed (%s)", self.issue.number, error)
+        if isinstance(error, RateLimitedError):
+            logger.info(
+                "Issue #%d: rate-limited — skipping error comment (quota will reset automatically)",
+                self.issue.number,
+            )
+            return
         github.post_comment(
             self.issue.number,
             f"{FAILURE_MARKER}\n\nPlanning failed: {error}",

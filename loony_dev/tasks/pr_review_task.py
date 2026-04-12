@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from loony_dev.github import is_authorized
-from loony_dev.models import Comment, PullRequest, truncate_for_log
+from loony_dev.models import Comment, PullRequest, RateLimitedError, truncate_for_log
 from loony_dev.tasks.base import (
     FAILURE_MARKER,
     FAILURE_MARKER_PREFIX,
@@ -183,6 +183,12 @@ class PRReviewTask(Task):
     def on_failure(self, github: GitHubClient, error: Exception) -> None:
         logger.debug("PR #%d: task failed (%s), removing 'in-progress'", self.pr.number, error)
         github.remove_label(self.pr.number, "in-progress")
+        if isinstance(error, RateLimitedError):
+            logger.info(
+                "PR #%d: rate-limited — skipping error comment (quota will reset automatically)",
+                self.pr.number,
+            )
+            return
         last_seen_ts = max((c.created_at for c in self.pr.new_comments), default="")
         marker = encode_marker(FAILURE_MARKER_PREFIX, last_seen_ts) if last_seen_ts else FAILURE_MARKER
         github.post_comment(
