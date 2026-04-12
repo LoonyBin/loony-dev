@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -156,6 +157,10 @@ class GitHubClient:
         self._tick_cache: dict[str, Any] = {}
         # Cross-tick cache: head_sha -> _CheckRunsCacheEntry
         self._check_runs_cache: dict[str, _CheckRunsCacheEntry] = {}
+        # Long-lived cache: (milestones_dict, cached_at_monotonic)
+        self._milestones_cache: tuple[dict[str, datetime | None], float] | None = None
+        # Short-lived cache: (issues_list, cached_at_monotonic)
+        self._issues_all_cache: tuple[list[dict], float] | None = None
 
     def _gh(self, *args: str) -> str:
         """Run a gh CLI command and return stdout (with retry on rate-limit)."""
@@ -599,3 +604,220 @@ class GitHubClient:
         except subprocess.CalledProcessError:
             logger.warning("Failed to detect default branch for %s; falling back to 'main'", self.repo)
         return "main"
+
+    # --- Milestones ---
+
+    def list_milestones(self, ttl: float = 3600.0) -> dict[str, datetime | None]:
+        """Return ``{title: due_on}`` for all open milestones.
+
+        Cached for *ttl* seconds (default 1 hour) since milestones change
+        infrequently.  Call ``invalidate_milestones_cache()`` after mutations.
+        """
+        now = time.monotonic()
+        if self._milestones_cache is not None:
+            cached_ms, cached_at = self._milestones_cache
+            if now - cached_at < ttl:
+                logger.debug("list_milestones() cache hit (%d milestones)", len(cached_ms))
+                return cached_ms
+
+        try:
+            data = self._gh_api("milestones?state=open&per_page=100")
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to fetch milestones for %s", self.repo)
+            data = []
+
+        result: dict[str, datetime | None] = {}
+        if isinstance(data, list):
+            for ms in data:
+                title = ms.get("title", "")
+                result[title] = _parse_datetime(ms.get("due_on"))
+
+        self._milestones_cache = (result, now)
+        logger.debug("list_milestones() fetched %d milestone(s)", len(result))
+        return result
+
+    def invalidate_milestones_cache(self) -> None:
+        """Discard the cached milestone list."""
+        self._milestones_cache = None
+
+    # --- All-issues cache ---
+
+    def list_issues_all(self, ttl: float = 120.0) -> list[dict]:
+        """Return all open issues with labels, milestone, and timestamps.
+
+        Cached for *ttl* seconds (default 2 min).  Call
+        ``invalidate_issues_cache()`` after mutations that change issue state.
+
+        User-controlled string fields are sanitized for prompt injection.
+        """
+        now = time.monotonic()
+        if self._issues_all_cache is not None:
+            cached_issues, cached_at = self._issues_all_cache
+            if now - cached_at < ttl:
+                logger.debug("list_issues_all() cache hit (%d issues)", len(cached_issues))
+                return cached_issues
+
+        try:
+            data = self._gh_json(
+                "issue", "list",
+                "--state", "open",
+                "--json", "number,title,body,labels,milestone,createdAt,updatedAt,author",
+                "--limit", "500",
+            )
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to fetch all issues for %s", self.repo)
+            data = []
+
+        if not isinstance(data, list):
+            data = []
+
+        result = []
+        for item in data:
+            number = item["number"]
+            sanitized = dict(item)
+            sanitized["title"] = self._sanitize_field(item.get("title", ""), "title", "issue", number)
+            sanitized["body"] = self._sanitize_field(item.get("body") or "", "body", "issue", number)
+            result.append(sanitized)
+
+        self._issues_all_cache = (result, now)
+        logger.debug("list_issues_all() fetched %d open issue(s)", len(result))
+        return result
+
+    def invalidate_issues_cache(self) -> None:
+        """Discard the cached all-issues list after a mutation."""
+        self._issues_all_cache = None
+
+    # --- Open PR → issue number mapping ---
+
+    def get_open_pr_issue_numbers(self) -> set[int]:
+        """Return the set of issue numbers that have an associated open PR.
+
+        Parses PR titles for ``#N`` patterns.  Results are tick-cached.
+        """
+        cache_key = "open_pr_issue_numbers"
+        cached = self._tick_cache.get(cache_key)
+        if cached is not None:
+            logger.debug("get_open_pr_issue_numbers() tick-cache hit (%d)", len(cached))
+            return cached
+
+        issue_numbers: set[int] = set()
+        ref_pattern = re.compile(r"#(\d+)")
+        for pr in self.list_open_prs():
+            for match in ref_pattern.finditer(pr.get("title", "")):
+                issue_numbers.add(int(match.group(1)))
+            # Also check the headRefName for embedded issue numbers (e.g. fix/42-description)
+            for match in re.finditer(r"(?:^|[/-])(\d+)(?:[/-]|$)", pr.get("headRefName", "")):
+                issue_numbers.add(int(match.group(1)))
+
+        self._tick_cache[cache_key] = issue_numbers
+        logger.debug("get_open_pr_issue_numbers() found %d issue(s) with open PRs", len(issue_numbers))
+        return issue_numbers
+
+    # --- Branch health ---
+
+    def get_branch_check_runs(self, sha: str) -> list[dict]:
+        """Return all check runs for *sha* with name/status/conclusion fields.
+
+        Used to health-check the default branch.  Results are tick-cached
+        per SHA (the same SHA always yields the same checks).
+        """
+        cache_key = f"branch_checks:{sha}"
+        cached = self._tick_cache.get(cache_key)
+        if cached is not None:
+            logger.debug("get_branch_check_runs(%r) tick-cache hit", sha)
+            return cached
+
+        try:
+            data = self._gh_api(f"commits/{sha}/check-runs")
+            runs = []
+            if isinstance(data, dict):
+                for run in data.get("check_runs", []):
+                    runs.append({
+                        "name": run.get("name", ""),
+                        "status": run.get("status", ""),
+                        "conclusion": run.get("conclusion") or "",
+                    })
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to fetch check runs for SHA %r", sha)
+            runs = []
+
+        self._tick_cache[cache_key] = runs
+        logger.debug("get_branch_check_runs(%r) returned %d run(s)", sha, len(runs))
+        return runs
+
+    def get_default_branch_sha(self) -> str:
+        """Return the HEAD commit SHA of the repository's default branch."""
+        branch = self.detect_default_branch()
+        try:
+            output = self._gh(
+                "api", f"repos/{self.repo}/branches/{branch}",
+                "-q", ".commit.sha",
+            )
+            return output.strip()
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to get HEAD SHA for branch %r", branch)
+            return ""
+
+    # --- Deployment workflow ---
+
+    def get_deployment_run(self, workflow: str, after_timestamp: datetime) -> bool:
+        """Return True if a successful *workflow* run completed after *after_timestamp*.
+
+        *workflow* should be the workflow file name without extension (e.g. ``"deploy"``).
+        """
+        try:
+            data = self._gh_api(
+                f"actions/workflows/{workflow}.yml/runs?status=success&per_page=10"
+            )
+            if not isinstance(data, dict):
+                return False
+            for run in data.get("workflow_runs", []):
+                completed_at = _parse_datetime(run.get("completed_at"))
+                if completed_at and completed_at > after_timestamp:
+                    logger.debug(
+                        "get_deployment_run(%r): found successful run completed at %s",
+                        workflow, completed_at,
+                    )
+                    return True
+            return False
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to fetch deployment workflow runs for %r", workflow)
+            return False
+
+    # --- PR merging ---
+
+    def get_pr_merged_at(self, pr_number: int) -> datetime | None:
+        """Return the merged-at timestamp if PR *pr_number* was merged, else ``None``."""
+        try:
+            output = self._gh(
+                "pr", "view", str(pr_number),
+                "--json", "state,merged,mergedAt",
+                "-q", ".",
+            )
+            data = json.loads(output)
+            if data.get("merged"):
+                return _parse_datetime(data.get("mergedAt"))
+        except (subprocess.CalledProcessError, json.JSONDecodeError, ValueError):
+            logger.warning("Failed to fetch merge state for PR #%d", pr_number)
+        return None
+
+    def merge_pull_request(self, pr_number: int, merge_method: str = "squash") -> bool:
+        """Merge PR *pr_number* using *merge_method* (``"squash"``, ``"merge"``, or ``"rebase"``).
+
+        Returns ``True`` on success.  On success, invalidates the issues cache
+        and busts the tick-scoped open-PRs cache so the next tick sees fresh state.
+        """
+        try:
+            self._gh("pr", "merge", str(pr_number), f"--{merge_method}")
+            logger.info("Merged PR #%d via %s", pr_number, merge_method)
+            # Invalidate caches so next tick reflects the merged state.
+            self.invalidate_issues_cache()
+            self._tick_cache.pop("open_prs", None)
+            self._tick_cache.pop("open_pr_issue_numbers", None)
+            return True
+        except subprocess.CalledProcessError as exc:
+            logger.warning(
+                "Failed to merge PR #%d: %s",
+                pr_number, ((exc.stderr or "") + (exc.stdout or "")).strip()[:300],
+            )
+            return False
