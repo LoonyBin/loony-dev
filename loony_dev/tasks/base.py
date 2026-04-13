@@ -52,6 +52,17 @@ class Task(ABC):
         """
         ...
 
+    @property
+    def session_key(self) -> str | None:
+        """Key for Claude Code session continuity.
+
+        Tasks that return the same key (for the same repo) will share a
+        Claude session, allowing context to carry over between stages
+        (e.g. planning -> implementation).  Return ``None`` to use a
+        fresh session each time.
+        """
+        return None
+
     @abstractmethod
     def describe(self) -> str:
         """Human/agent-readable description of work to do."""

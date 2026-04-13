@@ -122,6 +122,10 @@ class PlanningTask(Task):
     # Task interface
     # ------------------------------------------------------------------
 
+    @property
+    def session_key(self) -> str:
+        return f"issue:{self.issue.number}"
+
     def describe(self) -> str:
         if self.existing_plan is None:
             return (

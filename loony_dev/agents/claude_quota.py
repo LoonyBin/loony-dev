@@ -3,10 +3,17 @@ from __future__ import annotations
 
 import logging
 import re
+import subprocess
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from loony_dev import config
+from loony_dev.session import session_id_for
+
+if TYPE_CHECKING:
+    from loony_dev.tasks.base import Task
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +38,14 @@ _QUOTA_PATTERNS = [
     "hit your limit",
 ]
 
+_SESSION_NOT_FOUND_PATTERNS = (
+    "no session",
+    "session not found",
+    "could not find session",
+    "invalid session",
+    "does not exist",
+)
+
 # Matches: "Your limit will reset at 2pm (America/New_York)"
 #      or: "resets 7:30pm (Asia/Calcutta)"
 _RESET_RE = re.compile(
@@ -48,6 +63,7 @@ class ClaudeQuotaMixin:
     """
 
     _disabled_until: datetime | None = None
+    repo: str = ""  # Set by subclass __init__; used for session ID generation.
 
     def can_handle(self, task: Task) -> bool:
         """Check availability then delegate to subclass task-type check.
@@ -149,3 +165,74 @@ class ClaudeQuotaMixin:
                 fallback,
                 output,
             )
+
+    # ------------------------------------------------------------------
+    # Shared Claude CLI runner with session continuity
+    # ------------------------------------------------------------------
+
+    def _session_id_for(self, task: Task) -> str | None:
+        """Compute a deterministic session ID for *task*, or None."""
+        key = task.session_key
+        if not key or not self.repo:
+            return None
+        return session_id_for(self.repo, key)
+
+    def _run_claude_cli(
+        self,
+        prompt: str,
+        *,
+        cwd: Path,
+        session_id: str | None = None,
+    ) -> tuple[str, str, int]:
+        """Run the Claude CLI with optional session continuity.
+
+        When *session_id* is provided, attempts ``--resume`` first to
+        continue an existing session.  If that fails because no matching
+        session is found, retries with ``--session-id`` to create a new
+        session with the given UUID.
+        """
+        if session_id:
+            stdout, stderr, rc = self._invoke_claude(
+                prompt, cwd=cwd, extra_flags=["--resume", session_id],
+            )
+            if rc == 0 or not self._is_session_not_found(f"{stdout}\n{stderr}"):
+                return stdout, stderr, rc
+            logger.debug("Session %s not found — creating new session", session_id)
+            return self._invoke_claude(
+                prompt, cwd=cwd, extra_flags=["--session-id", session_id],
+            )
+        return self._invoke_claude(prompt, cwd=cwd)
+
+    def _invoke_claude(
+        self,
+        prompt: str,
+        *,
+        cwd: Path,
+        extra_flags: list[str] | None = None,
+    ) -> tuple[str, str, int]:
+        """Spawn ``claude -p`` and return (stdout, stderr, returncode)."""
+        cmd = ["claude", "-p", "--dangerously-skip-permissions"]
+        if extra_flags:
+            cmd.extend(extra_flags)
+        cmd.append(prompt)
+
+        with subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        ) as proc:
+            self._active_process = proc
+            try:
+                stdout, stderr = proc.communicate()
+            finally:
+                self._active_process = None
+        return stdout, stderr, proc.returncode
+
+    @staticmethod
+    def _is_session_not_found(output: str) -> bool:
+        """Return True if *output* indicates a missing/invalid session."""
+        lower = output.lower()
+        return any(p in lower for p in _SESSION_NOT_FOUND_PATTERNS)

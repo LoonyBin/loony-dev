@@ -59,6 +59,10 @@ class IssueTask(Task):
     # Task interface
     # ------------------------------------------------------------------
 
+    @property
+    def session_key(self) -> str:
+        return f"issue:{self.issue.number}"
+
     def describe(self) -> str:
         if self.plan is not None:
             content = f"## Approved Implementation Plan\n\n{self.plan}"
