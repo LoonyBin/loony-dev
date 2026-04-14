@@ -74,7 +74,7 @@ def worker(**_) -> None:
 
     repo_name = config.settings.repo
     if repo_name is None:
-        repo_name = Repo.detect()
+        repo_name = Repo.detect(cwd=str(work_path))
         click.echo(f"Detected repo: {repo_name}")
 
     repo = Repo(repo_name)

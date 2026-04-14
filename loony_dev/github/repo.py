@@ -110,9 +110,13 @@ class Repo:
     # --- Detection ---
 
     @staticmethod
-    def detect() -> str:
-        """Detect owner/repo from git remote URL."""
-        return run_gh("gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner")
+    def detect(cwd: str | None = None) -> str:
+        """Detect owner/repo from git remote URL.
+
+        Args:
+            cwd: Directory to run the detection in. Defaults to the current working directory.
+        """
+        return run_gh("gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner", cwd=cwd)
 
     @staticmethod
     @functools.lru_cache(maxsize=1)

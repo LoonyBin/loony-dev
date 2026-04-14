@@ -42,14 +42,14 @@ def is_retryable_gh_error(exc: subprocess.CalledProcessError) -> bool:
     return any(p in combined for p in _GH_RATE_LIMIT_PATTERNS)
 
 
-def run_gh(*cmd: str) -> str:
+def run_gh(*cmd: str, cwd: str | None = None) -> str:
     """Run a gh CLI command with retry and exponential backoff on rate-limit errors."""
     max_retries = int(gh_setting("max_retries"))
     logger.debug("Running: %s", " ".join(cmd))
     backoff = float(gh_setting("initial_backoff"))
     for attempt in range(max_retries + 1):
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, cwd=cwd)
             return result.stdout.strip()
         except subprocess.CalledProcessError as exc:
             if attempt < max_retries and is_retryable_gh_error(exc):
