@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import unittest
 
-from loony_dev.models import Comment
+from loony_dev.github.comment import Comment
+from loony_dev.github.content import Content
 from loony_dev.tasks.base import encode_marker
 from loony_dev.tasks.planning_task import PLAN_MARKER, PLAN_MARKER_PREFIX, PlanningTask
 
@@ -60,7 +61,6 @@ class TestAnalyzePlanningComments(unittest.TestCase):
 
         plan, new = PlanningTask._analyze_planning_comments([pre, plan_comment, post], BOT_NAME)
         self.assertEqual(plan, "The plan.")
-        # pre is before the marker index; post is after
         self.assertEqual(new, [post])
 
     def test_old_marker_extracts_plan_text(self) -> None:
@@ -72,10 +72,6 @@ class TestAnalyzePlanningComments(unittest.TestCase):
     # 3. New marker (with last-seen) → timestamp-based filter
     # ------------------------------------------------------------------
     def test_timestamp_filter_picks_up_midrun_comment(self) -> None:
-        # T1: user posts feedback → triggers re-planning
-        # T2: user posts another comment while agent is running
-        # T3: bot posts plan with last-seen=T1
-        # Expected: T2 comment IS returned (T2 > T1)
         t1 = _user("2024-01-01T09:00:00Z", "First feedback")
         t2 = _user("2024-01-01T10:30:00Z", "Mid-run feedback")
         t3_plan = _plan("2024-01-01T11:00:00Z", last_seen="2024-01-01T09:00:00Z")

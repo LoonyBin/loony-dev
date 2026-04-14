@@ -10,7 +10,7 @@ from loony_dev.agents.coding import CodingAgent
 from loony_dev.agents.null_agent import NullAgent
 from loony_dev.agents.planning import PlanningAgent
 from loony_dev.git import GitRepo
-from loony_dev.github import GitHubClient
+from loony_dev.github import Repo
 from loony_dev.orchestrator import Orchestrator
 
 
@@ -72,20 +72,20 @@ def worker(**_) -> None:
 
     work_path = Path(config.settings.work_dir).resolve()
 
-    repo = config.settings.repo
-    if repo is None:
-        repo = GitHubClient.detect_repo()
-        click.echo(f"Detected repo: {repo}")
+    repo_name = config.settings.repo
+    if repo_name is None:
+        repo_name = Repo.detect()
+        click.echo(f"Detected repo: {repo_name}")
 
-    github = GitHubClient(repo=repo)
-    default_branch = github.detect_default_branch()
+    repo = Repo(repo_name)
+    default_branch = repo.detect_default_branch()
     click.echo(f"Default branch: {default_branch}")
     git = GitRepo(work_dir=work_path, default_branch=default_branch)
-    agents = [NullAgent(), CodingAgent(work_dir=work_path, repo=repo), PlanningAgent(work_dir=work_path, repo=repo)]
+    agents = [NullAgent(), CodingAgent(work_dir=work_path, repo=repo_name), PlanningAgent(work_dir=work_path, repo=repo_name)]
 
-    orchestrator = Orchestrator(github=github, git=git, agents=agents)
+    orchestrator = Orchestrator(repo=repo, git=git, agents=agents)
 
-    click.echo(f"Starting orchestrator for {repo} (polling every {config.settings.interval}s)")
+    click.echo(f"Starting orchestrator for {repo_name} (polling every {config.settings.interval}s)")
     orchestrator.run()
 
 

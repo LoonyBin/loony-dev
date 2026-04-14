@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from loony_dev.github import GitHubClient
+    from loony_dev.github import Repo
     from loony_dev.models import TaskResult
 
 
@@ -18,6 +18,8 @@ SUCCESS_MARKER_PREFIX = "<!-- loony-success"
 # Legacy fixed-string markers kept for backward compatibility (old markers have no last-seen).
 FAILURE_MARKER = "<!-- loony-failure -->"
 SUCCESS_MARKER = "<!-- loony-success -->"
+
+CI_FAILURE_MARKER = "<!-- loony-ci-failure -->"
 
 _LAST_SEEN_RE = re.compile(r"last-seen=([^\s>]+)")
 
@@ -41,15 +43,8 @@ class Task(ABC):
 
     @staticmethod
     @abstractmethod
-    def discover(github: GitHubClient) -> Iterator[Task]:
-        """Yield tasks of this type discovered from GitHub. Called each tick.
-
-        Authorization settings (allowed_users, min_role) are read from the
-        *github* client instance.
-
-        Implementations should yield lazily so the orchestrator can stop
-        iterating as soon as a can-perform task is found.
-        """
+    def discover(repo: Repo) -> Iterator[Task]:
+        """Yield tasks of this type discovered from GitHub.  Called each tick."""
         ...
 
     @property
@@ -69,16 +64,16 @@ class Task(ABC):
         ...
 
     @abstractmethod
-    def on_start(self, github: GitHubClient) -> None:
+    def on_start(self, repo: Repo) -> None:
         """Called before agent execution. Update GitHub state (labels etc)."""
         ...
 
     @abstractmethod
-    def on_complete(self, github: GitHubClient, result: TaskResult) -> None:
+    def on_complete(self, repo: Repo, result: TaskResult) -> None:
         """Called after successful completion. Update GitHub state."""
         ...
 
     @abstractmethod
-    def on_failure(self, github: GitHubClient, error: Exception) -> None:
+    def on_failure(self, repo: Repo, error: Exception) -> None:
         """Called on failure. Update GitHub state."""
         ...
