@@ -20,35 +20,28 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
 
     name = "coding"
 
-    def __init__(self, work_dir: Path) -> None:
+    def __init__(self, work_dir: Path, repo: str = "") -> None:
         self.work_dir = work_dir
+        self.repo = repo
 
     def _can_handle_task(self, task: Task) -> bool:
         return task.task_type in ("implement_issue", "address_review", "resolve_conflicts", "fix_ci")
 
     def execute(self, task: Task) -> TaskResult:
         prompt = task.describe()
-        cmd = ["claude", "-p", "--dangerously-skip-permissions", prompt]
-        logger.debug("Running Claude CLI (cwd=%s): claude -p --dangerously-skip-permissions <prompt>", self.work_dir)
+        session_id = self._session_id_for(task)
+        logger.debug(
+            "Running Claude CLI (cwd=%s, session=%s): claude -p --dangerously-skip-permissions <prompt>",
+            self.work_dir, session_id,
+        )
         logger.debug("Claude prompt: %s", truncate_for_log(prompt))
 
         baseline_commit = self._get_head_commit()
 
-        with subprocess.Popen(
-            cmd,
-            cwd=self.work_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        ) as proc:
-            self._active_process = proc
-            try:
-                stdout, stderr = proc.communicate()
-            finally:
-                self._active_process = None
+        stdout, stderr, returncode = self._run_claude_cli(
+            prompt, cwd=self.work_dir, session_id=session_id,
+        )
 
-        returncode = proc.returncode
         logger.debug("Claude CLI exited with code %d", returncode)
         if stdout:
             logger.debug("Claude stdout: %s", truncate_for_log(stdout))
@@ -114,22 +107,15 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         summary_prompt = f"Summarize what was done in 2-3 sentences based on this output:\n\n{output[-3000:]}"
         logger.debug("Running summary Claude call")
         logger.debug("Summary prompt: %s", truncate_for_log(summary_prompt))
-        with subprocess.Popen(
-            ["claude", "-p", "--dangerously-skip-permissions", summary_prompt],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        ) as proc:
-            self._active_process = proc
-            try:
-                stdout, _ = proc.communicate()
-            finally:
-                self._active_process = None
-        logger.debug("Summary Claude call exited with code %d", proc.returncode)
+        # Bypass session: injecting a meta-summarisation turn into the issue
+        # session would corrupt the conversation history that planning and
+        # future review rounds rely on.
+        stdout, _, returncode = self._invoke_claude(
+            summary_prompt, cwd=self.work_dir,
+        )
+        logger.debug("Summary Claude call exited with code %d", returncode)
         if stdout:
             logger.debug("Summary output: %s", truncate_for_log(stdout))
-        if proc.returncode == 0 and stdout.strip():
+        if returncode == 0 and stdout.strip():
             return stdout.strip()
         return "Changes were made successfully."
-

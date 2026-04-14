@@ -82,6 +82,10 @@ class CIFailureTask(Task):
     # Task interface
     # ------------------------------------------------------------------
 
+    @property
+    def session_key(self) -> str:
+        return f"pr:{self.pr.number}"
+
     def describe(self) -> str:
         check_lines = "\n".join(
             f"- {c.name} ({c.conclusion}): {c.details_url}"

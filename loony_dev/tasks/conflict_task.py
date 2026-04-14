@@ -55,6 +55,10 @@ class ConflictResolutionTask(Task):
     # Task interface
     # ------------------------------------------------------------------
 
+    @property
+    def session_key(self) -> str:
+        return f"pr:{self.pr.number}"
+
     def describe(self) -> str:
         return (
             f"Resolve merge conflicts on PR #{self.pr.number}: {self.pr.title}\n\n"
