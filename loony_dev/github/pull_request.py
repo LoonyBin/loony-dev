@@ -133,8 +133,15 @@ class PullRequest(GitHubItem):
         return any(a.get("login", "") == username for a in self.assignees)
 
     @property
-    def issues(self) -> list[int]:
-        """Issue numbers referenced in this PR's title or branch name."""
+    def issues(self) -> IssueCollection:
+        """Issues referenced in this PR's title or branch name.
+
+        Returns an :class:`IssueCollection` of stub :class:`Issue` instances
+        (``number`` populated; other fields fetched lazily via
+        :meth:`~loony_dev.github.issue.Issue.get` if needed).
+        """
+        from loony_dev.github.issue import Issue, IssueCollection
+
         numbers: list[int] = []
         seen: set[int] = set()
 
@@ -152,7 +159,7 @@ class PullRequest(GitHubItem):
                 seen.add(n)
                 numbers.append(n)
 
-        return numbers
+        return IssueCollection(Issue(number=n, _repo=self._repo) for n in numbers)
 
     @property
     def merged_at(self):

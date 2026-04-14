@@ -293,9 +293,9 @@ class Repo:
 
     @functools.cached_property
     def issues(self):
-        """Collection proxy for repository issues (``repo.issues.open``)."""
-        from loony_dev.github.issue import IssueCollection
-        return IssueCollection(self)
+        """Query proxy for repository issues (``repo.issues.open``)."""
+        from loony_dev.github.issue import _IssueQuery
+        return _IssueQuery(self)
 
     @functools.cached_property
     def pull_requests(self):

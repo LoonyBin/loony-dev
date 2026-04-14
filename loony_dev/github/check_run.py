@@ -71,3 +71,36 @@ class CheckRun:
         except subprocess.CalledProcessError:
             logger.warning("Failed to fetch check runs for SHA %r", head_sha)
             return []
+
+    @classmethod
+    def list_all(cls, head_sha: str, *, repo: Repo) -> list[CheckRun]:
+        """Return all check runs for *head_sha*, regardless of status/conclusion.
+
+        Results are tick-cached per SHA.
+        """
+        cache_key = f"all_check_runs:{head_sha}"
+        cached = repo._tick_cache.get(cache_key)
+        if cached is not None:
+            logger.debug("CheckRun.list_all(%r) tick-cache hit (%d runs)", head_sha, len(cached))
+            return cached
+
+        try:
+            data = repo.client.gh_api(f"commits/{head_sha}/check-runs")
+            if not isinstance(data, dict):
+                return []
+            runs = [
+                cls(
+                    name=run.get("name", ""),
+                    status=run.get("status", ""),
+                    conclusion=run.get("conclusion") or "",
+                    details_url=run.get("details_url", run.get("html_url", "")),
+                )
+                for run in data.get("check_runs", [])
+            ]
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to fetch all check runs for SHA %r", head_sha)
+            runs = []
+
+        repo._tick_cache[cache_key] = runs
+        logger.debug("CheckRun.list_all(%r) returned %d run(s)", head_sha, len(runs))
+        return runs

@@ -24,34 +24,22 @@ class WorkflowRun:
     completed_at: datetime | None
 
 
-class WorkflowRunCollection:
-    """A filterable, iterable collection of workflow runs."""
-
-    def __init__(self, runs: list[WorkflowRun]) -> None:
-        self._runs = runs
+class WorkflowRunCollection(list):
+    """A list of WorkflowRun instances supporting chainable filters."""
 
     def where(
         self,
         *,
         conclusion: str | None = None,
         timestamp_is_gt: datetime | None = None,
-    ) -> list[WorkflowRun]:
-        """Return runs that match all supplied criteria."""
-        result = self._runs
+    ) -> WorkflowRunCollection:
+        """Return a new collection containing only runs that match all criteria."""
+        result = self
         if conclusion is not None:
             result = [r for r in result if r.conclusion == conclusion]
         if timestamp_is_gt is not None:
             result = [r for r in result if r.completed_at and r.completed_at > timestamp_is_gt]
-        return result
-
-    def __bool__(self) -> bool:
-        return bool(self._runs)
-
-    def __iter__(self):
-        return iter(self._runs)
-
-    def __len__(self) -> int:
-        return len(self._runs)
+        return WorkflowRunCollection(result)
 
 
 class Workflow:
@@ -72,10 +60,10 @@ class Workflow:
             )
         except subprocess.CalledProcessError:
             logger.warning("Failed to fetch workflow runs for %r", self.name)
-            return WorkflowRunCollection([])
+            return WorkflowRunCollection()
 
         if not isinstance(data, dict):
-            return WorkflowRunCollection([])
+            return WorkflowRunCollection()
 
         runs = [
             WorkflowRun(

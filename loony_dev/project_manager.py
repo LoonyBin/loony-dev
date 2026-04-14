@@ -24,6 +24,7 @@ import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from loony_dev.github.issue import Issue, IssueCollection
 from loony_dev.github.pull_request import PullRequest
 from loony_dev.github.workflow import Workflow
 from loony_dev.prioritiser import Prioritiser
@@ -192,7 +193,7 @@ class ProjectManager:
         all_issues = self.github.issues.open
         open_prs = list(self.github.pull_requests.open)
         open_pr_by_number = {pr.number: pr for pr in open_prs}
-        open_pr_issue_numbers = {num for pr in open_prs for num in pr.issues}
+        open_pr_issue_numbers = {issue.number for pr in open_prs for issue in pr.issues}
 
         # 2. Advance completed stages ─────────────────────────────────────
         if not self.skip_merge:
@@ -212,12 +213,12 @@ class ProjectManager:
             # Invalidate and re-fetch so each promotion sees up-to-date labels.
             self.github.issues.invalidate()
             all_issues = self.github.issues.open
-            open_pr_issue_numbers = {num for pr in self.github.pull_requests.open for num in pr.issues}
+            open_pr_issue_numbers = {issue.number for pr in self.github.pull_requests.open for issue in pr.issues}
             candidate = self._prioritiser.select_next(all_issues, open_pr_issue_numbers)
             if candidate is None:
                 break
-            issue_dict, rationale = candidate
-            self._promote_to_pipeline(issue_dict, rationale)
+            issue, rationale = candidate
+            self._promote_to_pipeline(issue, rationale)
 
     # ------------------------------------------------------------------
     # Health check (circuit-breaker)
@@ -235,18 +236,16 @@ class ProjectManager:
             return True
 
         for run in branch.check_runs:
-            status = run.get("status", "")
-            conclusion = run.get("conclusion", "")
-            if status != "completed":
+            if run.status != "completed":
                 logger.debug(
                     "Health check: run %r still %r — branch not yet settled.",
-                    run.get("name"), status,
+                    run.name, run.status,
                 )
                 return False
-            if conclusion not in ("success", "skipped", "neutral"):
+            if run.conclusion not in ("success", "skipped", "neutral"):
                 logger.debug(
                     "Health check: run %r has conclusion=%r — branch unhealthy.",
-                    run.get("name"), conclusion,
+                    run.name, run.conclusion,
                 )
                 return False
 
@@ -258,20 +257,19 @@ class ProjectManager:
 
     def _count_in_flight(
         self,
-        all_issues: list[dict],
+        all_issues: IssueCollection,
         open_pr_issue_numbers: set[int],
     ) -> int:
         """Count issues currently active in the pipeline."""
         count = 0
         for issue in all_issues:
-            labels = {lbl["name"] for lbl in issue.get("labels", [])}
+            labels = set(issue.labels)
             # Explicitly labelled pipeline stages
             if labels & _PIPELINE_LABELS:
                 count += 1
                 continue
             # PR open with no pipeline label (implementation submitted, awaiting merge)
-            number = issue["number"]
-            if number in open_pr_issue_numbers and not (labels & _PIPELINE_LABELS):
+            if issue.number in open_pr_issue_numbers and not (labels & _PIPELINE_LABELS):
                 count += 1
         # Also count issues we know have been merged but deployment not yet confirmed.
         count += len(self._merged_issue_prs)
@@ -346,7 +344,7 @@ class ProjectManager:
             if success:
                 self._actions_taken.add(merge_action_key)
                 # Find the associated issue to track deployment.
-                issue_number = pr.issues[0] if pr.issues else None
+                issue_number = pr.issues[0].number if pr.issues else None
                 if issue_number is not None:
                     self._merged_issue_prs[issue_number] = (pr.number, now_dt)
                     logger.info(
@@ -363,7 +361,7 @@ class ProjectManager:
 
     def _check_merged_for_deployment(
         self,
-        all_issues: list[dict],
+        all_issues: IssueCollection,
         open_pr_by_number: dict[int, PullRequest],
     ) -> None:
         """Detect successful deployments for recently merged PRs and mark done."""
@@ -402,24 +400,23 @@ class ProjectManager:
         # Also detect externally merged PRs for issues the PM promoted.
         # If an issue no longer has pipeline labels AND no open PR but we
         # haven't tracked its PR yet, probe for a recently merged PR.
-        open_pr_issue_numbers = {num for pr in self.github.pull_requests.open for num in pr.issues}
+        open_pr_issue_numbers = {issue.number for pr in self.github.pull_requests.open for issue in pr.issues}
         for issue in all_issues:
-            number = issue["number"]
-            labels = {lbl["name"] for lbl in issue.get("labels", [])}
+            labels = set(issue.labels)
             if labels & _PIPELINE_LABELS:
                 continue
-            if number in open_pr_issue_numbers:
+            if issue.number in open_pr_issue_numbers:
                 continue
-            if number in self._merged_issue_prs:
+            if issue.number in self._merged_issue_prs:
                 continue
             if _DONE_LABEL in labels:
                 continue
-            action_key = f"promoted:{number}"
+            action_key = f"promoted:{issue.number}"
             if action_key not in self._actions_taken:
                 continue
             # This was an issue we promoted; it has no pipeline label and no open PR.
             # Look for a merged PR.
-            pr_number = self.github.find_pr_for_issue(number)
+            pr_number = self.github.find_pr_for_issue(issue.number)
             if pr_number is None:
                 continue
             pr = PullRequest.get(pr_number, repo=self.github)
@@ -427,9 +424,9 @@ class ProjectManager:
             if merged_at is not None:
                 logger.info(
                     "Externally merged PR #%d detected for issue #%d.",
-                    pr_number, number,
+                    pr_number, issue.number,
                 )
-                self._merged_issue_prs[number] = (pr_number, merged_at)
+                self._merged_issue_prs[issue.number] = (pr_number, merged_at)
 
     def _deployment_confirmed(self, after: datetime) -> bool:
         """Return ``True`` if a successful deployment occurred after *after*."""
@@ -444,20 +441,19 @@ class ProjectManager:
     # Pipeline promotion
     # ------------------------------------------------------------------
 
-    def _promote_to_pipeline(self, issue: dict, rationale: str) -> None:
+    def _promote_to_pipeline(self, issue: Issue, rationale: str) -> None:
         """Label *issue* to enter the worker pipeline and post a comment."""
-        number = issue["number"]
-        action_key = f"promoted:{number}"
+        action_key = f"promoted:{issue.number}"
         if action_key in self._actions_taken:
-            logger.debug("Issue #%d already promoted this session — skipping.", number)
+            logger.debug("Issue #%d already promoted this session — skipping.", issue.number)
             return
 
-        use_planning = not self.skip_planning and not self._has_existing_plan(number)
+        use_planning = not self.skip_planning and not self._has_existing_plan(issue.number)
         target_label = "ready-for-planning" if use_planning else "ready-for-development"
 
         logger.info(
             "Promoting issue #%d (%r) → %s. Rationale: %s",
-            number, issue.get("title", ""), target_label, rationale or "(heuristic)",
+            issue.number, str(issue.title), target_label, rationale or "(heuristic)",
         )
 
         rationale_section = f"\n\n**Rationale:** {rationale}" if rationale else ""
@@ -465,8 +461,8 @@ class ProjectManager:
             f"{PM_MARKER} Promoting to `{target_label}`."
             f"{rationale_section}"
         )
-        self.github.add_label(number, target_label)
-        self.github.post_comment(number, comment_body)
+        self.github.add_label(issue.number, target_label)
+        self.github.post_comment(issue.number, comment_body)
         self.github.issues.invalidate()
 
         self._actions_taken.add(action_key)

@@ -19,6 +19,8 @@ import subprocess
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from loony_dev.github.issue import Issue, IssueCollection
+
 if TYPE_CHECKING:
     from loony_dev.github import Repo
 
@@ -59,29 +61,23 @@ def _parse_dep_numbers(body: str, patterns: list[str]) -> list[int]:
 
 
 def _score_issue(
-    issue: dict,
+    issue: Issue,
     milestone_soon_days: int,
 ) -> int:
     """Return a priority score for *issue* (lower = higher priority)."""
     score = 0
-    labels = {lbl["name"] for lbl in issue.get("labels", [])}
+    labels = set(issue.labels)
 
     # Milestone alignment
-    milestone = issue.get("milestone")
-    if milestone:
+    if issue.milestone:
         score -= 50
-        due_on_str: str | None = milestone.get("due_on")
-        if due_on_str:
-            try:
-                due_date = datetime.fromisoformat(due_on_str.replace("Z", "+00:00"))
-                days_until = (due_date - datetime.now(timezone.utc)).days
-                if days_until <= milestone_soon_days:
-                    score -= 30
-            except (ValueError, AttributeError):
-                pass
+        if issue.milestone.due_on:
+            days_until = (issue.milestone.due_on - datetime.now(timezone.utc)).days
+            if days_until <= milestone_soon_days:
+                score -= 30
 
     # Existing plan in the issue body (heuristic — full check needs comments API)
-    if _PLAN_MARKER_PREFIX in (issue.get("body") or ""):
+    if _PLAN_MARKER_PREFIX in str(issue.body):
         score -= 15
 
     # Value labels
@@ -93,14 +89,9 @@ def _score_issue(
         score -= 5
 
     # Issue age (starvation prevention: older issues get a slight boost)
-    created_at = issue.get("createdAt") or issue.get("created_at")
-    if created_at:
-        try:
-            created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-            age_days = (datetime.now(timezone.utc) - created).days
-            score -= age_days // 7
-        except (ValueError, AttributeError):
-            pass
+    if issue.created_at:
+        age_days = (datetime.now(timezone.utc) - issue.created_at).days
+        score -= age_days // 7
 
     return score
 
@@ -147,17 +138,16 @@ class Prioritiser:
 
     def select_next(
         self,
-        all_issues: list[dict],
+        all_issues: IssueCollection,
         open_pr_issue_numbers: set[int],
-    ) -> tuple[dict, str] | None:
-        """Return ``(issue_dict, rationale)`` for the best candidate, or ``None``.
+    ) -> tuple[Issue, str] | None:
+        """Return ``(issue, rationale)`` for the best candidate, or ``None``.
 
         *all_issues* is the full list of open issues (from
-        ``github.list_issues_all()``).  *open_pr_issue_numbers* is the
-        set of issue numbers that already have an open PR (from
-        ``github.get_open_pr_issue_numbers()``).
+        ``github.issues.open``).  *open_pr_issue_numbers* is the set of issue
+        numbers that already have an open PR.
         """
-        open_issue_numbers = {i["number"] for i in all_issues}
+        open_issue_numbers = all_issues.numbers()
         shortlist = self._phase1_filter(all_issues, open_pr_issue_numbers, open_issue_numbers)
 
         if not shortlist:
@@ -167,7 +157,7 @@ class Prioritiser:
         if len(shortlist) == 1:
             logger.info(
                 "Prioritiser: single candidate #%d — skipping Phase-2 AI call.",
-                shortlist[0]["number"],
+                shortlist[0].number,
             )
             return shortlist[0], ""
 
@@ -179,24 +169,24 @@ class Prioritiser:
 
     def _phase1_filter(
         self,
-        all_issues: list[dict],
+        all_issues: IssueCollection,
         open_pr_issue_numbers: set[int],
         open_issue_numbers: set[int],
-    ) -> list[dict]:
+    ) -> IssueCollection:
         """Narrow *all_issues* to a scored shortlist of at most ``shortlist_size`` items."""
-        candidates = [
+        candidates = IssueCollection(
             issue for issue in all_issues
             if not self._should_exclude(issue, open_pr_issue_numbers, open_issue_numbers)
-        ]
+        )
 
         if not candidates:
-            return []
+            return IssueCollection()
 
         scored = sorted(
             candidates,
             key=lambda iss: _score_issue(iss, self.milestone_soon_days),
         )
-        shortlist = scored[: self.shortlist_size]
+        shortlist = IssueCollection(scored[: self.shortlist_size])
         logger.debug(
             "Prioritiser Phase 1: %d candidate(s) → shortlist of %d",
             len(candidates), len(shortlist),
@@ -205,13 +195,12 @@ class Prioritiser:
 
     def _should_exclude(
         self,
-        issue: dict,
+        issue: Issue,
         open_pr_issue_numbers: set[int],
         open_issue_numbers: set[int],
     ) -> bool:
         """Return ``True`` if *issue* must be excluded from candidacy."""
-        number = issue["number"]
-        labels = {lbl["name"] for lbl in issue.get("labels", [])}
+        labels = set(issue.labels)
 
         # Active pipeline labels
         if labels & _PIPELINE_LABELS:
@@ -222,16 +211,15 @@ class Prioritiser:
             return True
 
         # Already has an open PR
-        if number in open_pr_issue_numbers:
+        if issue.number in open_pr_issue_numbers:
             return True
 
         # Unresolved blocking dependencies
-        body = issue.get("body") or ""
-        for dep_num in _parse_dep_numbers(body, self.dependency_patterns):
+        for dep_num in _parse_dep_numbers(str(issue.body), self.dependency_patterns):
             if dep_num in open_issue_numbers:
                 logger.debug(
                     "Issue #%d excluded: open blocking dependency #%d",
-                    number, dep_num,
+                    issue.number, dep_num,
                 )
                 return True
 
@@ -241,7 +229,7 @@ class Prioritiser:
     # Phase 2: AI agent ranking
     # ------------------------------------------------------------------
 
-    def _phase2_ai_rank(self, shortlist: list[dict]) -> tuple[dict, str]:
+    def _phase2_ai_rank(self, shortlist: IssueCollection) -> tuple[Issue, str]:
         """Ask Claude to select the best candidate from *shortlist*.
 
         Falls back to the Phase-1 top pick if the Claude call fails.
@@ -250,7 +238,7 @@ class Prioritiser:
         try:
             chosen_number, rationale = self._call_claude(shortlist, milestones)
             for issue in shortlist:
-                if issue["number"] == chosen_number:
+                if issue.number == chosen_number:
                     logger.info(
                         "Prioritiser Phase 2: AI selected #%d — %s",
                         chosen_number, rationale,
@@ -272,7 +260,7 @@ class Prioritiser:
 
     def _call_claude(
         self,
-        shortlist: list[dict],
+        shortlist: IssueCollection,
         milestones: dict[str, datetime | None],
     ) -> tuple[int, str]:
         """Invoke the Claude CLI to rank *shortlist*.
@@ -290,11 +278,11 @@ class Prioritiser:
             "Labels: {labels}\n"
             "Milestone: {milestone}\n"
             "Body (first 500 chars):\n{body}".format(
-                number=iss["number"],
-                title=iss.get("title", ""),
-                labels=", ".join(lbl["name"] for lbl in iss.get("labels", [])) or "none",
-                milestone=(iss.get("milestone") or {}).get("title", "none"),
-                body=(iss.get("body") or "")[:500],
+                number=iss.number,
+                title=str(iss.title),
+                labels=", ".join(iss.labels) or "none",
+                milestone=iss.milestone.title if iss.milestone else "none",
+                body=str(iss.body)[:500],
             )
             for iss in shortlist
         )
