@@ -47,40 +47,45 @@ class TestSessionIdFor(unittest.TestCase):
 class TestSessionKeyOnTasks(unittest.TestCase):
     """Task subclasses must expose the correct session_key."""
 
+    def _mock_repo(self) -> MagicMock:
+        repo = MagicMock()
+        repo.bot_name = "loony-bot"
+        return repo
+
     def test_planning_task_key(self) -> None:
-        from loony_dev.models import Issue
+        from loony_dev.github import Issue
         from loony_dev.tasks.planning_task import PlanningTask
-        task = PlanningTask(Issue(number=7, title="t", body="b"), None, [])
+        task = PlanningTask(Issue(number=7, title="t", body="b", _repo=self._mock_repo()), None, [])
         self.assertEqual(task.session_key, "issue:7")
 
     def test_issue_task_key(self) -> None:
-        from loony_dev.models import Issue
+        from loony_dev.github import Issue
         from loony_dev.tasks.issue_task import IssueTask
-        task = IssueTask(Issue(number=7, title="t", body="b"))
+        task = IssueTask(Issue(number=7, title="t", body="b", _repo=self._mock_repo()))
         self.assertEqual(task.session_key, "issue:7")
 
     def test_pr_review_task_key(self) -> None:
-        from loony_dev.models import PullRequest
+        from loony_dev.github import PullRequest
         from loony_dev.tasks.pr_review_task import PRReviewTask
-        task = PRReviewTask(PullRequest(number=10, branch="b", title="t"))
+        task = PRReviewTask(PullRequest(number=10, branch="b", title="t", _repo=self._mock_repo()))
         self.assertEqual(task.session_key, "pr:10")
 
     def test_ci_failure_task_key(self) -> None:
-        from loony_dev.models import PullRequest
+        from loony_dev.github import PullRequest
         from loony_dev.tasks.ci_failure_task import CIFailureTask
-        task = CIFailureTask(PullRequest(number=5, branch="b", title="t"), [])
+        task = CIFailureTask(PullRequest(number=5, branch="b", title="t", _repo=self._mock_repo()), [])
         self.assertEqual(task.session_key, "pr:5")
 
     def test_conflict_task_key(self) -> None:
-        from loony_dev.models import PullRequest
+        from loony_dev.github import PullRequest
         from loony_dev.tasks.conflict_task import ConflictResolutionTask
-        task = ConflictResolutionTask(PullRequest(number=3, branch="b", title="t"))
+        task = ConflictResolutionTask(PullRequest(number=3, branch="b", title="t", _repo=self._mock_repo()))
         self.assertEqual(task.session_key, "pr:3")
 
     def test_stuck_item_task_has_no_session_key(self) -> None:
-        from loony_dev.models import Issue
+        from loony_dev.github import Issue
         from loony_dev.tasks.stuck_item_task import StuckItemCleanupTask
-        task = StuckItemCleanupTask(Issue(number=1, title="t", body="b"), 12)
+        task = StuckItemCleanupTask(Issue(number=1, title="t", body="b", _repo=self._mock_repo()), 12)
         self.assertIsNone(task.session_key)
 
 
@@ -131,7 +136,6 @@ class TestRunClaudeCli(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertEqual(stdout, "output")
-        # Should NOT include --resume or --session-id
         cmd = mock_popen.call_args[0][0]
         self.assertNotIn("--resume", cmd)
         self.assertNotIn("--session-id", cmd)
@@ -148,10 +152,8 @@ class TestRunClaudeCli(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertEqual(stdout, "resumed output")
-        # Should have used --resume
         cmd = mock_popen.call_args[0][0]
         self.assertIn("--resume", cmd)
-        # Should only be called once (resume succeeded)
         self.assertEqual(mock_popen.call_count, 1)
 
     def test_session_not_found_falls_back_to_session_id(self) -> None:
@@ -169,17 +171,14 @@ class TestRunClaudeCli(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(stdout, "fresh output")
         self.assertEqual(mock_popen.call_count, 2)
-        # First call: --resume
         first_cmd = mock_popen.call_args_list[0][0][0]
         self.assertIn("--resume", first_cmd)
-        # Second call: --session-id
         second_cmd = mock_popen.call_args_list[1][0][0]
         self.assertIn("--session-id", second_cmd)
 
     def test_real_error_does_not_fallback(self) -> None:
         from loony_dev.agents.coding import CodingAgent
         agent = CodingAgent(work_dir=Path("/tmp"), repo="LoonyBin/repo")
-        # Error that is NOT session-not-found
         mock_proc = self._make_popen_mock("", "quota exceeded", 1)
 
         with patch("loony_dev.agents.claude_quota.subprocess.Popen", return_value=mock_proc) as mock_popen:
@@ -188,7 +187,6 @@ class TestRunClaudeCli(unittest.TestCase):
             )
 
         self.assertEqual(rc, 1)
-        # Should only be called once (no fallback for real errors)
         self.assertEqual(mock_popen.call_count, 1)
 
 

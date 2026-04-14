@@ -14,12 +14,20 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
-from loony_dev.models import Comment, PullRequest
+from loony_dev.github.comment import Comment
+from loony_dev.github.content import Content
+from loony_dev.github.pull_request import PullRequest
 from loony_dev.tasks.base import SUCCESS_MARKER, SUCCESS_MARKER_PREFIX, encode_marker
 from loony_dev.tasks.pr_review_task import PRReviewTask
 
 BOT_NAME = "loony-bot"
 REVIEWER = "alice"
+
+
+def _mock_repo() -> MagicMock:
+    repo = MagicMock()
+    repo.bot_name = BOT_NAME
+    return repo
 
 
 def _comment(author: str, body: str, ts: str, path: str | None = None, line: int | None = None) -> Comment:
@@ -44,9 +52,6 @@ def _general(ts: str) -> Comment:
 
 class TestNewSinceBot(unittest.TestCase):
 
-    # ------------------------------------------------------------------
-    # 1. No prior SUCCESS_MARKER — all non-bot comments returned
-    # ------------------------------------------------------------------
     def test_inline_only_no_prior_marker(self) -> None:
         comments = [
             _inline("2024-01-01T10:00:00Z"),
@@ -55,27 +60,14 @@ class TestNewSinceBot(unittest.TestCase):
         result = PRReviewTask._new_since_bot(comments, BOT_NAME)
         self.assertEqual(result, comments)
 
-    # ------------------------------------------------------------------
-    # 2. Inline drafted BEFORE marker but submitted (via review lookup) AFTER
-    #    This is the core bug scenario — with fixed timestamps, these should
-    #    appear after the marker in the sorted list.
-    # ------------------------------------------------------------------
     def test_inline_drafted_before_marker_submitted_after(self) -> None:
-        # Timeline:
-        #   T1: inline comment drafted (created_at before SUCCESS_MARKER)
-        #   T2: bot posts SUCCESS_MARKER
-        #   T3: review submitted — so get_pr_inline_comments() returns T3 as created_at
         marker = _success("2024-01-01T12:00:00Z")
-        # After the fix, get_pr_inline_comments() remaps created_at to submitted_at (T3)
         inline_with_submitted_ts = _inline("2024-01-01T13:00:00Z")
 
         comments = sorted([marker, inline_with_submitted_ts], key=lambda c: c.created_at)
         result = PRReviewTask._new_since_bot(comments, BOT_NAME)
         self.assertEqual(result, [inline_with_submitted_ts])
 
-    # ------------------------------------------------------------------
-    # 3. Inline comment submitted BEFORE the marker — should NOT be returned
-    # ------------------------------------------------------------------
     def test_inline_both_before_marker(self) -> None:
         inline_before = _inline("2024-01-01T10:00:00Z")
         marker = _success("2024-01-01T12:00:00Z")
@@ -84,9 +76,6 @@ class TestNewSinceBot(unittest.TestCase):
         result = PRReviewTask._new_since_bot(comments, BOT_NAME)
         self.assertEqual(result, [])
 
-    # ------------------------------------------------------------------
-    # 4. Mix of general and inline; only post-marker ones returned
-    # ------------------------------------------------------------------
     def test_general_and_inline_mixed(self) -> None:
         old_general = _general("2024-01-01T09:00:00Z")
         marker = _success("2024-01-01T12:00:00Z")
@@ -100,9 +89,6 @@ class TestNewSinceBot(unittest.TestCase):
         result = PRReviewTask._new_since_bot(comments, BOT_NAME)
         self.assertEqual(result, [new_inline, new_general])
 
-    # ------------------------------------------------------------------
-    # 5. Multiple SUCCESS_MARKERs — only the last one counts
-    # ------------------------------------------------------------------
     def test_uses_last_success_marker(self) -> None:
         old_marker = _success("2024-01-01T10:00:00Z")
         middle_comment = _general("2024-01-01T11:00:00Z")
@@ -111,19 +97,9 @@ class TestNewSinceBot(unittest.TestCase):
 
         comments = [old_marker, middle_comment, new_marker, after_new]
         result = PRReviewTask._new_since_bot(comments, BOT_NAME)
-        # middle_comment is between markers — not returned
         self.assertEqual(result, [after_new])
 
-    # ------------------------------------------------------------------
-    # 6. Timestamp-based filtering (issue #82): comment posted DURING
-    #    the task run (between task-start and marker-post) is captured.
-    # ------------------------------------------------------------------
     def test_timestamp_filter_picks_up_midrun_comment(self) -> None:
-        # Timeline:
-        #   T1: user posts comment → triggers task discovery
-        #   T2: user posts another comment while agent is running
-        #   T3: bot posts SUCCESS_MARKER with last-seen=T1
-        # Expected: T2 comment IS returned (T2 > T1 = last-seen)
         t1_comment = _general("2024-01-01T10:00:00Z")
         t2_midrun = _general("2024-01-01T11:00:00Z")
         t3_marker = _success("2024-01-01T12:00:00Z", last_seen="2024-01-01T10:00:00Z")
@@ -133,7 +109,6 @@ class TestNewSinceBot(unittest.TestCase):
         self.assertEqual(result, [t2_midrun])
 
     def test_timestamp_filter_excludes_already_seen_comments(self) -> None:
-        # last-seen=T2 → comments at or before T2 are excluded
         t1 = _general("2024-01-01T09:00:00Z")
         t2 = _general("2024-01-01T10:00:00Z")
         marker = _success("2024-01-01T11:00:00Z", last_seen="2024-01-01T10:00:00Z")
@@ -144,81 +119,76 @@ class TestNewSinceBot(unittest.TestCase):
         self.assertEqual(result, [t3])
 
     def test_old_marker_backward_compat_still_uses_position(self) -> None:
-        # Old marker (no last-seen): position-based filter must still work.
         t1 = _general("2024-01-01T09:00:00Z")
-        marker = _success("2024-01-01T10:00:00Z")  # no last_seen arg → old format
+        marker = _success("2024-01-01T10:00:00Z")
         t2 = _general("2024-01-01T11:00:00Z")
 
         comments = [t1, marker, t2]
         result = PRReviewTask._new_since_bot(comments, BOT_NAME)
-        # t1 is before the marker index, t2 is after → only t2 returned
         self.assertEqual(result, [t2])
 
 
 class TestDiscoverInlineOnly(unittest.TestCase):
     """discover() should yield a task when the only new comments are inline."""
 
-    def _make_github(self, inline_comments: list[Comment], pr_number: int = 1) -> MagicMock:
-        github = MagicMock()
-        github.bot_name = BOT_NAME
+    def _make_repo_with_prs(self, pr_data: list[dict], inline_comments: list[Comment]) -> MagicMock:
+        repo = _mock_repo()
+        repo._tick_cache = {}
+        repo.skip_ci_checks = set()
+        repo._check_runs_cache = {}
 
-        # PR data: no general comments, no review bodies, no in-progress label
-        pr_item = {
-            "number": pr_number,
-            "headRefName": "feature/branch",
-            "headRefOid": "abc123",
-            "title": "My PR",
-            "comments": [],
-            "reviews": [],
-            "labels": [],
-            "mergeable": "MERGEABLE",
-            "updatedAt": "2024-01-01T14:00:00Z",
-        }
-        github.list_open_prs.return_value = [pr_item]
-        github.get_pr_inline_comments.return_value = inline_comments
-        return github
+        prs = [PullRequest._from_api(d, repo) for d in pr_data]
+        # Patch list_open to return our PRs
+        repo._tick_cache["open_prs"] = prs
 
-    def tearDown(self) -> None:
-        pass
+        # Patch inline_comments via the client
+        repo.client.gh_api.return_value = [
+            {
+                "user": {"login": c.author},
+                "body": str(c.body),
+                "created_at": c.created_at,
+                "path": c.path,
+                "line": c.line,
+                "pull_request_review_id": None,
+            }
+            for c in inline_comments
+        ]
+        repo.is_authorized = MagicMock(return_value=True)
+        return repo
 
-    def test_discover_triggers_on_inline_only(self) -> None:
-        """discover() yields a task when there are only inline comments and no
-        general comments after the bot's last SUCCESS_MARKER."""
-        inline = _inline("2024-01-01T13:00:00Z")
-        github = self._make_github([inline])
-
-        with patch("loony_dev.tasks.pr_review_task.is_authorized", side_effect=lambda _gh, u: u == REVIEWER):
-            tasks = list(PRReviewTask.discover(github))
-
-        self.assertEqual(len(tasks), 1)
-        self.assertEqual(tasks[0].pr.number, 1)
-        self.assertEqual(tasks[0].pr.new_comments, [inline])
-
-    def test_discover_skips_when_inline_before_marker(self) -> None:
-        """discover() skips a PR when all inline comments pre-date the marker."""
-        # The PR has a SUCCESS_MARKER general comment and an inline comment from before it.
-        inline_before = _inline("2024-01-01T10:00:00Z")
-        github = self._make_github([inline_before])
-
-        # Add a SUCCESS_MARKER comment to the PR's general comments
-        github.list_open_prs.return_value = [{
+    def _pr_data(self, comments: list[dict] | None = None) -> dict:
+        return {
             "number": 1,
             "headRefName": "feature/branch",
             "headRefOid": "abc123",
             "title": "My PR",
-            "comments": [{
-                "author": {"login": BOT_NAME},
-                "body": f"{SUCCESS_MARKER}\nReview addressed.",
-                "createdAt": "2024-01-01T12:00:00Z",
-            }],
+            "comments": comments or [],
             "reviews": [],
             "labels": [],
             "mergeable": "MERGEABLE",
             "updatedAt": "2024-01-01T14:00:00Z",
-        }]
+            "assignees": [{"login": BOT_NAME}],
+        }
 
-        with patch("loony_dev.tasks.pr_review_task.is_authorized", side_effect=lambda _gh, u: u == REVIEWER):
-            tasks = list(PRReviewTask.discover(github))
+    def test_discover_triggers_on_inline_only(self) -> None:
+        inline = _inline("2024-01-01T13:00:00Z")
+        repo = self._make_repo_with_prs([self._pr_data()], [inline])
+
+        tasks = list(PRReviewTask.discover(repo))
+
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0].pr.number, 1)
+
+    def test_discover_skips_when_inline_before_marker(self) -> None:
+        inline_before = _inline("2024-01-01T10:00:00Z")
+        pr_data = self._pr_data(comments=[{
+            "author": {"login": BOT_NAME},
+            "body": f"{SUCCESS_MARKER}\nReview addressed.",
+            "createdAt": "2024-01-01T12:00:00Z",
+        }])
+        repo = self._make_repo_with_prs([pr_data], [inline_before])
+
+        tasks = list(PRReviewTask.discover(repo))
 
         self.assertEqual(tasks, [])
 

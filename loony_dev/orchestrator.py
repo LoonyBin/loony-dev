@@ -17,7 +17,7 @@ from loony_dev.models import RateLimitedError
 if TYPE_CHECKING:
     from loony_dev.agents.base import Agent
     from loony_dev.git import GitRepo
-    from loony_dev.github import GitHubClient
+    from loony_dev.github import Repo
     from loony_dev.tasks.base import Task
 
 logger = logging.getLogger(__name__)
@@ -34,13 +34,13 @@ TASK_CLASSES = sorted(
 class Orchestrator:
     def __init__(
         self,
-        github: GitHubClient,
+        repo: Repo,
         git: GitRepo,
         agents: list[Agent],
         interval: int | None = None,
     ) -> None:
         from loony_dev import config
-        self.github = github
+        self.repo = repo
         self.git = git
         self.agents = agents
         self.interval = interval if interval is not None else config.settings.get("interval", 60)
@@ -90,14 +90,14 @@ class Orchestrator:
             # Only clean up GitHub state if we interrupted the task
             logger.info("Cleaning up GitHub state for interrupted task: %s", task.task_type)
             try:
-                task.on_failure(self.github, RuntimeError("Interrupted by operator"))
+                task.on_failure(self.repo, RuntimeError("Interrupted by operator"))
             except Exception:
                 logger.exception("Failed to clean up GitHub state on shutdown")
 
     def _tick(self) -> None:
-        self.github.clear_tick_cache()
-        self.github.evict_stale_permission_cache()
-        self.github.evict_stale_check_runs_cache()
+        self.repo.clear_tick_cache()
+        self.repo.evict_stale_permission_cache()
+        self.repo.evict_stale_check_runs_cache()
         result = self._find_work()
         if result is None:
             logger.debug("No tasks found.")
@@ -108,15 +108,11 @@ class Orchestrator:
         self.dispatch(agent, task)
 
     def _find_work(self) -> tuple[Task, Agent] | None:
-        """Iterate task classes by priority; return first (task, agent) pair found.
-
-        Each task class's discover() is an iterator so discovery stops as soon
-        as a handleable task is found — avoiding unnecessary GitHub API calls.
-        """
+        """Iterate task classes by priority; return first (task, agent) pair found."""
         for task_class in TASK_CLASSES:
             logger.debug("Checking %s for work...", task_class.__name__)
             found_in_class = 0
-            for task in task_class.discover(self.github):
+            for task in task_class.discover(self.repo):
                 found_in_class += 1
                 for agent in self.agents:
                     if agent.can_handle(task):
@@ -133,7 +129,7 @@ class Orchestrator:
 
     def dispatch(self, agent: Agent, task: Task) -> None:
         logger.debug("Task description:\n%s", task.describe())
-        task.on_start(self.github)
+        task.on_start(self.repo)
         try:
             logger.debug("Current branch before sync: %s", self.git.current_branch())
             logger.debug("Uncommitted changes before sync: %s", self.git.has_uncommitted_changes())
@@ -147,14 +143,14 @@ class Orchestrator:
             result = agent.execute(task)
             self._cleanup()
             if result.success:
-                task.on_complete(self.github, result)
+                task.on_complete(self.repo, result)
             elif result.rate_limited:
-                task.on_failure(self.github, RateLimitedError(result.summary))
+                task.on_failure(self.repo, RateLimitedError(result.summary))
             else:
-                task.on_failure(self.github, RuntimeError(result.summary))
+                task.on_failure(self.repo, RuntimeError(result.summary))
         except Exception as e:
             self._cleanup()
-            task.on_failure(self.github, e)
+            task.on_failure(self.repo, e)
         finally:
             self._active_agent = None
             self._active_task = None

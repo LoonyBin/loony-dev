@@ -5,12 +5,10 @@ from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from loony_dev.github import _parse_datetime
-from loony_dev.models import Issue, PullRequest
 from loony_dev.tasks.base import Task
 
 if TYPE_CHECKING:
-    from loony_dev.github import GitHubClient
+    from loony_dev.github import Issue, PullRequest, Repo
     from loony_dev.models import TaskResult
 
 logger = logging.getLogger(__name__)
@@ -31,13 +29,15 @@ class StuckItemCleanupTask(Task):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def discover(github: GitHubClient) -> Iterator[StuckItemCleanupTask]:
+    def discover(repo: Repo) -> Iterator[StuckItemCleanupTask]:
         """Yield cleanup tasks for issues and PRs stuck in-progress past the threshold."""
         from loony_dev import config
+        from loony_dev.github import Issue, PullRequest
+
         threshold_hours = int(config.settings.get("stuck_threshold_hours", 12))
         cutoff = datetime.now(timezone.utc) - timedelta(hours=threshold_hours)
 
-        for issue, _ in github.list_issues(label="in-progress"):
+        for issue in Issue.list(label="in-progress", repo=repo):
             if issue.updated_at is not None and issue.updated_at < cutoff:
                 logger.debug(
                     "Issue #%d has been in-progress since %s (threshold: %dh) — marking stuck",
@@ -45,24 +45,15 @@ class StuckItemCleanupTask(Task):
                 )
                 yield StuckItemCleanupTask(issue, threshold_hours)
 
-        for item in github.list_open_prs():
-            if not github.is_assigned_to_bot(item):
+        for pr in PullRequest.list_open(repo=repo):
+            if not pr.is_assigned_to(repo.bot_name):
                 continue
-            labels = [label["name"] for label in item.get("labels", [])]
-            if "in-progress" not in labels:
+            if "in-progress" not in pr.labels:
                 continue
-            updated_at = _parse_datetime(item.get("updatedAt"))
-            if updated_at is not None and updated_at < cutoff:
-                pr = PullRequest(
-                    number=item["number"],
-                    branch=item["headRefName"],
-                    title=item["title"],
-                    mergeable=item.get("mergeable"),
-                    updated_at=updated_at,
-                )
+            if pr.updated_at is not None and pr.updated_at < cutoff:
                 logger.debug(
                     "PR #%d has been in-progress since %s (threshold: %dh) — marking stuck",
-                    pr.number, updated_at, threshold_hours,
+                    pr.number, pr.updated_at, threshold_hours,
                 )
                 yield StuckItemCleanupTask(pr, threshold_hours)
 
@@ -71,6 +62,8 @@ class StuckItemCleanupTask(Task):
     # ------------------------------------------------------------------
 
     def describe(self) -> str:
+        from loony_dev.github import Issue
+
         kind = "Issue" if isinstance(self.item, Issue) else "PR"
         return (
             f"Clean up stuck {kind} #{self.item.number}: {self.item.title}\n\n"
@@ -79,22 +72,29 @@ class StuckItemCleanupTask(Task):
             f"Resetting to allow retry."
         )
 
-    def on_start(self, github: GitHubClient) -> None:
+    @property
+    def session_key(self) -> str | None:
+        return None
+
+    def on_start(self, repo: Repo) -> None:
+        from loony_dev.github import Issue
+
         kind = "issue" if isinstance(self.item, Issue) else "PR"
         logger.info(
             "Resetting stuck %s #%d (%s), in-progress since %s",
             kind, self.item.number, self.item.title, self.item.updated_at,
         )
-        github.post_comment(
-            self.item.number,
+        self.item.add_comment(
             f"This item has been `in-progress` for over {self.threshold_hours} hours with no "
             f"activity. The worker likely stopped unexpectedly. Resetting to allow retry.",
         )
 
-    def on_complete(self, github: GitHubClient, result: TaskResult) -> None:
-        github.remove_label(self.item.number, "in-progress")
+    def on_complete(self, repo: Repo, result: TaskResult) -> None:
+        from loony_dev.github import Issue
+
+        self.item.remove_label("in-progress")
         if isinstance(self.item, Issue):
-            github.add_label(self.item.number, "ready-for-development")
+            self.item.add_label("ready-for-development")
             logger.info(
                 "Issue #%d reset: removed in-progress, restored ready-for-development",
                 self.item.number,
@@ -102,7 +102,7 @@ class StuckItemCleanupTask(Task):
         else:
             logger.info("PR #%d reset: removed in-progress", self.item.number)
 
-    def on_failure(self, github: GitHubClient, error: Exception) -> None:
+    def on_failure(self, repo: Repo, error: Exception) -> None:
         logger.error(
             "Failed to clean up stuck item #%d: %s", self.item.number, error
         )
