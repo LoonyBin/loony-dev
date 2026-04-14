@@ -24,6 +24,8 @@ import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from loony_dev.github.pull_request import PullRequest
+from loony_dev.github.workflow import Workflow
 from loony_dev.prioritiser import Prioritiser
 from loony_dev.tasks.planning_task import PLAN_MARKER_PREFIX
 
@@ -187,10 +189,10 @@ class ProjectManager:
             )
 
         # Snapshot data sources used across the rest of the tick.
-        all_issues = self.github.list_issues_all(ttl=float(self.interval))
-        open_prs = self.github.list_open_prs()
-        open_pr_by_number = {pr["number"]: pr for pr in open_prs}
-        open_pr_issue_numbers = self.github.get_open_pr_issue_numbers()
+        all_issues = self.github.issues.open
+        open_prs = list(self.github.pull_requests.open)
+        open_pr_by_number = {pr.number: pr for pr in open_prs}
+        open_pr_issue_numbers = {num for pr in open_prs for num in pr.issues}
 
         # 2. Advance completed stages ─────────────────────────────────────
         if not self.skip_merge:
@@ -207,9 +209,10 @@ class ProjectManager:
         )
 
         for _ in range(max(0, slots_available)):
-            # Re-fetch issue list so each promotion sees up-to-date labels.
-            all_issues = self.github.list_issues_all(ttl=0)
-            open_pr_issue_numbers = self.github.get_open_pr_issue_numbers()
+            # Invalidate and re-fetch so each promotion sees up-to-date labels.
+            self.github.issues.invalidate()
+            all_issues = self.github.issues.open
+            open_pr_issue_numbers = {num for pr in self.github.pull_requests.open for num in pr.issues}
             candidate = self._prioritiser.select_next(all_issues, open_pr_issue_numbers)
             if candidate is None:
                 break
@@ -226,13 +229,12 @@ class ProjectManager:
         Any incomplete or failing check run causes this to return ``False``.
         Returns ``True`` when no check runs exist (nothing to fail on).
         """
-        sha = self.github.get_default_branch_sha()
-        if not sha:
+        branch = self.github.default_branch
+        if not branch.sha:
             logger.warning("Could not determine default branch SHA; assuming healthy.")
             return True
 
-        runs = self.github.get_branch_check_runs(sha)
-        for run in runs:
+        for run in branch.check_runs:
             status = run.get("status", "")
             conclusion = run.get("conclusion", "")
             if status != "completed":
@@ -279,93 +281,81 @@ class ProjectManager:
     # PR merging with configurable delay
     # ------------------------------------------------------------------
 
-    def _maybe_merge_ready_prs(self, open_prs: list[dict]) -> None:
+    def _maybe_merge_ready_prs(self, open_prs: list[PullRequest]) -> None:
         """Merge PRs whose CI has passed and whose merge delay has elapsed."""
         now = time.monotonic()
         now_dt = datetime.now(timezone.utc)
 
         for pr in open_prs:
-            pr_number = pr["number"]
-            head_sha = pr.get("headRefOid", "")
-            labels = {lbl["name"] for lbl in pr.get("labels", [])}
+            labels = set(pr.labels)
 
             # Skip PRs that still carry active pipeline labels (worker is busy).
             if labels & _PIPELINE_LABELS:
                 continue
 
             # Skip draft PRs.
-            if pr.get("isDraft", False):
+            if pr.is_draft:
                 continue
 
-            if not head_sha:
+            if not pr.head_sha:
                 continue
 
             # Fetch check runs for this PR's head commit.
-            check_runs = self.github.get_pr_check_runs(head_sha)
-            # get_pr_check_runs returns only FAILING runs.  We need to know
+            check_runs = pr.check_runs
+            # pr.check_runs returns only FAILING runs.  We need to know
             # whether all runs are completed as well.
-            entry = self.github._check_runs_cache.get(head_sha)  # noqa: SLF001
+            entry = self.github._check_runs_cache.get(pr.head_sha)  # noqa: SLF001
             if entry is None:
                 # Not yet cached — checks might still be running.
-                logger.debug("PR #%d: check-runs cache miss — skipping this tick.", pr_number)
+                logger.debug("PR #%d: check-runs cache miss — skipping this tick.", pr.number)
                 continue
 
             if not entry.all_completed:
-                logger.debug("PR #%d: CI still running — skipping.", pr_number)
+                logger.debug("PR #%d: CI still running — skipping.", pr.number)
                 continue
 
             if check_runs:
                 # Failing checks — CI failure handling belongs to CIFailureTask.
-                logger.debug("PR #%d: %d failing check(s) — skip merge.", pr_number, len(check_runs))
+                logger.debug("PR #%d: %d failing check(s) — skip merge.", pr.number, len(check_runs))
                 continue
 
             # All checks completed successfully.
-            if pr_number not in self._ci_passed_at:
-                self._ci_passed_at[pr_number] = now
-                logger.info("PR #%d: CI passed; waiting %ds before auto-merge.", pr_number, self.merge_delay)
+            if pr.number not in self._ci_passed_at:
+                self._ci_passed_at[pr.number] = now
+                logger.info("PR #%d: CI passed; waiting %ds before auto-merge.", pr.number, self.merge_delay)
 
-            elapsed = now - self._ci_passed_at[pr_number]
+            elapsed = now - self._ci_passed_at[pr.number]
             if elapsed < self.merge_delay:
                 remaining = int(self.merge_delay - elapsed)
-                action_key = f"merge-delay:{pr_number}"
+                action_key = f"merge-delay:{pr.number}"
                 if action_key not in self._actions_taken:
                     self._actions_taken.add(action_key)
                     logger.info(
                         "PR #%d: merge delay active — %dh %dm remaining before auto-merge.",
-                        pr_number, remaining // 3600, (remaining % 3600) // 60,
+                        pr.number, remaining // 3600, (remaining % 3600) // 60,
                     )
                 continue
 
             # Delay elapsed — merge.
-            merge_action_key = f"merge-done:{pr_number}"
+            merge_action_key = f"merge-done:{pr.number}"
             if merge_action_key in self._actions_taken:
                 continue
 
-            logger.info("PR #%d: merge delay elapsed — auto-merging.", pr_number)
-            success = self.github.merge_pull_request(pr_number)
+            logger.info("PR #%d: merge delay elapsed — auto-merging.", pr.number)
+            success = pr.merge("squash")
             if success:
                 self._actions_taken.add(merge_action_key)
                 # Find the associated issue to track deployment.
-                issue_number = self._find_issue_for_pr(pr)
+                issue_number = pr.issues[0] if pr.issues else None
                 if issue_number is not None:
-                    self._merged_issue_prs[issue_number] = (pr_number, now_dt)
+                    self._merged_issue_prs[issue_number] = (pr.number, now_dt)
                     logger.info(
                         "Tracking deployment for issue #%d (PR #%d merged at %s).",
-                        issue_number, pr_number, now_dt.isoformat(),
+                        issue_number, pr.number, now_dt.isoformat(),
                     )
                 # Remove merge-delay tracking for this PR.
-                self._ci_passed_at.pop(pr_number, None)
-                self._actions_taken.discard(f"merge-delay:{pr_number}")
-
-    def _find_issue_for_pr(self, pr: dict) -> int | None:
-        """Attempt to extract the associated issue number from a PR dict."""
-        import re
-        ref_re = re.compile(r"#(\d+)")
-        for text in (pr.get("title", ""), pr.get("headRefName", "")):
-            m = ref_re.search(text)
-            if m:
-                return int(m.group(1))
-        return None
+                self._ci_passed_at.pop(pr.number, None)
+                self._actions_taken.discard(f"merge-delay:{pr.number}")
 
     # ------------------------------------------------------------------
     # Deployment verification
@@ -374,7 +364,7 @@ class ProjectManager:
     def _check_merged_for_deployment(
         self,
         all_issues: list[dict],
-        open_pr_by_number: dict[int, dict],
+        open_pr_by_number: dict[int, PullRequest],
     ) -> None:
         """Detect successful deployments for recently merged PRs and mark done."""
         done_issues: list[int] = []
@@ -403,7 +393,7 @@ class ProjectManager:
                         issue_number,
                         f"{PM_MARKER} Deployment confirmed. Issue complete. :white_check_mark:",
                     )
-                    self.github.invalidate_issues_cache()
+                    self.github.issues.invalidate()
                 done_issues.append(issue_number)
 
         for issue_number in done_issues:
@@ -412,7 +402,7 @@ class ProjectManager:
         # Also detect externally merged PRs for issues the PM promoted.
         # If an issue no longer has pipeline labels AND no open PR but we
         # haven't tracked its PR yet, probe for a recently merged PR.
-        open_pr_issue_numbers = self.github.get_open_pr_issue_numbers()
+        open_pr_issue_numbers = {num for pr in self.github.pull_requests.open for num in pr.issues}
         for issue in all_issues:
             number = issue["number"]
             labels = {lbl["name"] for lbl in issue.get("labels", [])}
@@ -432,7 +422,8 @@ class ProjectManager:
             pr_number = self.github.find_pr_for_issue(number)
             if pr_number is None:
                 continue
-            merged_at = self.github.get_pr_merged_at(pr_number)
+            pr = PullRequest.get(pr_number, repo=self.github)
+            merged_at = pr.merged_at
             if merged_at is not None:
                 logger.info(
                     "Externally merged PR #%d detected for issue #%d.",
@@ -445,7 +436,9 @@ class ProjectManager:
         # If no deploy workflow is configured, consider deployment instant.
         if not self.deploy_workflow:
             return True
-        return self.github.get_deployment_run(self.deploy_workflow, after)
+        workflow = Workflow(self.deploy_workflow, repo=self.github)
+        runs = workflow.runs.where(conclusion="success", timestamp_is_gt=after)
+        return bool(runs)
 
     # ------------------------------------------------------------------
     # Pipeline promotion
@@ -474,7 +467,7 @@ class ProjectManager:
         )
         self.github.add_label(number, target_label)
         self.github.post_comment(number, comment_body)
-        self.github.invalidate_issues_cache()
+        self.github.issues.invalidate()
 
         self._actions_taken.add(action_key)
 

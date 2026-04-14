@@ -246,7 +246,7 @@ class Prioritiser:
 
         Falls back to the Phase-1 top pick if the Claude call fails.
         """
-        milestones = self.github.list_milestones()
+        milestones = self.github.milestones
         try:
             chosen_number, rationale = self._call_claude(shortlist, milestones)
             for issue in shortlist:

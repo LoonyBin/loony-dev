@@ -154,3 +154,57 @@ class Issue(GitHubItem):
 
     def __repr__(self) -> str:
         return f"Issue(#{self.number}, {self.title!r})"
+
+
+# ---------------------------------------------------------------------------
+# IssueCollection
+# ---------------------------------------------------------------------------
+
+
+class IssueCollection:
+    """A collection proxy for issues on a repository."""
+
+    def __init__(self, repo: Repo) -> None:
+        self._repo = repo
+
+    @property
+    def open(self) -> list[dict]:
+        """Return all open issues with labels, milestone, and timestamps.
+
+        User-controlled string fields are sanitized for prompt injection.
+        Results are tick-cached; call ``invalidate()`` to force a fresh fetch.
+        """
+        cached = self._repo._tick_cache.get("issues_open_all")
+        if cached is not None:
+            logger.debug("IssueCollection.open tick-cache hit (%d issues)", len(cached))
+            return cached
+
+        try:
+            data = self._repo.client.gh_json(
+                "issue", "list",
+                "--state", "open",
+                "--json", "number,title,body,labels,milestone,createdAt,updatedAt,author",
+                "--limit", "500",
+            )
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to fetch open issues for %s", self._repo.name)
+            data = []
+
+        if not isinstance(data, list):
+            data = []
+
+        from loony_dev.sanitize import sanitize_user_content
+        result = []
+        for item in data:
+            sanitized = dict(item)
+            sanitized["title"] = sanitize_user_content(item.get("title", "")).text
+            sanitized["body"] = sanitize_user_content(item.get("body") or "").text
+            result.append(sanitized)
+
+        self._repo._tick_cache["issues_open_all"] = result
+        logger.debug("IssueCollection.open fetched %d open issue(s)", len(result))
+        return result
+
+    def invalidate(self) -> None:
+        """Discard the cached open issues list."""
+        self._repo._tick_cache.pop("issues_open_all", None)

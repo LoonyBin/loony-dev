@@ -1,12 +1,12 @@
 """PullRequest model with Active Record pattern."""
 from __future__ import annotations
 
+import json as _json
 import logging
+import re
 import subprocess
-import time
 from typing import TYPE_CHECKING
 
-from loony_dev.github.client import gh_setting
 from loony_dev.github.content import Content
 from loony_dev.github.issue import GitHubItem
 from loony_dev.github.repo import CheckRunsCacheEntry, parse_datetime
@@ -36,6 +36,7 @@ class PullRequest(GitHubItem):
         reviews: list[Comment] | None = None,
         assignees: list[dict] | None = None,
         new_comments: list[Comment] | None = None,
+        is_draft: bool = False,
         _repo: Repo,
     ) -> None:
         super().__init__(number=number, _repo=_repo)
@@ -49,6 +50,7 @@ class PullRequest(GitHubItem):
         self.reviews: list[Comment] = reviews or []
         self.assignees: list[dict] = assignees or []
         self.new_comments: list[Comment] = new_comments or []
+        self.is_draft = is_draft
 
     # --- Class-level reads ---
 
@@ -57,7 +59,7 @@ class PullRequest(GitHubItem):
         """Fetch a single PR by number."""
         data = repo.client.gh_json(
             "pr", "view", str(number),
-            "--json", "number,headRefName,headRefOid,title,comments,reviews,labels,mergeable,updatedAt,assignees",
+            "--json", "number,headRefName,headRefOid,title,comments,reviews,labels,mergeable,updatedAt,assignees,isDraft",
         )
         return cls._from_api(data, repo)
 
@@ -75,7 +77,7 @@ class PullRequest(GitHubItem):
         data = repo.client.gh_json(
             "pr", "list",
             "--state", "open",
-            "--json", "number,headRefName,headRefOid,title,comments,reviews,labels,mergeable,updatedAt,assignees",
+            "--json", "number,headRefName,headRefOid,title,comments,reviews,labels,mergeable,updatedAt,assignees,isDraft",
         )
         result = [cls._from_api(item, repo) for item in data]
         logger.debug("PullRequest.list_open() returned %d open PR(s)", len(result))
@@ -120,6 +122,7 @@ class PullRequest(GitHubItem):
             comments=comments,
             reviews=reviews,
             assignees=data.get("assignees", []),
+            is_draft=data.get("isDraft", False),
             _repo=repo,
         )
 
@@ -128,6 +131,44 @@ class PullRequest(GitHubItem):
     def is_assigned_to(self, username: str) -> bool:
         """Return True if *username* is listed as an assignee."""
         return any(a.get("login", "") == username for a in self.assignees)
+
+    @property
+    def issues(self) -> list[int]:
+        """Issue numbers referenced in this PR's title or branch name."""
+        numbers: list[int] = []
+        seen: set[int] = set()
+
+        # Explicit #N references in the title
+        for m in re.finditer(r"#(\d+)", str(self.title)):
+            n = int(m.group(1))
+            if n not in seen:
+                seen.add(n)
+                numbers.append(n)
+
+        # Numbers embedded in the branch name (e.g. feat/123-my-feature)
+        for m in re.finditer(r"(?:^|[/-])(\d+)(?:[/-]|$)", self.branch):
+            n = int(m.group(1))
+            if n not in seen:
+                seen.add(n)
+                numbers.append(n)
+
+        return numbers
+
+    @property
+    def merged_at(self):
+        """Return the merged-at datetime if this PR has been merged, else ``None``."""
+        try:
+            output = self._repo.client.gh(
+                "pr", "view", str(self.number),
+                "--json", "state,merged,mergedAt",
+                "-q", ".",
+            )
+            data = _json.loads(output)
+            if data.get("merged"):
+                return parse_datetime(data.get("mergedAt"))
+        except (subprocess.CalledProcessError, ValueError):
+            logger.warning("Failed to fetch merge state for PR #%d", self.number)
+        return None
 
     @property
     def inline_comments(self) -> list[Comment]:
@@ -154,5 +195,44 @@ class PullRequest(GitHubItem):
             logger.warning("Failed to add reviewer %r to PR #%d: %s", reviewer, self.number, e)
             raise
 
+    def merge(self, method: str = "squash") -> bool:
+        """Merge this PR using *method* (``squash``, ``merge``, or ``rebase``).
+
+        Returns ``True`` on success and invalidates the issues and open-PRs caches.
+        """
+        try:
+            self._repo.client.gh("pr", "merge", str(self.number), f"--{method}")
+            logger.info("Merged PR #%d via %s", self.number, method)
+            self._repo.issues.invalidate()
+            self._repo.pull_requests.invalidate()
+            return True
+        except subprocess.CalledProcessError as exc:
+            logger.warning(
+                "Failed to merge PR #%d: %s",
+                self.number, ((exc.stderr or "") + (exc.stdout or "")).strip()[:300],
+            )
+            return False
+
     def __repr__(self) -> str:
         return f"PullRequest(#{self.number}, {self.title!r})"
+
+
+# ---------------------------------------------------------------------------
+# PullRequestCollection
+# ---------------------------------------------------------------------------
+
+
+class PullRequestCollection:
+    """A collection proxy for pull requests on a repository."""
+
+    def __init__(self, repo: Repo) -> None:
+        self._repo = repo
+
+    @property
+    def open(self) -> list[PullRequest]:
+        """Return all open PRs, tick-cached."""
+        return PullRequest.list_open(repo=self._repo)
+
+    def invalidate(self) -> None:
+        """Discard the tick-cached open PR list."""
+        self._repo._tick_cache.pop("open_prs", None)

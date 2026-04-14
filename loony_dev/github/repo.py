@@ -2,12 +2,10 @@
 from __future__ import annotations
 
 import functools
-import json
 import logging
-import re
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -68,6 +66,52 @@ class CheckRunsCacheEntry:
 
 
 # ---------------------------------------------------------------------------
+# Caching decorators for Repo instance methods
+# ---------------------------------------------------------------------------
+
+
+def tick_cached(method):
+    """Cache a Repo instance method result for the current tick.
+
+    The cached value is stored in ``self._tick_cache`` under the method name
+    and cleared by ``Repo.clear_tick_cache()`` at the start of each tick.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args):
+        key = method.__name__ if not args else (method.__name__, *args)
+        cached = self._tick_cache.get(key)
+        if cached is not None:
+            return cached
+        result = method(self, *args)
+        self._tick_cache[key] = result
+        return result
+    return wrapper
+
+
+def ttl_cached(default_ttl: float):
+    """Cache a Repo instance method result with a time-to-live (seconds).
+
+    The cached value is stored in ``self._ttl_cache`` under the method name.
+    Stale entries are replaced on the next access.
+    """
+    def decorator(method):
+        key = method.__name__
+        @functools.wraps(method)
+        def wrapper(self):
+            now = time.monotonic()
+            entry = self._ttl_cache.get(key)
+            if entry is not None:
+                result, cached_at = entry
+                if now - cached_at < default_ttl:
+                    return result
+            result = method(self)
+            self._ttl_cache[key] = (result, now)
+            return result
+        return wrapper
+    return decorator
+
+
+# ---------------------------------------------------------------------------
 # Repo
 # ---------------------------------------------------------------------------
 
@@ -87,11 +131,13 @@ class Repo:
         allowed_users: set[str] | None = None,
         min_role: str | None = None,
         skip_ci_checks: set[str] | None = None,
+        cwd: str | None = None,
     ) -> None:
         from loony_dev import config
 
-        self.name: str = repo or Repo.detect()
-        self.client = GitHubClient(self.name)
+        self.cwd = cwd
+        self.name: str = repo or Repo.detect(cwd=cwd)
+        self.client = GitHubClient(self.name, cwd=cwd)
         self.bot_name: str = bot_name or config.settings.get("bot_name") or Repo.detect_bot_name()
         self.allowed_users: set[str] = (
             allowed_users if allowed_users is not None
@@ -108,17 +154,19 @@ class Repo:
         self._tick_cache: dict[str, Any] = {}
         # Cross-tick cache: head_sha -> CheckRunsCacheEntry
         self._check_runs_cache: dict[str, CheckRunsCacheEntry] = {}
-        # Long-lived cache: (milestones_dict, cached_at_monotonic)
-        self._milestones_cache: tuple[dict[str, datetime | None], float] | None = None
-        # Short-lived cache: (issues_list, cached_at_monotonic)
-        self._issues_all_cache: tuple[list[dict], float] | None = None
+        # TTL cache: method_name -> (result, monotonic_timestamp)
+        self._ttl_cache: dict[str, tuple[Any, float]] = {}
 
     # --- Detection ---
 
     @staticmethod
-    def detect() -> str:
-        """Detect owner/repo from git remote URL."""
-        return run_gh("gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner")
+    def detect(cwd: str | None = None) -> str:
+        """Detect owner/repo from git remote URL.
+
+        Args:
+            cwd: Directory to run the detection in. Defaults to the current working directory.
+        """
+        return run_gh("gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner", cwd=cwd)
 
     @staticmethod
     @functools.lru_cache(maxsize=1)
@@ -136,6 +184,7 @@ class Repo:
                 "gh", "repo", "view", self.name,
                 "--json", "defaultBranchRef",
                 "-q", ".defaultBranchRef.name",
+                cwd=self.cwd,
             )
             if branch:
                 return branch
@@ -233,237 +282,35 @@ class Repo:
         for label in REQUIRED_LABELS:
             self.ensure_label(**label)
 
-    # --- Milestones ---
+    # --- Collection proxies ---
 
-    def list_milestones(self, ttl: float = 3600.0) -> dict[str, datetime | None]:
-        """Return ``{title: due_on}`` for all open milestones.
+    @property
+    @ttl_cached(3600.0)
+    def milestones(self) -> dict[str, datetime | None]:
+        """Return ``{title: due_on}`` for all open milestones (TTL-cached for 1 hour)."""
+        from loony_dev.github.milestone import Milestone
+        return {ms.title: ms.due_on for ms in Milestone.list_open(repo=self)}
 
-        Cached for *ttl* seconds (default 1 hour) since milestones change
-        infrequently.  Call ``invalidate_milestones_cache()`` after mutations.
-        """
-        now = time.monotonic()
-        if self._milestones_cache is not None:
-            cached_ms, cached_at = self._milestones_cache
-            if now - cached_at < ttl:
-                logger.debug("list_milestones() cache hit (%d milestones)", len(cached_ms))
-                return cached_ms
+    @functools.cached_property
+    def issues(self):
+        """Collection proxy for repository issues (``repo.issues.open``)."""
+        from loony_dev.github.issue import IssueCollection
+        return IssueCollection(self)
 
-        try:
-            data = self.client.gh_api("milestones?state=open&per_page=100")
-        except subprocess.CalledProcessError:
-            logger.warning("Failed to fetch milestones for %s", self.name)
-            data = []
+    @functools.cached_property
+    def pull_requests(self):
+        """Collection proxy for repository pull requests (``repo.pull_requests.open``)."""
+        from loony_dev.github.pull_request import PullRequestCollection
+        return PullRequestCollection(self)
 
-        result: dict[str, datetime | None] = {}
-        if isinstance(data, list):
-            for ms in data:
-                title = ms.get("title", "")
-                result[title] = parse_datetime(ms.get("due_on"))
+    @property
+    @tick_cached
+    def default_branch(self):
+        """Return the repository's default branch (tick-cached)."""
+        from loony_dev.github.branch import Branch
+        return Branch(name=self.detect_default_branch(), repo=self)
 
-        self._milestones_cache = (result, now)
-        logger.debug("list_milestones() fetched %d milestone(s)", len(result))
-        return result
-
-    def invalidate_milestones_cache(self) -> None:
-        """Discard the cached milestone list."""
-        self._milestones_cache = None
-
-    # --- All-issues cache ---
-
-    def list_issues_all(self, ttl: float = 120.0) -> list[dict]:
-        """Return all open issues with labels, milestone, and timestamps.
-
-        Cached for *ttl* seconds (default 2 min).  Call
-        ``invalidate_issues_cache()`` after mutations that change issue state.
-
-        User-controlled string fields are sanitized for prompt injection.
-        """
-        now = time.monotonic()
-        if self._issues_all_cache is not None:
-            cached_issues, cached_at = self._issues_all_cache
-            if now - cached_at < ttl:
-                logger.debug("list_issues_all() cache hit (%d issues)", len(cached_issues))
-                return cached_issues
-
-        try:
-            data = self.client.gh_json(
-                "issue", "list",
-                "--state", "open",
-                "--json", "number,title,body,labels,milestone,createdAt,updatedAt,author",
-                "--limit", "500",
-            )
-        except subprocess.CalledProcessError:
-            logger.warning("Failed to fetch all issues for %s", self.name)
-            data = []
-
-        if not isinstance(data, list):
-            data = []
-
-        from loony_dev.sanitize import sanitize_user_content
-        result = []
-        for item in data:
-            sanitized = dict(item)
-            sanitized["title"] = sanitize_user_content(item.get("title", "")).text
-            sanitized["body"] = sanitize_user_content(item.get("body") or "").text
-            result.append(sanitized)
-
-        self._issues_all_cache = (result, now)
-        logger.debug("list_issues_all() fetched %d open issue(s)", len(result))
-        return result
-
-    def invalidate_issues_cache(self) -> None:
-        """Discard the cached all-issues list after a mutation."""
-        self._issues_all_cache = None
-
-    # --- Open PR → issue number mapping ---
-
-    def get_open_pr_issue_numbers(self) -> set[int]:
-        """Return the set of issue numbers that have an associated open PR.
-
-        Parses PR titles and branch names for ``#N`` patterns.  Tick-cached.
-        """
-        cache_key = "open_pr_issue_numbers"
-        cached = self._tick_cache.get(cache_key)
-        if cached is not None:
-            logger.debug("get_open_pr_issue_numbers() tick-cache hit (%d)", len(cached))
-            return cached
-
-        issue_numbers: set[int] = set()
-        ref_pattern = re.compile(r"#(\d+)")
-        for pr in self.list_open_prs():
-            for match in ref_pattern.finditer(pr.get("title", "")):
-                issue_numbers.add(int(match.group(1)))
-            for match in re.finditer(r"(?:^|[/-])(\d+)(?:[/-]|$)", pr.get("headRefName", "")):
-                issue_numbers.add(int(match.group(1)))
-
-        self._tick_cache[cache_key] = issue_numbers
-        logger.debug("get_open_pr_issue_numbers() found %d issue(s) with open PRs", len(issue_numbers))
-        return issue_numbers
-
-    # --- Branch health ---
-
-    def get_branch_check_runs(self, sha: str) -> list[dict]:
-        """Return all check runs for *sha* with name/status/conclusion fields.
-
-        Used to health-check the default branch.  Tick-cached per SHA.
-        """
-        cache_key = f"branch_checks:{sha}"
-        cached = self._tick_cache.get(cache_key)
-        if cached is not None:
-            logger.debug("get_branch_check_runs(%r) tick-cache hit", sha)
-            return cached
-
-        try:
-            data = self.client.gh_api(f"commits/{sha}/check-runs")
-            runs = []
-            if isinstance(data, dict):
-                for run in data.get("check_runs", []):
-                    runs.append({
-                        "name": run.get("name", ""),
-                        "status": run.get("status", ""),
-                        "conclusion": run.get("conclusion") or "",
-                    })
-        except subprocess.CalledProcessError:
-            logger.warning("Failed to fetch check runs for SHA %r", sha)
-            runs = []
-
-        self._tick_cache[cache_key] = runs
-        logger.debug("get_branch_check_runs(%r) returned %d run(s)", sha, len(runs))
-        return runs
-
-    def get_default_branch_sha(self) -> str:
-        """Return the HEAD commit SHA of the repository's default branch."""
-        branch = self.detect_default_branch()
-        try:
-            output = self.client.gh(
-                "api", f"repos/{self.name}/branches/{branch}",
-                "-q", ".commit.sha",
-            )
-            return output.strip()
-        except subprocess.CalledProcessError:
-            logger.warning("Failed to get HEAD SHA for branch %r", branch)
-            return ""
-
-    # --- Deployment workflow ---
-
-    def get_deployment_run(self, workflow: str, after_timestamp: datetime) -> bool:
-        """Return True if a successful *workflow* run completed after *after_timestamp*.
-
-        *workflow* should be the workflow file name without extension (e.g. ``"deploy"``).
-        """
-        try:
-            data = self.client.gh_api(
-                f"actions/workflows/{workflow}.yml/runs?status=success&per_page=10"
-            )
-            if not isinstance(data, dict):
-                return False
-            for run in data.get("workflow_runs", []):
-                completed_at = parse_datetime(run.get("completed_at"))
-                if completed_at and completed_at > after_timestamp:
-                    logger.debug(
-                        "get_deployment_run(%r): found successful run completed at %s",
-                        workflow, completed_at,
-                    )
-                    return True
-            return False
-        except subprocess.CalledProcessError:
-            logger.warning("Failed to fetch deployment workflow runs for %r", workflow)
-            return False
-
-    # --- PR merging ---
-
-    def get_pr_merged_at(self, pr_number: int) -> datetime | None:
-        """Return the merged-at timestamp if PR *pr_number* was merged, else ``None``."""
-        try:
-            output = self.client.gh(
-                "pr", "view", str(pr_number),
-                "--json", "state,merged,mergedAt",
-                "-q", ".",
-            )
-            data = json.loads(output)
-            if data.get("merged"):
-                return parse_datetime(data.get("mergedAt"))
-        except (subprocess.CalledProcessError, json.JSONDecodeError, ValueError):
-            logger.warning("Failed to fetch merge state for PR #%d", pr_number)
-        return None
-
-    def merge_pull_request(self, pr_number: int, merge_method: str = "squash") -> bool:
-        """Merge PR *pr_number* using *merge_method*.
-
-        Returns ``True`` on success and invalidates the issues and open-PRs caches.
-        """
-        try:
-            self.client.gh("pr", "merge", str(pr_number), f"--{merge_method}")
-            logger.info("Merged PR #%d via %s", pr_number, merge_method)
-            self.invalidate_issues_cache()
-            self._tick_cache.pop("open_prs_raw", None)
-            self._tick_cache.pop("open_pr_issue_numbers", None)
-            return True
-        except subprocess.CalledProcessError as exc:
-            logger.warning(
-                "Failed to merge PR #%d: %s",
-                pr_number, ((exc.stderr or "") + (exc.stdout or "")).strip()[:300],
-            )
-            return False
-
-    # --- Compat helpers for project_manager ---
-
-    def list_open_prs(self) -> list[dict]:
-        """Return all open PRs as raw dicts.  Results are tick-cached."""
-        cached = self._tick_cache.get("open_prs_raw")
-        if cached is not None:
-            logger.debug("list_open_prs() tick-cache hit (%d PRs)", len(cached))
-            return cached
-        items = self.client.gh_json(
-            "pr", "list",
-            "--state", "open",
-            "--json", "number,headRefName,headRefOid,title,labels,mergeable,updatedAt,assignees,isDraft",
-        )
-        if not isinstance(items, list):
-            items = []
-        logger.debug("list_open_prs() returned %d open PR(s)", len(items))
-        self._tick_cache["open_prs_raw"] = items
-        return items
+    # --- Convenience helpers ---
 
     def add_label(self, number: int, label: str) -> None:
         try:
@@ -506,8 +353,3 @@ class Repo:
             except subprocess.CalledProcessError:
                 logger.warning("gh pr list search failed for issue #%d", issue_number)
         return None
-
-    def get_pr_check_runs(self, head_sha: str) -> list:
-        """Return completed failing check runs for the given commit SHA."""
-        from loony_dev.github.check_run import CheckRun
-        return CheckRun.list_failing(head_sha, repo=self)
