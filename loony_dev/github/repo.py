@@ -496,7 +496,7 @@ class Repo:
             try:
                 data = self.client.gh_json(
                     "pr", "list",
-                    "--state", "open",
+                    "--state", "all",
                     *search_args,
                     "--json", "number,createdAt",
                 )

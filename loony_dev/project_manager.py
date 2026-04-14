@@ -175,7 +175,7 @@ class ProjectManager:
                 logger.warning(
                     "Pipeline paused: CI/deployment failure detected on default branch of %s. "
                     "No new issues will be promoted and no PRs will be merged until resolved.",
-                    self.github.repo,
+                    self.github.name,
                 )
             return
 
@@ -183,7 +183,7 @@ class ProjectManager:
             self._pipeline_paused = False
             logger.info(
                 "Pipeline resumed: default branch of %s is healthy again.",
-                self.github.repo,
+                self.github.name,
             )
 
         # Snapshot data sources used across the rest of the tick.
