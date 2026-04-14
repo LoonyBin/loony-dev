@@ -12,3 +12,8 @@ loony-dev = "loony_dev.cli:cli"
 
 [tool.setuptools.packages.find]
 include = ["loony_dev*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
