@@ -206,10 +206,21 @@ class GitHubClient:
         return result.text
 
     def _injection_warning_exists(self, item_number: int, field_name: str) -> bool:
-        """Return True if a warning comment for *field_name* has already been posted."""
-        comments = self.get_issue_comments(item_number)
+        """Return True if a warning comment for *field_name* has already been posted.
+
+        Uses a raw gh call instead of ``get_issue_comments()`` to avoid
+        infinite recursion: get_issue_comments sanitizes every comment body
+        through ``_sanitize_field``, which may call ``_post_injection_warning``
+        again, which calls this method, creating an unbounded loop.
+        """
         sentinel = f'{INJECTION_WARNING_SENTINEL}"{field_name}" -->'
-        return any(sentinel in c.body for c in comments)
+        data = self._gh_json("issue", "view", str(item_number), "--json", "comments")
+        if not isinstance(data, dict):
+            return False
+        for c in data.get("comments", []):
+            if sentinel in c.get("body", ""):
+                return True
+        return False
 
     def _post_injection_warning(
         self,
