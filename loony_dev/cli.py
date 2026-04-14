@@ -77,7 +77,7 @@ def worker(**_) -> None:
         repo_name = Repo.detect(cwd=str(work_path))
         click.echo(f"Detected repo: {repo_name}")
 
-    repo = Repo(repo_name)
+    repo = Repo(repo_name, cwd=str(work_path))
     default_branch = repo.detect_default_branch()
     click.echo(f"Default branch: {default_branch}")
     git = GitRepo(work_dir=work_path, default_branch=default_branch)

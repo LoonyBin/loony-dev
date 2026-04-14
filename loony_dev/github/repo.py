@@ -85,11 +85,13 @@ class Repo:
         allowed_users: set[str] | None = None,
         min_role: str | None = None,
         skip_ci_checks: set[str] | None = None,
+        cwd: str | None = None,
     ) -> None:
         from loony_dev import config
 
-        self.name: str = repo or Repo.detect()
-        self.client = GitHubClient(self.name)
+        self.cwd = cwd
+        self.name: str = repo or Repo.detect(cwd=cwd)
+        self.client = GitHubClient(self.name, cwd=cwd)
         self.bot_name: str = bot_name or config.settings.get("bot_name") or Repo.detect_bot_name()
         self.allowed_users: set[str] = (
             allowed_users if allowed_users is not None
@@ -134,6 +136,7 @@ class Repo:
                 "gh", "repo", "view", self.name,
                 "--json", "defaultBranchRef",
                 "-q", ".defaultBranchRef.name",
+                cwd=self.cwd,
             )
             if branch:
                 return branch

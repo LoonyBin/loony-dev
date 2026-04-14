@@ -75,15 +75,16 @@ def run_gh(*cmd: str, cwd: str | None = None) -> str:
 class GitHubClient:
     """Low-level gh CLI wrapper.  All higher-level logic lives elsewhere."""
 
-    def __init__(self, repo: str) -> None:
+    def __init__(self, repo: str, cwd: str | None = None) -> None:
         self.repo = repo
+        self.cwd = cwd
 
     def gh(self, *args: str) -> str:
         """Run a gh CLI command and return stdout (with retry on rate-limit)."""
         cmd = ["gh", *args]
         if args and args[0] != "api":
             cmd += ["-R", self.repo]
-        return run_gh(*cmd)
+        return run_gh(*cmd, cwd=self.cwd)
 
     def gh_api(self, endpoint: str) -> list | dict:
         """Call ``gh api`` for this repo and parse JSON output."""
