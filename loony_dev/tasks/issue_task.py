@@ -9,8 +9,8 @@ from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, Task
 from loony_dev.tasks.planning_task import PLAN_MARKER, PLAN_MARKER_PREFIX
 
 if TYPE_CHECKING:
-    from loony_dev.github import GitHubClient
-    from loony_dev.models import Comment, Issue, TaskResult
+    from loony_dev.github import Comment, Issue, Repo
+    from loony_dev.models import TaskResult
 
 logger = logging.getLogger(__name__)
 
@@ -28,16 +28,14 @@ class IssueTask(Task):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def discover(github: GitHubClient) -> Iterator[IssueTask]:
-        """Yield implementation tasks for issues labeled ready-for-development.
+    def discover(repo: Repo) -> Iterator[IssueTask]:
+        """Yield implementation tasks for issues labeled ready-for-development."""
+        from loony_dev.github import Issue
 
-        The initial trigger (the label itself) requires triage+ access to apply,
-        so no additional comment-based authorization filter is needed here.
-        """
-        for issue, _ in github.list_issues("ready-for-development"):
+        for issue in Issue.list(label="ready-for-development", repo=repo):
             logger.debug("Examining issue #%d: %s", issue.number, issue.title)
-            comments = github.get_issue_comments(issue.number)
-            plan = IssueTask._find_plan(comments, github.bot_name)
+            comments = issue.comments
+            plan = IssueTask._find_plan(comments, repo.bot_name)
             if plan is not None:
                 logger.debug("Issue #%d has an approved plan (%d chars)", issue.number, len(plan))
             else:
@@ -50,7 +48,6 @@ class IssueTask(Task):
         plan: str | None = None
         for c in comments:
             if c.author == bot_name and c.body.startswith(PLAN_MARKER_PREFIX):
-                # Strip the marker header (HTML comment on the first line) to get the plan text.
                 end = c.body.find("-->")
                 plan = c.body[end + 3:].strip() if end >= 0 else c.body[len(PLAN_MARKER):].strip()
         return plan
@@ -58,6 +55,10 @@ class IssueTask(Task):
     # ------------------------------------------------------------------
     # Task interface
     # ------------------------------------------------------------------
+
+    @property
+    def session_key(self) -> str:
+        return f"issue:{self.issue.number}"
 
     def describe(self) -> str:
         if self.plan is not None:
@@ -77,27 +78,26 @@ class IssueTask(Task):
             f"- The PR title should reference the issue number"
         )
 
-    def on_start(self, github: GitHubClient) -> None:
+    def on_start(self, repo: Repo) -> None:
         logger.debug("Issue #%d: removing 'ready-for-development', adding 'in-progress'", self.issue.number)
-        github.remove_label(self.issue.number, "ready-for-development")
-        github.add_label(self.issue.number, "in-progress")
-        github.assign_self(self.issue.number)
+        self.issue.remove_label("ready-for-development")
+        self.issue.add_label("in-progress")
+        self.issue.assign()
 
-    def on_complete(self, github: GitHubClient, result: TaskResult) -> None:
+    def on_complete(self, repo: Repo, result: TaskResult) -> None:
         logger.debug("Issue #%d: removing 'in-progress', posting completion comment", self.issue.number)
         logger.debug("Completion comment body: %s", truncate_for_log(result.summary))
-        github.remove_label(self.issue.number, "in-progress")
-        github.post_comment(
-            self.issue.number,
+        self.issue.remove_label("in-progress")
+        self.issue.add_comment(
             f"{SUCCESS_MARKER}\n\nImplementation complete.\n\n{result.summary}",
         )
 
         author = self.issue.author
-        if not author or author == github.bot_name:
+        if not author or author == repo.bot_name:
             return
 
-        pr_number = github.find_pr_for_issue(self.issue.number)
-        if pr_number is None:
+        pr = self.issue.find_pr()
+        if pr is None:
             logger.warning(
                 "Could not find PR for issue #%d; skipping reviewer assignment",
                 self.issue.number,
@@ -105,27 +105,26 @@ class IssueTask(Task):
             return
 
         try:
-            github.add_pr_reviewer(pr_number, author)
-            logger.info("Assigned %s as reviewer on PR #%d", author, pr_number)
+            pr.add_reviewer(author)
+            logger.info("Assigned %s as reviewer on PR #%d", author, pr.number)
         except Exception as e:
             logger.warning(
-                "Failed to assign reviewer %s on PR #%d: %s", author, pr_number, e
+                "Failed to assign reviewer %s on PR #%d: %s", author, pr.number, e
             )
 
-    def on_failure(self, github: GitHubClient, error: Exception) -> None:
+    def on_failure(self, repo: Repo, error: Exception) -> None:
         logger.debug(
             "Issue #%d: task failed (%s), restoring 'ready-for-development'",
             self.issue.number, error,
         )
-        github.remove_label(self.issue.number, "in-progress")
-        github.add_label(self.issue.number, "ready-for-development")
+        self.issue.remove_label("in-progress")
+        self.issue.add_label("ready-for-development")
         if isinstance(error, RateLimitedError):
             logger.info(
                 "Issue #%d: rate-limited — skipping error comment (quota will reset automatically)",
                 self.issue.number,
             )
             return
-        github.post_comment(
-            self.issue.number,
+        self.issue.add_comment(
             f"{FAILURE_MARKER}\n\nImplementation failed: {error}",
         )

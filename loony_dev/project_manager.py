@@ -28,7 +28,7 @@ from loony_dev.prioritiser import Prioritiser
 from loony_dev.tasks.planning_task import PLAN_MARKER_PREFIX
 
 if TYPE_CHECKING:
-    from loony_dev.github import GitHubClient
+    from loony_dev.github import Repo
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ class ProjectManager:
 
     def __init__(
         self,
-        github: GitHubClient,
+        github: Repo,
         n: int = 1,
         interval: int = 120,
         skip_planning: bool = False,
@@ -136,7 +136,7 @@ class ProjectManager:
 
         logger.info(
             "ProjectManager started for %s (n=%d, interval=%ds, skip_merge=%s).",
-            self.github.repo, self.n, self.interval, self.skip_merge,
+            self.github.name, self.n, self.interval, self.skip_merge,
         )
 
         while self._running:

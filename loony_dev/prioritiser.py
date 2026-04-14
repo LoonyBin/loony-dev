@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from loony_dev.github import GitHubClient
+    from loony_dev.github import Repo
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +126,7 @@ class Prioritiser:
 
     def __init__(
         self,
-        github: GitHubClient,
+        github: Repo,
         shortlist_size: int = _DEFAULT_SHORTLIST_SIZE,
         milestone_soon_days: int = _DEFAULT_MILESTONE_SOON_DAYS,
         dependency_patterns: list[str] | None = None,

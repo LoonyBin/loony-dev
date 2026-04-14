@@ -4,11 +4,11 @@ import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
-from loony_dev.models import PullRequest, RateLimitedError
+from loony_dev.models import RateLimitedError
 from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, Task
 
 if TYPE_CHECKING:
-    from loony_dev.github import GitHubClient
+    from loony_dev.github import PullRequest, Repo
     from loony_dev.models import TaskResult
 
 logger = logging.getLogger(__name__)
@@ -27,33 +27,28 @@ class ConflictResolutionTask(Task):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def discover(github: GitHubClient) -> Iterator[ConflictResolutionTask]:
+    def discover(repo: Repo) -> Iterator[ConflictResolutionTask]:
         """Yield PRs that are in a CONFLICTING state with the default branch."""
-        default_branch = github.detect_default_branch()
-        for item in github.list_open_prs():
-            if not github.is_assigned_to_bot(item):
+        from loony_dev.github import PullRequest
+
+        default_branch = repo.detect_default_branch()
+        for pr in PullRequest.list_open(repo=repo):
+            if not pr.is_assigned_to(repo.bot_name):
+                continue
+            if "in-progress" in pr.labels:
+                continue
+            if pr.mergeable != "CONFLICTING":
                 continue
 
-            labels = [l["name"] for l in item.get("labels", [])]
-            if "in-progress" in labels:
-                continue
-
-            if item.get("mergeable") != "CONFLICTING":
-                continue
-
-            yield ConflictResolutionTask(
-                PullRequest(
-                    number=item["number"],
-                    branch=item["headRefName"],
-                    title=item["title"],
-                    mergeable=item.get("mergeable"),
-                ),
-                default_branch=default_branch,
-            )
+            yield ConflictResolutionTask(pr, default_branch=default_branch)
 
     # ------------------------------------------------------------------
     # Task interface
     # ------------------------------------------------------------------
+
+    @property
+    def session_key(self) -> str:
+        return f"pr:{self.pr.number}"
 
     def describe(self) -> str:
         return (
@@ -69,26 +64,24 @@ class ConflictResolutionTask(Task):
             f"- Do NOT create a new PR or commit unrelated changes"
         )
 
-    def on_start(self, github: GitHubClient) -> None:
-        github.add_label(self.pr.number, "in-progress")
-        github.assign_self(self.pr.number)
+    def on_start(self, repo: Repo) -> None:
+        self.pr.add_label("in-progress")
+        self.pr.assign()
 
-    def on_complete(self, github: GitHubClient, result: TaskResult) -> None:
-        github.remove_label(self.pr.number, "in-progress")
-        github.post_comment(
-            self.pr.number,
+    def on_complete(self, repo: Repo, result: TaskResult) -> None:
+        self.pr.remove_label("in-progress")
+        self.pr.add_comment(
             f"{SUCCESS_MARKER}\n\nMerge conflicts resolved.\n\n{result.summary}",
         )
 
-    def on_failure(self, github: GitHubClient, error: Exception) -> None:
-        github.remove_label(self.pr.number, "in-progress")
+    def on_failure(self, repo: Repo, error: Exception) -> None:
+        self.pr.remove_label("in-progress")
         if isinstance(error, RateLimitedError):
             logger.info(
                 "PR #%d: rate-limited — skipping error comment (quota will reset automatically)",
                 self.pr.number,
             )
             return
-        github.post_comment(
-            self.pr.number,
+        self.pr.add_comment(
             f"{FAILURE_MARKER}\n\nFailed to resolve merge conflicts: {error}\n\nManual intervention is required.",
         )

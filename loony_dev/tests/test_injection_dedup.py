@@ -1,119 +1,123 @@
-"""Tests for injection-warning deduplication via comment lookup (issue #68).
+"""Tests for injection-warning deduplication via WarningComment (issue #68).
 
 The bot polls GitHub on every cycle. Without deduplication, a prompt injection
 detected on the read path would post a new warning comment on every poll —
-spamming the issue indefinitely. The fix checks whether a warning for the same
-field already exists in the comments before posting.
+spamming the issue indefinitely. The fix: WarningComment.exists() checks
+whether a warning for the same field already exists before posting.
 """
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
-from loony_dev.github import GitHubClient, INJECTION_WARNING_SENTINEL
-from loony_dev.models import Comment
+from loony_dev.github.comment import WarningComment
+
 
 BOT_NAME = "loony-bot"
 
 
-def _make_client() -> GitHubClient:
-    return GitHubClient(repo="owner/repo", bot_name=BOT_NAME)
+def _make_repo() -> MagicMock:
+    repo = MagicMock()
+    repo.bot_name = BOT_NAME
+    return repo
 
 
 def _sentinel(field: str) -> str:
-    return f'{INJECTION_WARNING_SENTINEL}"{field}" -->'
+    return f'{WarningComment.SENTINEL_PREFIX}"{field}" -->'
 
 
-def _warning_comment(field: str) -> Comment:
-    return Comment(author=BOT_NAME, body=f"{_sentinel(field)}\n> [!WARNING]\n> ...", created_at="2024-01-01T00:00:00Z")
+def _warning_body(field: str) -> str:
+    return f"{_sentinel(field)}\n> [!WARNING]\n> ..."
 
 
-class TestInjectionWarningDedup(unittest.TestCase):
+class TestWarningCommentDedup(unittest.TestCase):
 
     # ------------------------------------------------------------------
-    # 1. No prior warning — comment should be posted
+    # 1. No prior warning — save() posts the comment
     # ------------------------------------------------------------------
     def test_no_prior_warning_posts_comment(self) -> None:
-        client = _make_client()
-        client.get_issue_comments = MagicMock(return_value=[])
-        client.post_comment = MagicMock()
+        repo = _make_repo()
+        repo.client.gh_json.return_value = {"comments": []}
 
-        client._post_injection_warning(1, "body", [])
+        wc = WarningComment(number=1, field_name="body", injections=[], _repo=repo)
+        wc.save()
 
-        client.post_comment.assert_called_once()
+        repo.client.gh.assert_called_once()
 
     # ------------------------------------------------------------------
-    # 2. Prior warning present for same field — no new comment
+    # 2. Prior warning present for same field — save() does NOT post
     # ------------------------------------------------------------------
     def test_prior_warning_suppresses_comment(self) -> None:
-        client = _make_client()
-        client.get_issue_comments = MagicMock(return_value=[_warning_comment("body")])
-        client.post_comment = MagicMock()
+        repo = _make_repo()
+        repo.client.gh_json.return_value = {
+            "comments": [{"body": _warning_body("body")}],
+        }
 
-        client._post_injection_warning(1, "body", [])
+        wc = WarningComment(number=1, field_name="body", injections=[], _repo=repo)
+        wc.save()
 
-        client.post_comment.assert_not_called()
+        repo.client.gh.assert_not_called()
 
     # ------------------------------------------------------------------
-    # 3. Prior warning for a different field — new comment IS posted
+    # 3. Prior warning for a different field — save() DOES post
     # ------------------------------------------------------------------
     def test_different_field_posts_comment(self) -> None:
-        client = _make_client()
-        # Warning exists for "title", but we're checking "body"
-        client.get_issue_comments = MagicMock(return_value=[_warning_comment("title")])
-        client.post_comment = MagicMock()
+        repo = _make_repo()
+        repo.client.gh_json.return_value = {
+            "comments": [{"body": _warning_body("title")}],
+        }
 
-        client._post_injection_warning(1, "body", [])
+        wc = WarningComment(number=1, field_name="body", injections=[], _repo=repo)
+        wc.save()
 
-        client.post_comment.assert_called_once()
+        repo.client.gh.assert_called_once()
 
     # ------------------------------------------------------------------
-    # 4. Prior warning on a different issue — new comment IS posted
+    # 4. Prior warning on a different issue — save() DOES post
     # ------------------------------------------------------------------
     def test_different_item_posts_comment(self) -> None:
-        client = _make_client()
+        repo = _make_repo()
 
-        def _comments(number: int) -> list[Comment]:
-            # Issue #1 has a warning; issue #2 does not
-            if number == 1:
-                return [_warning_comment("body")]
-            return []
+        def _comments(*args, **kwargs):
+            # Parse the number from the gh_json call args
+            # gh_json("issue", "view", str(number), "--json", "comments")
+            num = int(args[2])
+            if num == 1:
+                return {"comments": [{"body": _warning_body("body")}]}
+            return {"comments": []}
 
-        client.get_issue_comments = MagicMock(side_effect=_comments)
-        client.post_comment = MagicMock()
+        repo.client.gh_json.side_effect = _comments
 
-        client._post_injection_warning(2, "body", [])
+        wc = WarningComment(number=2, field_name="body", injections=[], _repo=repo)
+        wc.save()
 
-        client.post_comment.assert_called_once()
+        repo.client.gh.assert_called_once()
 
     # ------------------------------------------------------------------
-    # 5. Restart survival — fresh instance still reads prior warning
+    # 5. Restart survival — fresh check still reads prior warning
     # ------------------------------------------------------------------
     def test_restart_survival_no_repost(self) -> None:
-        """A freshly-constructed client with no in-memory state must not
+        """A freshly-constructed WarningComment with no in-memory state must not
         re-post if the warning comment is already present in GitHub."""
-        # Simulate a fresh instance — no shared state with any prior instance
-        fresh_client = GitHubClient(repo="owner/repo", bot_name=BOT_NAME)
-        fresh_client.get_issue_comments = MagicMock(return_value=[_warning_comment("body")])
-        fresh_client.post_comment = MagicMock()
+        repo = _make_repo()
+        repo.client.gh_json.return_value = {
+            "comments": [{"body": _warning_body("body")}],
+        }
 
-        fresh_client._post_injection_warning(1, "body", [])
+        wc = WarningComment(number=1, field_name="body", injections=[], _repo=repo)
+        wc.save()
 
-        fresh_client.post_comment.assert_not_called()
+        repo.client.gh.assert_not_called()
 
     # ------------------------------------------------------------------
-    # 6. Warning comment body contains the sentinel so future checks work
+    # 6. Warning comment body contains the sentinel
     # ------------------------------------------------------------------
     def test_posted_comment_body_contains_sentinel(self) -> None:
-        client = _make_client()
-        client.get_issue_comments = MagicMock(return_value=[])
-        posted_bodies: list[str] = []
-        client.post_comment = MagicMock(side_effect=lambda n, b: posted_bodies.append(b))
+        repo = _make_repo()
+        repo.client.gh_json.return_value = {"comments": []}
 
-        client._post_injection_warning(1, "body", [])
-
-        self.assertEqual(len(posted_bodies), 1)
-        self.assertIn(_sentinel("body"), posted_bodies[0])
+        wc = WarningComment(number=1, field_name="body", injections=[], _repo=repo)
+        self.assertIn(_sentinel("body"), str(wc.body))
 
 
 if __name__ == "__main__":

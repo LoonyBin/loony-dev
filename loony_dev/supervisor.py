@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from loony_dev import config
-from loony_dev.github import GitHubClient
+from loony_dev.github import Repo
 
 logger = logging.getLogger(__name__)
 
@@ -462,7 +462,7 @@ def run_supervisor() -> None:
                     log_path.parent.mkdir(parents=True, exist_ok=True)
 
                     try:
-                        GitHubClient(repo).ensure_required_labels()
+                        Repo(repo).ensure_required_labels()
                     except Exception:
                         logger.warning("Label provisioning failed for %s; continuing to launch worker.", repo)
 

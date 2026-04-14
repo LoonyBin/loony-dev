@@ -4,8 +4,7 @@ import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
-from loony_dev.github import is_authorized
-from loony_dev.models import Comment, PullRequest, RateLimitedError, truncate_for_log
+from loony_dev.models import RateLimitedError, truncate_for_log
 from loony_dev.tasks.base import (
     FAILURE_MARKER,
     FAILURE_MARKER_PREFIX,
@@ -17,7 +16,7 @@ from loony_dev.tasks.base import (
 )
 
 if TYPE_CHECKING:
-    from loony_dev.github import GitHubClient
+    from loony_dev.github import Comment, PullRequest, Repo
     from loony_dev.models import TaskResult
 
 logger = logging.getLogger(__name__)
@@ -35,82 +34,65 @@ class PRReviewTask(Task):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def discover(github: GitHubClient) -> Iterator[PRReviewTask]:
+    def discover(repo: Repo) -> Iterator[PRReviewTask]:
         """Yield PRs that have new review comments from authorized users since the bot last responded."""
-        for item in github.list_open_prs():
-            pr_number = item["number"]
-            if not github.is_assigned_to_bot(item):
-                logger.debug("PR #%d is not assigned to bot — skipping", pr_number)
+        from loony_dev.github import PullRequest
+
+        for pr in PullRequest.list_open(repo=repo):
+            if not pr.is_assigned_to(repo.bot_name):
+                logger.debug("PR #%d is not assigned to bot — skipping", pr.number)
                 continue
-            labels = [l["name"] for l in item.get("labels", [])]
-            logger.debug("Examining PR #%d: %s (labels=%s)", pr_number, item.get("title", ""), labels)
-            if "in-progress" in labels:
-                logger.debug("PR #%d is in-progress — skipping", pr_number)
+            logger.debug("Examining PR #%d: %s (labels=%s)", pr.number, pr.title, pr.labels)
+            if "in-progress" in pr.labels:
+                logger.debug("PR #%d is in-progress — skipping", pr.number)
                 continue
 
-            all_comments = PRReviewTask._assemble_comments(item, github)
-            new_comments = PRReviewTask._new_since_bot(all_comments, github.bot_name)
+            all_comments = PRReviewTask._assemble_comments(pr, repo)
+            new_comments = PRReviewTask._new_since_bot(all_comments, repo.bot_name)
 
             if not new_comments:
-                logger.debug("PR #%d has no new comments — skipping", pr_number)
+                logger.debug("PR #%d has no new comments — skipping", pr.number)
                 continue
 
             authorized_comments = [
                 c for c in new_comments
-                if is_authorized(github, c.author)
+                if repo.is_authorized(c.author)
             ]
             if not authorized_comments:
                 logger.debug(
                     "PR #%d has %d new comment(s) but none from authorized users — skipping",
-                    pr_number, len(new_comments),
+                    pr.number, len(new_comments),
                 )
                 continue
 
             logger.debug(
                 "PR #%d has %d authorized new comment(s) — yielding task",
-                pr_number, len(authorized_comments),
+                pr.number, len(authorized_comments),
             )
-            yield PRReviewTask(PullRequest(
-                number=pr_number,
-                branch=item["headRefName"],
-                title=item["title"],
+            # Create a new PR object with just the relevant data for the task
+            from loony_dev.github import PullRequest as PR
+            yield PRReviewTask(PR(
+                number=pr.number,
+                branch=pr.branch,
+                title=pr.title,
                 new_comments=authorized_comments,
+                _repo=pr._repo,
             ))
 
     @staticmethod
-    def _assemble_comments(pr_data: dict, github: GitHubClient) -> list[Comment]:
+    def _assemble_comments(pr: PullRequest, repo: Repo) -> list[Comment]:
         """Combine general comments, review bodies, and inline review comments."""
-        comments = [
-            Comment(
-                author=c.get("author", {}).get("login", ""),
-                body=c.get("body", ""),
-                created_at=c.get("createdAt", ""),
-            )
-            for c in pr_data.get("comments", [])
-        ]
-        comments += [
-            Comment(
-                author=review.get("author", {}).get("login", ""),
-                body=review.get("body", ""),
-                created_at=review.get("submittedAt", ""),
-            )
-            for review in pr_data.get("reviews", [])
-            if review.get("body")
-        ]
-        comments.extend(github.get_pr_inline_comments(pr_data["number"]))
+        from loony_dev.github import Comment
+
+        comments = list(pr.comments)
+        comments += [r for r in pr.reviews if r.body]
+        comments.extend(pr.inline_comments)
         comments.sort(key=lambda c: c.created_at)
         return comments
 
     @staticmethod
     def _new_since_bot(comments: list[Comment], bot_name: str) -> list[Comment]:
-        """Return non-bot comments after the bot's last *successful* response.
-
-        When the marker encodes a ``last-seen`` timestamp, comments are filtered
-        by timestamp (strictly after last-seen) so that comments posted *during*
-        the previous task run are not permanently missed.  Old markers without
-        ``last-seen`` fall back to position-based filtering for backward
-        compatibility.
-        """
+        """Return non-bot comments after the bot's last *successful* response."""
         bot_last_success_idx = -1
         bot_last_success_body: str | None = None
         for i, c in enumerate(comments):
@@ -125,7 +107,6 @@ class PRReviewTask(Task):
             if last_seen is not None:
                 result = [c for c in comments if c.author != bot_name and c.created_at > last_seen]
             else:
-                # Backward compat: old marker without last-seen → position-based filter.
                 result = [c for c in comments[bot_last_success_idx + 1:] if c.author != bot_name]
 
         logger.debug(
@@ -137,6 +118,10 @@ class PRReviewTask(Task):
     # ------------------------------------------------------------------
     # Task interface
     # ------------------------------------------------------------------
+
+    @property
+    def session_key(self) -> str:
+        return f"pr:{self.pr.number}"
 
     def describe(self) -> str:
         comments_text = "\n\n".join(
@@ -161,28 +146,27 @@ class PRReviewTask(Task):
             location += ")"
         return f"**{comment.author}**{location}:\n{comment.body}"
 
-    def on_start(self, github: GitHubClient) -> None:
+    def on_start(self, repo: Repo) -> None:
         logger.debug("PR #%d: adding 'in-progress'", self.pr.number)
-        github.add_label(self.pr.number, "in-progress")
-        github.assign_self(self.pr.number)
+        self.pr.add_label("in-progress")
+        self.pr.assign()
 
-    def on_complete(self, github: GitHubClient, result: TaskResult) -> None:
+    def on_complete(self, repo: Repo, result: TaskResult) -> None:
         logger.debug("PR #%d: removing 'in-progress'", self.pr.number)
-        github.remove_label(self.pr.number, "in-progress")
+        self.pr.remove_label("in-progress")
         if result.post_summary:
             last_seen_ts = max((c.created_at for c in self.pr.new_comments), default="")
             marker = encode_marker(SUCCESS_MARKER_PREFIX, last_seen_ts) if last_seen_ts else SUCCESS_MARKER
             logger.debug("Completion comment body: %s", truncate_for_log(result.summary))
-            github.post_comment(
-                self.pr.number,
+            self.pr.add_comment(
                 f"{marker}\n\nReview comments addressed.\n\n{result.summary}",
             )
         else:
             logger.debug("PR #%d: no code changes detected — skipping summary comment", self.pr.number)
 
-    def on_failure(self, github: GitHubClient, error: Exception) -> None:
+    def on_failure(self, repo: Repo, error: Exception) -> None:
         logger.debug("PR #%d: task failed (%s), removing 'in-progress'", self.pr.number, error)
-        github.remove_label(self.pr.number, "in-progress")
+        self.pr.remove_label("in-progress")
         if isinstance(error, RateLimitedError):
             logger.info(
                 "PR #%d: rate-limited — skipping error comment (quota will reset automatically)",
@@ -191,7 +175,6 @@ class PRReviewTask(Task):
             return
         last_seen_ts = max((c.created_at for c in self.pr.new_comments), default="")
         marker = encode_marker(FAILURE_MARKER_PREFIX, last_seen_ts) if last_seen_ts else FAILURE_MARKER
-        github.post_comment(
-            self.pr.number,
+        self.pr.add_comment(
             f"{marker}\n\nFailed to address review comments: {error}",
         )

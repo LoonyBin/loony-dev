@@ -4,13 +4,12 @@ import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
-from loony_dev.github import is_authorized
-from loony_dev.models import Comment, RateLimitedError, truncate_for_log
+from loony_dev.models import RateLimitedError, truncate_for_log
 from loony_dev.tasks.base import FAILURE_MARKER, Task, decode_last_seen, encode_marker
 
 if TYPE_CHECKING:
-    from loony_dev.github import GitHubClient
-    from loony_dev.models import Issue, TaskResult
+    from loony_dev.github import Comment, Issue, Repo
+    from loony_dev.models import TaskResult
 
 logger = logging.getLogger(__name__)
 
@@ -37,21 +36,22 @@ class PlanningTask(Task):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def discover(github: GitHubClient) -> Iterator[PlanningTask]:
+    def discover(repo: Repo) -> Iterator[PlanningTask]:
         """Yield planning tasks for issues that need a new or revised plan."""
-        for issue, labels in github.list_issues("ready-for-planning"):
-            logger.debug("Examining issue #%d: %s (labels=%s)", issue.number, issue.title, labels)
-            if "ready-for-development" in labels:
-                # User approved the plan; hand off to coding agent.
+        from loony_dev.github import Issue
+
+        for issue in Issue.list(label="ready-for-planning", repo=repo):
+            logger.debug("Examining issue #%d: %s (labels=%s)", issue.number, issue.title, issue.labels)
+            if "ready-for-development" in issue.labels:
                 logger.debug(
                     "Issue #%d has 'ready-for-development' — plan approved, removing 'ready-for-planning'",
                     issue.number,
                 )
-                github.remove_label(issue.number, "ready-for-planning")
+                issue.remove_label("ready-for-planning")
                 continue
-            comments = github.get_issue_comments(issue.number)
+            comments = issue.comments
             existing_plan, new_comments = PlanningTask._analyze_planning_comments(
-                comments, github.bot_name
+                comments, repo.bot_name
             )
             if existing_plan is not None:
                 logger.debug(
@@ -62,13 +62,11 @@ class PlanningTask(Task):
                 logger.debug("Issue #%d: no existing plan — will create initial plan", issue.number)
 
             if existing_plan is None:
-                # No plan yet: always run the initial planning pass (label already gates this).
                 yield PlanningTask(issue, existing_plan, new_comments)
             elif new_comments:
-                # Plan exists; only re-plan if at least one reply is from an authorized user.
                 authorized_new = [
                     c for c in new_comments
-                    if is_authorized(github, c.author)
+                    if repo.is_authorized(c.author)
                 ]
                 if authorized_new:
                     yield PlanningTask(issue, existing_plan, authorized_new)
@@ -84,23 +82,13 @@ class PlanningTask(Task):
     def _analyze_planning_comments(
         comments: list[Comment], bot_name: str
     ) -> tuple[str | None, list[Comment]]:
-        """Return (existing_plan, new_user_comments_since_last_plan).
-
-        Only a bot comment starting with PLAN_MARKER_PREFIX counts as a plan.
-        Other bot comments (e.g. failure notices) are ignored.
-
-        When the plan marker encodes a ``last-seen`` timestamp, new comments are
-        filtered by timestamp so that feedback posted during a planning run is
-        not permanently missed.  Old markers without ``last-seen`` fall back to
-        position-based filtering.
-        """
+        """Return (existing_plan, new_user_comments_since_last_plan)."""
         bot_last_plan_idx = -1
         bot_last_plan: str | None = None
 
         for i, c in enumerate(comments):
             if c.author == bot_name and c.body.startswith(PLAN_MARKER_PREFIX):
                 bot_last_plan_idx = i
-                # Strip the marker header (first HTML comment) to get the plan text.
                 end = c.body.find("-->")
                 bot_last_plan = c.body[end + 3:].strip() if end >= 0 else c.body[len(PLAN_MARKER):].strip()
 
@@ -111,7 +99,6 @@ class PlanningTask(Task):
             if last_seen is not None:
                 new_comments = [c for c in comments if c.author != bot_name and c.created_at > last_seen]
             else:
-                # Backward compat: old marker without last-seen → position-based filter.
                 new_comments = [
                     c for c in comments[bot_last_plan_idx + 1:] if c.author != bot_name
                 ]
@@ -121,6 +108,10 @@ class PlanningTask(Task):
     # ------------------------------------------------------------------
     # Task interface
     # ------------------------------------------------------------------
+
+    @property
+    def session_key(self) -> str:
+        return f"issue:{self.issue.number}"
 
     def describe(self) -> str:
         if self.existing_plan is None:
@@ -147,20 +138,20 @@ class PlanningTask(Task):
             f"Do NOT implement anything — planning only."
         )
 
-    def on_start(self, github: GitHubClient) -> None:
+    def on_start(self, repo: Repo) -> None:
         logger.debug("Issue #%d: starting planning (keeping 'ready-for-planning' label)", self.issue.number)
-        github.assign_self(self.issue.number)
+        self.issue.assign()
 
-    def on_complete(self, github: GitHubClient, result: TaskResult) -> None:
+    def on_complete(self, repo: Repo, result: TaskResult) -> None:
         logger.debug(
             "Issue #%d: posting plan (%d chars): %s",
             self.issue.number, len(result.summary), truncate_for_log(result.summary),
         )
         last_seen_ts = max((c.created_at for c in self.new_comments), default="")
         marker = encode_marker(PLAN_MARKER_PREFIX, last_seen_ts) if last_seen_ts else PLAN_MARKER
-        github.post_comment(self.issue.number, f"{marker}\n\n{result.summary}")
+        self.issue.add_comment(f"{marker}\n\n{result.summary}")
 
-    def on_failure(self, github: GitHubClient, error: Exception) -> None:
+    def on_failure(self, repo: Repo, error: Exception) -> None:
         logger.debug("Issue #%d: planning failed (%s)", self.issue.number, error)
         if isinstance(error, RateLimitedError):
             logger.info(
@@ -168,7 +159,6 @@ class PlanningTask(Task):
                 self.issue.number,
             )
             return
-        github.post_comment(
-            self.issue.number,
+        self.issue.add_comment(
             f"{FAILURE_MARKER}\n\nPlanning failed: {error}",
         )

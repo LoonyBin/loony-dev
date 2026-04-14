@@ -9,6 +9,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
+from loony_dev.github.pull_request import PullRequest
+from loony_dev.github.issue import Issue
 from loony_dev.tasks.ci_failure_task import CIFailureTask
 from loony_dev.tasks.conflict_task import ConflictResolutionTask
 from loony_dev.tasks.pr_review_task import PRReviewTask
@@ -19,17 +21,29 @@ OTHER_USER = "alice"
 REVIEWER = "alice"
 
 
-def _make_github(prs: list[dict], bot_name: str = BOT_NAME) -> MagicMock:
-    github = MagicMock()
-    github.bot_name = bot_name
-    github.list_open_prs.return_value = prs
-    github.is_assigned_to_bot.side_effect = lambda pr: any(
-        a.get("login", "") == bot_name for a in pr.get("assignees", [])
-    )
-    return github
+def _make_repo(pr_data: list[dict], issue_data: list[dict] | None = None) -> MagicMock:
+    repo = MagicMock()
+    repo.bot_name = BOT_NAME
+    repo._tick_cache = {}
+    repo._check_runs_cache = {}
+    repo.skip_ci_checks = set()
+    repo.is_authorized = MagicMock(return_value=True)
+
+    prs = [PullRequest._from_api(d, repo) for d in pr_data]
+    repo._tick_cache["open_prs"] = prs
+
+    if issue_data:
+        issues = [Issue(
+            number=d["number"], title=d.get("title", ""), body=d.get("body", ""),
+            updated_at=d.get("updated_at"), labels=d.get("labels", []), _repo=repo,
+        ) for d in issue_data]
+    else:
+        issues = []
+    # For Issue.list() — we'll patch it
+    return repo, issues
 
 
-def _pr(
+def _pr_data(
     number: int = 1,
     assigned_to_bot: bool = True,
     mergeable: str = "CONFLICTING",
@@ -58,19 +72,19 @@ def _pr(
 class TestConflictResolutionTaskFilter(unittest.TestCase):
 
     def test_yields_assigned_conflicting_pr(self) -> None:
-        github = _make_github([_pr(assigned_to_bot=True, mergeable="CONFLICTING")])
-        tasks = list(ConflictResolutionTask.discover(github))
+        repo, _ = _make_repo([_pr_data(assigned_to_bot=True, mergeable="CONFLICTING")])
+        tasks = list(ConflictResolutionTask.discover(repo))
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0].pr.number, 1)
 
     def test_skips_unassigned_conflicting_pr(self) -> None:
-        github = _make_github([_pr(assigned_to_bot=False, mergeable="CONFLICTING")])
-        tasks = list(ConflictResolutionTask.discover(github))
+        repo, _ = _make_repo([_pr_data(assigned_to_bot=False, mergeable="CONFLICTING")])
+        tasks = list(ConflictResolutionTask.discover(repo))
         self.assertEqual(tasks, [])
 
     def test_skips_assigned_non_conflicting_pr(self) -> None:
-        github = _make_github([_pr(assigned_to_bot=True, mergeable="MERGEABLE")])
-        tasks = list(ConflictResolutionTask.discover(github))
+        repo, _ = _make_repo([_pr_data(assigned_to_bot=True, mergeable="MERGEABLE")])
+        tasks = list(ConflictResolutionTask.discover(repo))
         self.assertEqual(tasks, [])
 
 
@@ -80,25 +94,31 @@ class TestConflictResolutionTaskFilter(unittest.TestCase):
 
 class TestCIFailureTaskFilter(unittest.TestCase):
 
-    def _make_ci_github(self, assigned_to_bot: bool, has_failures: bool = True) -> MagicMock:
-        from loony_dev.models import CheckRun
-        github = _make_github([_pr(assigned_to_bot=assigned_to_bot, mergeable="MERGEABLE")])
+    def _make_ci_repo(self, assigned_to_bot: bool, has_failures: bool = True) -> MagicMock:
+        from loony_dev.github.check_run import CheckRun
+
+        repo, _ = _make_repo([_pr_data(assigned_to_bot=assigned_to_bot, mergeable="MERGEABLE")])
         if has_failures:
-            github.get_pr_check_runs.return_value = [
-                CheckRun(name="test", status="completed", conclusion="failure", details_url="https://example.com")
-            ]
+            failing = [CheckRun(name="test", status="completed", conclusion="failure", details_url="https://example.com")]
         else:
-            github.get_pr_check_runs.return_value = []
-        return github
+            failing = []
+
+        # Mock the check_runs API response
+        repo.client.gh_api.return_value = {
+            "check_runs": [
+                {"name": "test", "status": "completed", "conclusion": "failure", "details_url": "https://example.com"}
+            ] if has_failures else []
+        }
+        return repo
 
     def test_yields_assigned_pr_with_failures(self) -> None:
-        github = self._make_ci_github(assigned_to_bot=True)
-        tasks = list(CIFailureTask.discover(github))
+        repo = self._make_ci_repo(assigned_to_bot=True)
+        tasks = list(CIFailureTask.discover(repo))
         self.assertEqual(len(tasks), 1)
 
     def test_skips_unassigned_pr_with_failures(self) -> None:
-        github = self._make_ci_github(assigned_to_bot=False)
-        tasks = list(CIFailureTask.discover(github))
+        repo = self._make_ci_repo(assigned_to_bot=False)
+        tasks = list(CIFailureTask.discover(repo))
         self.assertEqual(tasks, [])
 
 
@@ -108,30 +128,26 @@ class TestCIFailureTaskFilter(unittest.TestCase):
 
 class TestStuckItemCleanupTaskFilter(unittest.TestCase):
 
-    def _make_stuck_github(self, assigned_to_bot: bool) -> MagicMock:
-        pr = _pr(
-            assigned_to_bot=assigned_to_bot,
-            labels=["in-progress"],
-            mergeable="MERGEABLE",
+    def _make_stuck_repo(self, assigned_to_bot: bool) -> MagicMock:
+        repo, _ = _make_repo(
+            [_pr_data(assigned_to_bot=assigned_to_bot, labels=["in-progress"], mergeable="MERGEABLE")],
         )
-        # Make updatedAt old enough to trigger stuck detection (13 hours ago)
-        pr["updatedAt"] = "2024-01-01T00:00:00Z"
-        github = _make_github([pr])
-        github.list_issues.return_value = []
-        return github
+        return repo
 
     def test_yields_assigned_stuck_pr(self) -> None:
-        github = self._make_stuck_github(assigned_to_bot=True)
-        with patch("loony_dev.config.settings") as mock_settings:
-            mock_settings.get.return_value = 0  # threshold = 0 hours, always stuck
-            tasks = list(StuckItemCleanupTask.discover(github))
+        repo = self._make_stuck_repo(assigned_to_bot=True)
+        with patch("loony_dev.github.issue.Issue.list", return_value=[]):
+            with patch("loony_dev.config.settings") as mock_settings:
+                mock_settings.get.return_value = 0  # threshold = 0 hours, always stuck
+                tasks = list(StuckItemCleanupTask.discover(repo))
         self.assertEqual(len(tasks), 1)
 
     def test_skips_unassigned_stuck_pr(self) -> None:
-        github = self._make_stuck_github(assigned_to_bot=False)
-        with patch("loony_dev.config.settings") as mock_settings:
-            mock_settings.get.return_value = 0
-            tasks = list(StuckItemCleanupTask.discover(github))
+        repo = self._make_stuck_repo(assigned_to_bot=False)
+        with patch("loony_dev.github.issue.Issue.list", return_value=[]):
+            with patch("loony_dev.config.settings") as mock_settings:
+                mock_settings.get.return_value = 0
+                tasks = list(StuckItemCleanupTask.discover(repo))
         self.assertEqual(tasks, [])
 
 
@@ -141,27 +157,30 @@ class TestStuckItemCleanupTaskFilter(unittest.TestCase):
 
 class TestPRReviewTaskFilter(unittest.TestCase):
 
-    def _make_review_github(self, assigned_to_bot: bool) -> MagicMock:
-        from loony_dev.models import Comment
-        pr = _pr(assigned_to_bot=assigned_to_bot, mergeable="MERGEABLE")
-        github = _make_github([pr])
-        # Provide an inline comment from an authorized reviewer
-        github.get_pr_inline_comments.return_value = [
-            Comment(author=REVIEWER, body="Fix this.", created_at="2024-01-01T01:00:00Z")
+    def _make_review_repo(self, assigned_to_bot: bool) -> MagicMock:
+        repo, _ = _make_repo([_pr_data(assigned_to_bot=assigned_to_bot, mergeable="MERGEABLE")])
+        # Return inline comments from an authorized reviewer
+        repo.client.gh_api.return_value = [
+            {
+                "user": {"login": REVIEWER},
+                "body": "Fix this.",
+                "created_at": "2024-01-01T01:00:00Z",
+                "path": "foo.py",
+                "line": 10,
+                "pull_request_review_id": None,
+            }
         ]
-        return github
+        return repo
 
     def test_yields_assigned_pr_with_new_comments(self) -> None:
-        github = self._make_review_github(assigned_to_bot=True)
-        with patch("loony_dev.tasks.pr_review_task.is_authorized", return_value=True):
-            tasks = list(PRReviewTask.discover(github))
+        repo = self._make_review_repo(assigned_to_bot=True)
+        tasks = list(PRReviewTask.discover(repo))
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0].pr.number, 1)
 
     def test_skips_unassigned_pr_with_new_comments(self) -> None:
-        github = self._make_review_github(assigned_to_bot=False)
-        with patch("loony_dev.tasks.pr_review_task.is_authorized", return_value=True):
-            tasks = list(PRReviewTask.discover(github))
+        repo = self._make_review_repo(assigned_to_bot=False)
+        tasks = list(PRReviewTask.discover(repo))
         self.assertEqual(tasks, [])
 
 
