@@ -198,6 +198,9 @@ class TestIsSessionNotFound(unittest.TestCase):
         self.assertTrue(ClaudeQuotaMixin._is_session_not_found("Could not find session"))
         self.assertTrue(ClaudeQuotaMixin._is_session_not_found("Invalid session id"))
         self.assertTrue(ClaudeQuotaMixin._is_session_not_found("Session does not exist"))
+        self.assertTrue(ClaudeQuotaMixin._is_session_not_found(
+            "No conversation found with session ID: 69c4a10b-aab4-53c9-89b6-f578f195c44a"
+        ))
 
     def test_normal_error_not_matched(self) -> None:
         from loony_dev.agents.claude_quota import ClaudeQuotaMixin

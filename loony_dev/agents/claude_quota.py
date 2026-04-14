@@ -44,6 +44,7 @@ _SESSION_NOT_FOUND_PATTERNS = (
     "could not find session",
     "invalid session",
     "does not exist",
+    "no conversation found",
 )
 
 # Matches: "Your limit will reset at 2pm (America/New_York)"
