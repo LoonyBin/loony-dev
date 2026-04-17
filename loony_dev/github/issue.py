@@ -160,7 +160,7 @@ class Issue(GitHubItem):
 
     def has_other_assignee(self, username: str) -> bool:
         """Return True if the issue is assigned to at least one person who is not *username*."""
-        return bool(self.assignees) and not self.is_assigned_to(username)
+        return any(login != username for login in self.assignees)
 
     def __repr__(self) -> str:
         return f"Issue(#{self.number}, {self.title!r})"
