@@ -79,6 +79,7 @@ class Issue(GitHubItem):
         created_at: datetime | None = None,
         labels: list[str] | None = None,
         milestone: Milestone | None = None,
+        assignees: list[str] | None = None,
         _repo: Repo,
     ) -> None:
         super().__init__(number=number, _repo=_repo)
@@ -89,6 +90,7 @@ class Issue(GitHubItem):
         self.created_at = created_at
         self.labels: list[str] = labels or []
         self.milestone: Milestone | None = milestone
+        self.assignees: list[str] = assignees or []
 
     # --- Class-level reads ---
 
@@ -97,7 +99,7 @@ class Issue(GitHubItem):
         """Fetch a single issue by number."""
         data = repo.client.gh_json(
             "issue", "view", str(number),
-            "--json", "number,title,body,labels,author,updatedAt,createdAt,milestone",
+            "--json", "number,title,body,labels,author,updatedAt,createdAt,milestone,assignees",
         )
         return cls._from_api(data, repo)
 
@@ -108,7 +110,7 @@ class Issue(GitHubItem):
             "issue", "list",
             "--label", label,
             "--state", "open",
-            "--json", "number,title,body,labels,author,updatedAt,createdAt,milestone",
+            "--json", "number,title,body,labels,author,updatedAt,createdAt,milestone,assignees",
         )
         result = IssueCollection(cls._from_api(item, repo) for item in data)
         logger.debug("Issue.list(label=%r) returned %d issue(s)", label, len(result))
@@ -146,6 +148,7 @@ class Issue(GitHubItem):
             created_at=parse_datetime(data.get("createdAt")),
             labels=[l["name"] for l in data.get("labels", [])],
             milestone=milestone,
+            assignees=[a["login"] for a in data.get("assignees", [])],
             _repo=repo,
         )
 
@@ -181,6 +184,13 @@ class Issue(GitHubItem):
                 logger.warning("gh pr list search failed for issue #%d", self.number)
         return None
 
+    def is_assigned_to(self, username: str) -> bool:
+        return any(login == username for login in self.assignees)
+
+    def has_other_assignee(self, username: str) -> bool:
+        """Return True if the issue is assigned to at least one person who is not *username*."""
+        return any(login != username for login in self.assignees)
+
     def __repr__(self) -> str:
         return f"Issue(#{self.number}, {self.title!r})"
 
@@ -212,7 +222,7 @@ class IssueCollection(list):
             data = repo.client.gh_json(
                 "issue", "list",
                 "--state", "open",
-                "--json", "number,title,body,labels,milestone,createdAt,updatedAt,author",
+                "--json", "number,title,body,labels,milestone,createdAt,updatedAt,author,assignees",
                 "--limit", "500",
             )
         except subprocess.CalledProcessError:

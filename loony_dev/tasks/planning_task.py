@@ -42,6 +42,12 @@ class PlanningTask(Task):
 
         for issue in Issue.list(label="ready-for-planning", repo=repo):
             logger.debug("Examining issue #%d: %s (labels=%s)", issue.number, issue.title, issue.labels)
+            if issue.has_other_assignee(repo.bot_name):
+                logger.debug(
+                    "Issue #%d is assigned to %s — skipping (not our issue)",
+                    issue.number, issue.assignees,
+                )
+                continue
             if "ready-for-development" in issue.labels:
                 logger.debug(
                     "Issue #%d has 'ready-for-development' — plan approved, removing 'ready-for-planning'",
