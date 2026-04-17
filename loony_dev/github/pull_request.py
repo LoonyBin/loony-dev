@@ -29,6 +29,7 @@ class PullRequest(GitHubItem):
         number: int,
         branch: str = "",
         title: Content | str = "",
+        body: Content | str = "",
         head_sha: str = "",
         mergeable: str | None = None,
         updated_at=None,
@@ -43,6 +44,7 @@ class PullRequest(GitHubItem):
         super().__init__(number=number, _repo=_repo)
         self.branch = branch
         self.title = title if isinstance(title, Content) else Content(title)
+        self.body = body if isinstance(body, Content) else Content(body)
         self.head_sha = head_sha
         self.mergeable = mergeable
         self.updated_at = updated_at
@@ -60,7 +62,7 @@ class PullRequest(GitHubItem):
         """Fetch a single PR by number."""
         data = repo.client.gh_json(
             "pr", "view", str(number),
-            "--json", "number,headRefName,headRefOid,title,comments,reviews,labels,mergeable,updatedAt,assignees,isDraft",
+            "--json", "number,headRefName,headRefOid,title,body,comments,reviews,labels,mergeable,updatedAt,assignees,isDraft",
         )
         return cls._from_api(data, repo)
 
@@ -78,7 +80,7 @@ class PullRequest(GitHubItem):
         data = repo.client.gh_json(
             "pr", "list",
             "--state", "open",
-            "--json", "number,headRefName,headRefOid,title,comments,reviews,labels,mergeable,updatedAt,assignees,isDraft",
+            "--json", "number,headRefName,headRefOid,title,body,comments,reviews,labels,mergeable,updatedAt,assignees,isDraft",
         )
         result = [cls._from_api(item, repo) for item in data]
         logger.debug("PullRequest.list_open() returned %d open PR(s)", len(result))
@@ -116,10 +118,11 @@ class PullRequest(GitHubItem):
             number=pr_number,
             branch=data.get("headRefName", ""),
             title=Content(data.get("title", "")),
+            body=Content(data.get("body") or ""),
             head_sha=data.get("headRefOid", ""),
             mergeable=data.get("mergeable"),
             updated_at=parse_datetime(data.get("updatedAt")),
-            labels=[l["name"] for l in data.get("labels", [])],
+            labels=[label["name"] for label in data.get("labels", [])],
             comments=comments,
             reviews=reviews,
             assignees=data.get("assignees", []),
@@ -135,7 +138,7 @@ class PullRequest(GitHubItem):
 
     @property
     def issues(self) -> IssueCollection:
-        """Issues referenced in this PR's title or branch name.
+        """Issues referenced in this PR's title, body, or branch name.
 
         Returns an :class:`IssueCollection` of stub :class:`Issue` instances
         (``number`` populated; other fields fetched lazily via
@@ -146,12 +149,18 @@ class PullRequest(GitHubItem):
         numbers: list[int] = []
         seen: set[int] = set()
 
+        def _collect(text: str) -> None:
+            for m in re.finditer(r"#(\d+)", text):
+                n = int(m.group(1))
+                if n not in seen:
+                    seen.add(n)
+                    numbers.append(n)
+
         # Explicit #N references in the title
-        for m in re.finditer(r"#(\d+)", str(self.title)):
-            n = int(m.group(1))
-            if n not in seen:
-                seen.add(n)
-                numbers.append(n)
+        _collect(str(self.title))
+
+        # Keyword + #N references in the body (e.g. "Closes #123", "Fixes #45")
+        _collect(str(self.body))
 
         # Numbers embedded in the branch name (e.g. feat/123-my-feature)
         for m in re.finditer(r"(?:^|[/-])(\d+)(?:[/-]|$)", self.branch):

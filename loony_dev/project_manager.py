@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import signal
+import subprocess
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -269,6 +270,8 @@ class ProjectManager:
         count = 0
         for issue in all_issues:
             labels = set(issue.labels)
+            if _DONE_LABEL in labels:
+                continue
             # Explicitly labelled pipeline stages
             if labels & _PIPELINE_LABELS:
                 count += 1
@@ -314,10 +317,14 @@ class ProjectManager:
                 continue
 
             if not entry.all_completed:
+                self._ci_passed_at.pop(pr.number, None)
+                self._actions_taken.discard(f"merge-delay:{pr.number}")
                 logger.debug("PR #%d: CI still running — skipping.", pr.number)
                 continue
 
             if check_runs:
+                self._ci_passed_at.pop(pr.number, None)
+                self._actions_taken.discard(f"merge-delay:{pr.number}")
                 # Failing checks — CI failure handling belongs to CIFailureTask.
                 logger.debug("PR #%d: %d failing check(s) — skip merge.", pr.number, len(check_runs))
                 continue
@@ -394,8 +401,14 @@ class ProjectManager:
                 )
                 action_key = f"done:{issue_number}"
                 if action_key not in self._actions_taken:
+                    try:
+                        self.github.add_label(issue_number, _DONE_LABEL)
+                    except subprocess.CalledProcessError:
+                        logger.warning(
+                            "Failed to mark issue #%d as done — will retry next tick.", issue_number,
+                        )
+                        continue
                     self._actions_taken.add(action_key)
-                    self.github.add_label(issue_number, _DONE_LABEL)
                     self.github.post_comment(
                         issue_number,
                         f"{PM_MARKER} Deployment confirmed. Issue complete. :white_check_mark:",
@@ -470,7 +483,11 @@ class ProjectManager:
             f"{PM_MARKER} Promoting to `{target_label}`."
             f"{rationale_section}"
         )
-        self.github.add_label(issue.number, target_label)
+        try:
+            self.github.add_label(issue.number, target_label)
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to promote issue #%d — will retry next tick.", issue.number)
+            return
         self.github.post_comment(issue.number, comment_body)
         self.github.issues.invalidate()
 

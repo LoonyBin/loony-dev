@@ -325,14 +325,16 @@ class Repo:
     def add_label(self, number: int, label: str) -> None:
         try:
             self.client.gh("issue", "edit", str(number), "--add-label", label)
-        except subprocess.CalledProcessError:
-            logger.warning("Failed to add label '%s' to #%d", label, number)
+        except subprocess.CalledProcessError as exc:
+            logger.warning("Failed to add label '%s' to #%d: %s", label, number, exc)
+            raise
 
     def remove_label(self, number: int, label: str) -> None:
         try:
             self.client.gh("issue", "edit", str(number), "--remove-label", label)
-        except subprocess.CalledProcessError:
-            logger.warning("Failed to remove label '%s' from #%d", label, number)
+        except subprocess.CalledProcessError as exc:
+            logger.warning("Failed to remove label '%s' from #%d: %s", label, number, exc)
+            raise
 
     def post_comment(self, number: int, body: str) -> None:
         from loony_dev.models import truncate_for_log
