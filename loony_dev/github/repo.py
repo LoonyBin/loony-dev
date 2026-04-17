@@ -79,9 +79,8 @@ def tick_cached(method):
     @functools.wraps(method)
     def wrapper(self, *args):
         key = method.__name__ if not args else (method.__name__, *args)
-        cached = self._tick_cache.get(key)
-        if cached is not None:
-            return cached
+        if key in self._tick_cache:
+            return self._tick_cache[key]
         result = method(self, *args)
         self._tick_cache[key] = result
         return result
