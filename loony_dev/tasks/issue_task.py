@@ -34,6 +34,12 @@ class IssueTask(Task):
 
         for issue in Issue.list(label="ready-for-development", repo=repo):
             logger.debug("Examining issue #%d: %s", issue.number, issue.title)
+            if issue.has_other_assignee(repo.bot_name):
+                logger.debug(
+                    "Issue #%d is assigned to %s — skipping (not our issue)",
+                    issue.number, issue.assignees,
+                )
+                continue
             comments = issue.comments
             plan = IssueTask._find_plan(comments, repo.bot_name)
             if plan is not None:
