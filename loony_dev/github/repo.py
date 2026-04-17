@@ -5,7 +5,7 @@ import functools
 import logging
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -66,6 +66,51 @@ class CheckRunsCacheEntry:
 
 
 # ---------------------------------------------------------------------------
+# Caching decorators for Repo instance methods
+# ---------------------------------------------------------------------------
+
+
+def tick_cached(method):
+    """Cache a Repo instance method result for the current tick.
+
+    The cached value is stored in ``self._tick_cache`` under the method name
+    and cleared by ``Repo.clear_tick_cache()`` at the start of each tick.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args):
+        key = method.__name__ if not args else (method.__name__, *args)
+        if key in self._tick_cache:
+            return self._tick_cache[key]
+        result = method(self, *args)
+        self._tick_cache[key] = result
+        return result
+    return wrapper
+
+
+def ttl_cached(default_ttl: float):
+    """Cache a Repo instance method result with a time-to-live (seconds).
+
+    The cached value is stored in ``self._ttl_cache`` under the method name.
+    Stale entries are replaced on the next access.
+    """
+    def decorator(method):
+        key = method.__name__
+        @functools.wraps(method)
+        def wrapper(self):
+            now = time.monotonic()
+            entry = self._ttl_cache.get(key)
+            if entry is not None:
+                result, cached_at = entry
+                if now - cached_at < default_ttl:
+                    return result
+            result = method(self)
+            self._ttl_cache[key] = (result, now)
+            return result
+        return wrapper
+    return decorator
+
+
+# ---------------------------------------------------------------------------
 # Repo
 # ---------------------------------------------------------------------------
 
@@ -108,6 +153,10 @@ class Repo:
         self._tick_cache: dict[str, Any] = {}
         # Cross-tick cache: head_sha -> CheckRunsCacheEntry
         self._check_runs_cache: dict[str, CheckRunsCacheEntry] = {}
+        # TTL cache: method_name -> (result, monotonic_timestamp)
+        self._ttl_cache: dict[str, tuple[Any, float]] = {}
+        # Configurable TTL for the milestones cache (seconds); can be overridden by callers.
+        self.milestone_cache_ttl: float = 3600.0
 
     # --- Detection ---
 
@@ -233,3 +282,91 @@ class Repo:
         logger.info("Provisioning required labels for %s", self.name)
         for label in REQUIRED_LABELS:
             self.ensure_label(**label)
+
+    # --- Collection proxies ---
+
+    @property
+    def milestones(self) -> dict[str, datetime | None]:
+        """Return ``{title: due_on}`` for all open milestones (TTL-cached; see ``milestone_cache_ttl``)."""
+        key = "milestones"
+        now = time.monotonic()
+        entry = self._ttl_cache.get(key)
+        if entry is not None:
+            result, cached_at = entry
+            if now - cached_at < self.milestone_cache_ttl:
+                return result
+        from loony_dev.github.milestone import Milestone
+        result = {ms.title: ms.due_on for ms in Milestone.list_open(repo=self)}
+        self._ttl_cache[key] = (result, now)
+        return result
+
+    @functools.cached_property
+    def issues(self):
+        """Query proxy for repository issues (``repo.issues.open``)."""
+        from loony_dev.github.issue import _IssueQuery
+        return _IssueQuery(self)
+
+    @functools.cached_property
+    def pull_requests(self):
+        """Collection proxy for repository pull requests (``repo.pull_requests.open``)."""
+        from loony_dev.github.pull_request import PullRequestCollection
+        return PullRequestCollection(self)
+
+    @property
+    @tick_cached
+    def default_branch(self):
+        """Return the repository's default branch (tick-cached)."""
+        from loony_dev.github.branch import Branch
+        return Branch(name=self.detect_default_branch(), repo=self)
+
+    # --- Convenience helpers ---
+
+    def add_label(self, number: int, label: str) -> None:
+        try:
+            self.client.gh("issue", "edit", str(number), "--add-label", label)
+        except subprocess.CalledProcessError as exc:
+            logger.warning("Failed to add label '%s' to #%d: %s", label, number, exc)
+            raise
+
+    def remove_label(self, number: int, label: str) -> None:
+        try:
+            self.client.gh("issue", "edit", str(number), "--remove-label", label)
+        except subprocess.CalledProcessError as exc:
+            logger.warning("Failed to remove label '%s' from #%d: %s", label, number, exc)
+            raise
+
+    def post_comment(self, number: int, body: str) -> None:
+        from loony_dev.models import truncate_for_log
+        logger.debug("post_comment(#%d): %s", number, truncate_for_log(body))
+        self.client.gh("issue", "comment", str(number), "--body", body)
+
+    def get_issue_comments(self, number: int) -> list:
+        """Get comments on an issue, sorted by creation time."""
+        from loony_dev.github.comment import Comment
+        return Comment.list_for_issue(number, repo=self)
+
+    def find_pr_for_issue(self, issue_number: int) -> int | None:
+        """Return the PR number for a PR that references the given issue, or None.
+
+        Merged PRs are preferred over open/closed ones to avoid hiding the real
+        merged PR behind a newer abandoned PR.
+        """
+        for search_args in [
+            ["--search", f"#{issue_number} in:title"],
+            ["--search", f"#{issue_number}"],
+        ]:
+            try:
+                data = self.client.gh_json(
+                    "pr", "list",
+                    "--state", "all",
+                    *search_args,
+                    "--json", "number,createdAt,state",
+                )
+                if data:
+                    merged = [p for p in data if p.get("state") == "MERGED"]
+                    candidates = merged if merged else data
+                    sorted_prs = sorted(candidates, key=lambda p: p.get("createdAt", ""), reverse=True)
+                    return sorted_prs[0]["number"]
+            except subprocess.CalledProcessError:
+                logger.warning("gh pr list search failed for issue #%d", issue_number)
+        return None
