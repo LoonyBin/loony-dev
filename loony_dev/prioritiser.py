@@ -53,8 +53,9 @@ def _parse_dep_numbers(body: str, patterns: list[str]) -> list[int]:
     for pattern in patterns:
         # Escape the prefix for use in a regex, replacing the trailing #
         # with a literal # followed by a capture group for digits.
-        escaped = re.escape(pattern)
-        regex = re.compile(escaped.rstrip(r"\#").rstrip() + r"\s*#(\d+)", re.IGNORECASE)
+        prefix = pattern.rstrip("#").rstrip()
+        escaped = re.escape(prefix)
+        regex = re.compile(escaped + r"\s*#(\d+)", re.IGNORECASE)
         for match in regex.finditer(body or ""):
             numbers.append(int(match.group(1)))
     return numbers

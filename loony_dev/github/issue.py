@@ -146,7 +146,7 @@ class Issue(GitHubItem):
             author=data.get("author", {}).get("login", ""),
             updated_at=parse_datetime(data.get("updatedAt")),
             created_at=parse_datetime(data.get("createdAt")),
-            labels=[l["name"] for l in data.get("labels", [])],
+            labels=[label["name"] for label in data.get("labels", [])],
             milestone=milestone,
             assignees=[a["login"] for a in data.get("assignees", [])],
             _repo=repo,

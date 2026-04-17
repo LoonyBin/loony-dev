@@ -14,6 +14,7 @@ from loony_dev.github.repo import CheckRunsCacheEntry, parse_datetime
 if TYPE_CHECKING:
     from loony_dev.github.check_run import CheckRun
     from loony_dev.github.comment import Comment
+    from loony_dev.github.issue import IssueCollection
     from loony_dev.github.repo import Repo
 
 logger = logging.getLogger(__name__)

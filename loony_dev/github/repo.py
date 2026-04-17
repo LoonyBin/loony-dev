@@ -156,6 +156,8 @@ class Repo:
         self._check_runs_cache: dict[str, CheckRunsCacheEntry] = {}
         # TTL cache: method_name -> (result, monotonic_timestamp)
         self._ttl_cache: dict[str, tuple[Any, float]] = {}
+        # Configurable TTL for the milestones cache (seconds); can be overridden by callers.
+        self.milestone_cache_ttl: float = 3600.0
 
     # --- Detection ---
 
@@ -285,11 +287,19 @@ class Repo:
     # --- Collection proxies ---
 
     @property
-    @ttl_cached(3600.0)
     def milestones(self) -> dict[str, datetime | None]:
-        """Return ``{title: due_on}`` for all open milestones (TTL-cached for 1 hour)."""
+        """Return ``{title: due_on}`` for all open milestones (TTL-cached; see ``milestone_cache_ttl``)."""
+        key = "milestones"
+        now = time.monotonic()
+        entry = self._ttl_cache.get(key)
+        if entry is not None:
+            result, cached_at = entry
+            if now - cached_at < self.milestone_cache_ttl:
+                return result
         from loony_dev.github.milestone import Milestone
-        return {ms.title: ms.due_on for ms in Milestone.list_open(repo=self)}
+        result = {ms.title: ms.due_on for ms in Milestone.list_open(repo=self)}
+        self._ttl_cache[key] = (result, now)
+        return result
 
     @functools.cached_property
     def issues(self):
@@ -335,7 +345,11 @@ class Repo:
         return Comment.list_for_issue(number, repo=self)
 
     def find_pr_for_issue(self, issue_number: int) -> int | None:
-        """Return the PR number for a PR that references the given issue, or None."""
+        """Return the PR number for a PR that references the given issue, or None.
+
+        Merged PRs are preferred over open/closed ones to avoid hiding the real
+        merged PR behind a newer abandoned PR.
+        """
         for search_args in [
             ["--search", f"#{issue_number} in:title"],
             ["--search", f"#{issue_number}"],
@@ -345,10 +359,12 @@ class Repo:
                     "pr", "list",
                     "--state", "all",
                     *search_args,
-                    "--json", "number,createdAt",
+                    "--json", "number,createdAt,state",
                 )
                 if data:
-                    sorted_prs = sorted(data, key=lambda p: p.get("createdAt", ""), reverse=True)
+                    merged = [p for p in data if p.get("state") == "MERGED"]
+                    candidates = merged if merged else data
+                    sorted_prs = sorted(candidates, key=lambda p: p.get("createdAt", ""), reverse=True)
                     return sorted_prs[0]["number"]
             except subprocess.CalledProcessError:
                 logger.warning("gh pr list search failed for issue #%d", issue_number)

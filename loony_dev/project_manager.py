@@ -101,7 +101,7 @@ class ProjectManager:
         self.skip_merge = skip_merge
         self.merge_delay = merge_delay
         self.deploy_workflow = deploy_workflow or ""
-        self.milestone_cache_ttl = milestone_cache_ttl
+        self.github.milestone_cache_ttl = milestone_cache_ttl
 
         self._prioritiser = Prioritiser(
             github=github,
@@ -117,8 +117,9 @@ class ProjectManager:
         # Circuit-breaker state
         self._pipeline_paused: bool = False
 
-        # PR merge-delay tracking: pr_number → monotonic timestamp when CI first passed
-        self._ci_passed_at: dict[int, float] = {}
+        # PR merge-delay tracking: pr_number → (head_sha, monotonic timestamp when CI first passed)
+        # Keyed by (pr_number, head_sha) so a new push resets the delay clock.
+        self._ci_passed_at: dict[int, tuple[str, float]] = {}
 
         # Deployment tracking: issue_number → (pr_number, merge_timestamp)
         self._merged_issue_prs: dict[int, tuple[int, datetime]] = {}
@@ -198,6 +199,10 @@ class ProjectManager:
         # 2. Advance completed stages ─────────────────────────────────────
         if not self.skip_merge:
             self._maybe_merge_ready_prs(open_prs)
+            # Refresh snapshot so _check_merged_for_deployment sees post-merge state.
+            open_prs = list(self.github.pull_requests.open)
+            open_pr_by_number = {pr.number: pr for pr in open_prs}
+            open_pr_issue_numbers = {issue.number for pr in open_prs for issue in pr.issues}
 
         self._check_merged_for_deployment(all_issues, open_pr_by_number)
 
@@ -318,11 +323,15 @@ class ProjectManager:
                 continue
 
             # All checks completed successfully.
-            if pr.number not in self._ci_passed_at:
-                self._ci_passed_at[pr.number] = now
+            stored = self._ci_passed_at.get(pr.number)
+            if stored is None or stored[0] != pr.head_sha:
+                # New head SHA (fresh push) or first time seeing CI pass — reset the clock.
+                if stored is not None and stored[0] != pr.head_sha:
+                    self._actions_taken.discard(f"merge-delay:{pr.number}")
+                self._ci_passed_at[pr.number] = (pr.head_sha, now)
                 logger.info("PR #%d: CI passed; waiting %ds before auto-merge.", pr.number, self.merge_delay)
 
-            elapsed = now - self._ci_passed_at[pr.number]
+            elapsed = now - self._ci_passed_at[pr.number][1]
             if elapsed < self.merge_delay:
                 remaining = int(self.merge_delay - elapsed)
                 action_key = f"merge-delay:{pr.number}"
