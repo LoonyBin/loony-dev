@@ -165,5 +165,91 @@ def ui_cmd(**_) -> None:
     app.run()
 
 
+@cli.command("project-manager")
+@click.option("--repo", default=None, help="owner/repo (default: detected from git remote)")
+@click.option("--n", default=1, show_default=True, help="Max issues to keep in progress simultaneously.")
+@click.option("--interval", default=120, show_default=True, help="Polling interval in seconds.")
+@click.option(
+    "--skip-planning", "skip_planning", is_flag=True, default=False,
+    help="Label issues ready-for-development directly (skip planning stage).",
+)
+@click.option(
+    "--skip-merge", "skip_merge", is_flag=True, default=False,
+    help="Do not auto-merge PRs; leave merge to a human reviewer.",
+)
+@click.option(
+    "--merge-delay", "merge_delay", default=86400, show_default=True,
+    help="Seconds to wait after CI passes before auto-merging (default: 24h).",
+)
+@click.option(
+    "--deploy-workflow", "deploy_workflow", default="deploy", show_default=True,
+    help="Name of the deployment workflow (without .yml) to verify after merge. "
+         "Set to empty string to skip deployment verification.",
+)
+@click.option(
+    "--milestone-soon-days", "milestone_soon_days", default=14, show_default=True,
+    help="Days until a milestone counts as 'due soon' for prioritisation.",
+)
+@click.option(
+    "--shortlist-size", "shortlist_size", default=5, show_default=True,
+    help="Number of candidates forwarded to the AI agent in Phase 2.",
+)
+@click.option(
+    "--ai-model", "ai_model", default="claude-opus-4-6", show_default=True,
+    help="Claude model used for Phase-2 candidate ranking.",
+)
+@click.option(
+    "--verbose", "-v", is_flag=True,
+    help="Enable DEBUG-level logging.",
+)
+@click.option(
+    "--log-file", default=None, type=click.Path(), metavar="PATH",
+    help="Write DEBUG logs to a file in addition to stderr.",
+)
+def project_manager_cmd(**_) -> None:
+    """Prioritise open issues and drive them through the worker pipeline."""
+    log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    logging.basicConfig(level=config.settings.log_level, format=log_format)
+
+    if config.settings.log_file:
+        file_handler = logging.FileHandler(config.settings.log_file)
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(logging.Formatter(log_format))
+        logging.getLogger().addHandler(file_handler)
+        logging.getLogger().info("Also writing DEBUG logs to %s", config.settings.log_file)
+
+    repo = config.settings.repo
+    if repo is None:
+        repo = Repo.detect()
+        click.echo(f"Detected repo: {repo}")
+
+    github = Repo(repo)
+
+    from loony_dev.project_manager import ProjectManager
+
+    # Read project_manager-specific settings, falling back to CLI-supplied values.
+    pm_cfg = config.settings.get("project_manager") or {}
+
+    manager = ProjectManager(
+        github=github,
+        n=int(pm_cfg.get("n", config.settings.n)),
+        interval=int(pm_cfg.get("interval", config.settings.interval)),
+        skip_planning=bool(pm_cfg.get("skip_planning", config.settings.skip_planning)),
+        skip_merge=bool(pm_cfg.get("skip_merge", config.settings.skip_merge)),
+        merge_delay=int(pm_cfg.get("merge_delay", config.settings.merge_delay)),
+        deploy_workflow=str(pm_cfg.get("deploy_workflow", config.settings.deploy_workflow)),
+        milestone_soon_days=int(pm_cfg.get("milestone_soon_days", config.settings.milestone_soon_days)),
+        shortlist_size=int(pm_cfg.get("shortlist_size", config.settings.shortlist_size)),
+        ai_model=str(pm_cfg.get("ai_model", config.settings.ai_model)),
+    )
+
+    click.echo(
+        f"Starting project-manager for {repo} "
+        f"(n={manager.n}, interval={manager.interval}s, "
+        f"skip_merge={manager.skip_merge})"
+    )
+    manager.run()
+
+
 # Keep 'main' as an alias so existing scripts that imported it continue to work.
 main = cli
