@@ -240,7 +240,11 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                         logger.warning("Coderabbit review after hook fix failed: %s", exc)
             except GitError as exc:
                 logger.warning("Issue #%d: git error during commit/push: %s", task.issue.number, exc)
-                break
+                return TaskResult(
+                    success=False,
+                    output=str(exc),
+                    summary=f"git error during commit/push: {exc}",
+                )
 
         if not commit_succeeded or task.review_exhausted:
             if not commit_succeeded:
