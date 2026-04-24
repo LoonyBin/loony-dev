@@ -8,6 +8,15 @@ from loony_dev.models import RateLimitedError, truncate_for_log
 from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, Task
 from loony_dev.tasks.planning_task import PLAN_MARKER, PLAN_MARKER_PREFIX
 
+_MAX_HOOK_OUTPUT_CHARS = 500
+
+
+def _sanitize_hook_output(output: str) -> str:
+    """Return a safe truncated summary of hook output for public issue comments."""
+    if len(output) <= _MAX_HOOK_OUTPUT_CHARS:
+        return output
+    return output[:_MAX_HOOK_OUTPUT_CHARS] + "\n[truncated]"
+
 if TYPE_CHECKING:
     from loony_dev.github import Comment, Issue, Repo
     from loony_dev.models import TaskResult
@@ -140,9 +149,11 @@ class IssueTask(Task):
                 "Committed as [WIP]."
             )
             if self.hook_output:
+                safe_output = _sanitize_hook_output(self.hook_output)
+                logger.debug("Full hook output: %s", truncate_for_log(self.hook_output))
                 status_notes += (
                     f"\n\n<details><summary>Hook output</summary>\n\n"
-                    f"```\n{self.hook_output}\n```\n</details>"
+                    f"```\n{safe_output}\n```\n</details>"
                 )
         elif self.review_exhausted:
             status_notes += (

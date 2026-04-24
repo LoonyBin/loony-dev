@@ -16,6 +16,20 @@ class GitRepo:
         self.work_dir = work_dir
         self.default_branch = default_branch
 
+    @staticmethod
+    def detect_default_branch(work_dir: Path) -> str:
+        """Query the actual default branch from the remote HEAD ref."""
+        try:
+            result = subprocess.run(
+                ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+                cwd=work_dir, capture_output=True, text=True,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip().split("/")[-1]
+        except Exception:
+            pass
+        return "main"
+
     def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
         cmd = ["git", *args]
         logger.debug("Running: %s", " ".join(cmd))
@@ -98,6 +112,11 @@ class GitRepo:
             output = f"{push_proc.stdout}\n{push_proc.stderr}".strip()
             logger.debug("git push failed: %s", output)
             if any(kw in output.lower() for kw in _HOOK_KEYWORDS):
+                # Undo the local commit so retries don't accumulate failed commits.
+                subprocess.run(
+                    ["git", "reset", "--soft", "HEAD~1"],
+                    cwd=self.work_dir, capture_output=True,
+                )
                 raise HookFailureError(output)
             raise GitError(output)
 

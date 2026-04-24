@@ -85,7 +85,8 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         max_commits = int(coderabbit_cfg.get("max_commit_retries", 3))
         cr_available = cr.is_available(config.settings)
 
-        git = GitRepo(self.work_dir)
+        default_branch = GitRepo.detect_default_branch(self.work_dir)
+        git = GitRepo(self.work_dir, default_branch=default_branch)
         session_id = self._session_id_for(task)
 
         # ── Phase 1: Implement ──────────────────────────────────────────────
@@ -160,9 +161,15 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                     session_id=session_id,
                 )
                 if fix_rc != 0:
-                    logger.warning(
-                        "Issue #%d: Claude fix returned code %d",
-                        task.issue.number, fix_rc,
+                    combined = f"{fix_stdout}\n{fix_stderr}"
+                    is_quota = self._is_quota_error(combined)
+                    if is_quota:
+                        self._handle_quota_error(combined)
+                    return TaskResult(
+                        success=False,
+                        output=combined,
+                        summary=f"Agent exited with code {fix_rc} during review fix",
+                        rate_limited=is_quota,
                     )
         else:
             logger.debug("Issue #%d: Coderabbit not available, skipping review phase", task.issue.number)
@@ -193,38 +200,66 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                     "Issue #%d: hook failure (attempt %d/%d), asking Claude to fix",
                     task.issue.number, attempt + 1, max_commits,
                 )
-                self._run_claude_cli(
+                hook_fix_stdout, hook_fix_stderr, hook_fix_rc = self._run_claude_cli(
                     task.fix_hook_prompt(hook_failed_output),
                     cwd=self.work_dir,
                     session_id=session_id,
                 )
+                if hook_fix_rc != 0:
+                    combined = f"{hook_fix_stdout}\n{hook_fix_stderr}"
+                    is_quota = self._is_quota_error(combined)
+                    if is_quota:
+                        self._handle_quota_error(combined)
+                    return TaskResult(
+                        success=False,
+                        output=combined,
+                        summary=f"Agent exited with code {hook_fix_rc} during hook fix",
+                        rate_limited=is_quota,
+                    )
                 if cr_available:
                     try:
                         cr_result = cr.run_review(self.work_dir)
                         if cr_result.has_issues:
-                            self._run_claude_cli(
+                            cr_fix_stdout, cr_fix_stderr, cr_fix_rc = self._run_claude_cli(
                                 task.fix_review_prompt(cr_result.agent_prompt),
                                 cwd=self.work_dir,
                                 session_id=session_id,
                             )
+                            if cr_fix_rc != 0:
+                                combined = f"{cr_fix_stdout}\n{cr_fix_stderr}"
+                                is_quota = self._is_quota_error(combined)
+                                if is_quota:
+                                    self._handle_quota_error(combined)
+                                return TaskResult(
+                                    success=False,
+                                    output=combined,
+                                    summary=f"Agent exited with code {cr_fix_rc} during post-hook review fix",
+                                    rate_limited=is_quota,
+                                )
                     except cr.CodeRabbitError as exc:
                         logger.warning("Coderabbit review after hook fix failed: %s", exc)
             except GitError as exc:
                 logger.warning("Issue #%d: git error during commit/push: %s", task.issue.number, exc)
                 break
 
-        if not commit_succeeded:
-            task.mark_commit_exhausted(hook_failed_output)
-            wip_msg = f"[WIP] {commit_msg}"
-            logger.warning("Issue #%d: committing as WIP: %s", task.issue.number, wip_msg)
-            try:
-                git.commit_and_push(wip_msg, branch)
-            except Exception as exc:
-                logger.error("Issue #%d: failed to commit WIP: %s", task.issue.number, exc)
-                return TaskResult(
-                    success=False,
-                    output=str(exc),
-                    summary=f"Failed to commit even as WIP: {exc}",
+        if not commit_succeeded or task.review_exhausted:
+            if not commit_succeeded:
+                task.mark_commit_exhausted(hook_failed_output)
+                wip_msg = f"[WIP] {commit_msg}"
+                logger.warning("Issue #%d: committing as WIP: %s", task.issue.number, wip_msg)
+                try:
+                    git.commit_and_push(wip_msg, branch)
+                except Exception as exc:
+                    logger.error("Issue #%d: failed to commit WIP: %s", task.issue.number, exc)
+                    return TaskResult(
+                        success=False,
+                        output=str(exc),
+                        summary=f"Failed to commit even as WIP: {exc}",
+                    )
+            else:
+                logger.warning(
+                    "Issue #%d: review retries exhausted, PR will be marked as WIP",
+                    task.issue.number,
                 )
 
         # ── Phase 4: Create PR ──────────────────────────────────────────────
@@ -240,7 +275,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
 
     def _create_pr(self, task: IssueTask, branch: str) -> None:
         """Run gh pr create for the given branch."""
-        wip_prefix = "[WIP] " if task.commit_exhausted else ""
+        wip_prefix = "[WIP] " if (task.commit_exhausted or task.review_exhausted) else ""
         title = f"{wip_prefix}{task.issue.title} (#{task.issue.number})"
         body = f"Closes #{task.issue.number}"
 
@@ -262,11 +297,12 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             result = subprocess.run(cmd, cwd=self.work_dir, capture_output=True, text=True, check=True)
             logger.info("Created PR: %s", result.stdout.strip())
         except subprocess.CalledProcessError as exc:
-            logger.warning(
+            logger.error(
                 "Issue #%d: failed to create PR: %s",
                 task.issue.number,
                 (exc.stderr or "").strip(),
             )
+            raise
 
     def _generate_commit_message(self, task: IssueTask) -> str:
         """Ask Claude (no session) to produce a conventional commit message."""
