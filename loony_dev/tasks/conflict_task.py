@@ -50,6 +50,10 @@ class ConflictResolutionTask(Task):
     def session_key(self) -> str:
         return f"pr:{self.pr.number}"
 
+    @property
+    def target_branch(self) -> str:
+        return self.pr.branch
+
     def describe(self) -> str:
         return (
             f"Resolve merge conflicts on PR #{self.pr.number}: {self.pr.title}\n\n"

@@ -123,6 +123,10 @@ class PRReviewTask(Task):
     def session_key(self) -> str:
         return f"pr:{self.pr.number}"
 
+    @property
+    def target_branch(self) -> str:
+        return self.pr.branch
+
     def describe(self) -> str:
         comments_text = "\n\n".join(
             self._format_comment(c) for c in self.pr.new_comments

@@ -137,6 +137,11 @@ class Orchestrator:
             logger.debug("Could not read git state before sync", exc_info=True)
         self.git.ensure_main_up_to_date()
 
+        target = task.target_branch
+        if target is not None:
+            logger.info("Resetting branch %r to upstream state before task.", target)
+            self.git.reset_branch_to_upstream(target)
+
         self._active_agent = agent
         self._active_task = task
         try:
