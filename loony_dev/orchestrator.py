@@ -20,6 +20,9 @@ if TYPE_CHECKING:
     from loony_dev.github import Repo
     from loony_dev.tasks.base import Task
 
+# Imported at runtime (not TYPE_CHECKING) so isinstance checks work.
+from loony_dev.agents.coding import CodingAgent
+
 logger = logging.getLogger(__name__)
 
 # Task classes ordered by priority (lowest number = highest priority).
@@ -145,7 +148,10 @@ class Orchestrator:
                 logger.info("Resetting branch %r to upstream state before task.", target)
                 self.git.reset_branch_to_upstream(target)
 
-            result = agent.execute(task)
+            if isinstance(task, IssueTask) and isinstance(agent, CodingAgent):
+                result = agent.execute_issue(task)
+            else:
+                result = agent.execute(task)
             self._cleanup()
             if result.success:
                 task.on_complete(self.repo, result)

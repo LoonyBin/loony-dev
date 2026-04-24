@@ -4,7 +4,11 @@ import logging
 import subprocess
 from pathlib import Path
 
+from loony_dev.models import GitError, HookFailureError
+
 logger = logging.getLogger(__name__)
+
+_HOOK_KEYWORDS = ("pre-commit", "pre-push", "commit-msg", "hook failed", "hook exited", "hook script")
 
 
 class GitRepo:
@@ -61,6 +65,41 @@ class GitRepo:
         result = self._run("rev-parse", "--abbrev-ref", "HEAD")
         branch = result.stdout.strip()
         self._run("push", "-u", "origin", branch)
+
+    def commit_and_push(self, message: str, branch: str) -> None:
+        """Stage all changes, commit with message, and push to branch.
+
+        Raises HookFailureError when a pre-commit or pre-push hook rejects the
+        operation so callers can retry after fixing the offending code.
+        Raises GitError for all other non-zero exits.
+        """
+        self._run("add", "-A")
+
+        commit_proc = subprocess.run(
+            ["git", "commit", "-m", message],
+            cwd=self.work_dir,
+            capture_output=True,
+            text=True,
+        )
+        if commit_proc.returncode != 0:
+            output = f"{commit_proc.stdout}\n{commit_proc.stderr}".strip()
+            logger.debug("git commit failed: %s", output)
+            if any(kw in output.lower() for kw in _HOOK_KEYWORDS):
+                raise HookFailureError(output)
+            raise GitError(output)
+
+        push_proc = subprocess.run(
+            ["git", "push", "-u", "origin", branch],
+            cwd=self.work_dir,
+            capture_output=True,
+            text=True,
+        )
+        if push_proc.returncode != 0:
+            output = f"{push_proc.stdout}\n{push_proc.stderr}".strip()
+            logger.debug("git push failed: %s", output)
+            if any(kw in output.lower() for kw in _HOOK_KEYWORDS):
+                raise HookFailureError(output)
+            raise GitError(output)
 
     def checkout_branch(self, branch: str) -> None:
         """Checkout an existing remote-tracking branch."""

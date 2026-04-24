@@ -59,6 +59,25 @@
 
 
 # ---------------------------------------------------------------------------
+# [coderabbit] — Coderabbit CLI integration (optional pre-commit review)
+# ---------------------------------------------------------------------------
+
+[coderabbit]
+
+# Set to false to disable Coderabbit review even if the binary is installed.
+# enabled = true
+
+# Maximum times to run `coderabbit review` and re-invoke Claude to fix issues
+# before proceeding to commit.  Set to 0 to skip review entirely.
+# max_review_retries = 3
+
+# Maximum times to retry commit+push after a pre-commit or pre-push hook
+# rejects the changes.  Each retry runs Claude to fix the hook failures.
+# If all retries are exhausted the commit is prefixed with [WIP].
+# max_commit_retries = 3
+
+
+# ---------------------------------------------------------------------------
 # [github] — GitHub API client tuning (shared across all commands)
 # ---------------------------------------------------------------------------
 
