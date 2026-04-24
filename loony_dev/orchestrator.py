@@ -129,22 +129,22 @@ class Orchestrator:
 
     def dispatch(self, agent: Agent, task: Task) -> None:
         logger.debug("Task description:\n%s", task.describe())
-        task.on_start(self.repo)
-        try:
-            logger.debug("Current branch before sync: %s", self.git.current_branch())
-            logger.debug("Uncommitted changes before sync: %s", self.git.has_uncommitted_changes())
-        except Exception:
-            logger.debug("Could not read git state before sync", exc_info=True)
-        self.git.ensure_main_up_to_date()
-
-        target = task.target_branch
-        if target is not None:
-            logger.info("Resetting branch %r to upstream state before task.", target)
-            self.git.reset_branch_to_upstream(target)
-
         self._active_agent = agent
         self._active_task = task
         try:
+            task.on_start(self.repo)
+            try:
+                logger.debug("Current branch before sync: %s", self.git.current_branch())
+                logger.debug("Uncommitted changes before sync: %s", self.git.has_uncommitted_changes())
+            except Exception:
+                logger.debug("Could not read git state before sync", exc_info=True)
+            self.git.ensure_main_up_to_date()
+
+            target = task.target_branch
+            if target:
+                logger.info("Resetting branch %r to upstream state before task.", target)
+                self.git.reset_branch_to_upstream(target)
+
             result = agent.execute(task)
             self._cleanup()
             if result.success:

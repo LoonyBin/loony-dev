@@ -43,9 +43,10 @@ class GitRepo:
 
     def reset_branch_to_upstream(self, branch: str) -> None:
         """Fetch and hard-reset a branch to match its upstream state, then clean untracked files."""
+        if not branch.strip():
+            raise ValueError("branch must be non-empty")
         self._run("fetch", "origin", branch)
-        self._run("checkout", branch)
-        self._run("reset", "--hard", f"origin/{branch}")
+        self._run("checkout", "-B", branch, f"origin/{branch}")
         self._run("clean", "-fd")
 
     def has_uncommitted_changes(self) -> bool:
