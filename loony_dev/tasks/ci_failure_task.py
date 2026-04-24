@@ -70,6 +70,10 @@ class CIFailureTask(Task):
     def session_key(self) -> str:
         return f"pr:{self.pr.number}"
 
+    @property
+    def target_branch(self) -> str:
+        return self.pr.branch
+
     def describe(self) -> str:
         check_lines = "\n".join(
             f"- {c.name} ({c.conclusion}): {c.details_url}"

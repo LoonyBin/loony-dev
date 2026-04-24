@@ -58,6 +58,11 @@ class Task(ABC):
         """
         return None
 
+    @property
+    def target_branch(self) -> str | None:
+        """The pre-existing branch this task will operate on, or None for tasks that create new branches."""
+        return None
+
     @abstractmethod
     def describe(self) -> str:
         """Human/agent-readable description of work to do."""
