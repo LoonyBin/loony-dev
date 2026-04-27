@@ -140,6 +140,20 @@ class GitRepo:
         """Checkout an existing remote-tracking branch."""
         self._run("checkout", branch)
 
+    def checkout_or_create_branch(self, branch: str) -> None:
+        """Checkout branch if it exists locally or on origin, otherwise create it."""
+        try:
+            self._run("checkout", branch)
+            return
+        except subprocess.CalledProcessError:
+            pass
+        try:
+            self._run("checkout", "-b", branch, f"origin/{branch}")
+            return
+        except subprocess.CalledProcessError:
+            pass
+        self._run("checkout", "-b", branch)
+
     def push_branch(self, branch: str) -> None:
         """Push the current branch (force-with-lease to protect against races)."""
         self._run("push", "--force-with-lease", "-u", "origin", branch)
