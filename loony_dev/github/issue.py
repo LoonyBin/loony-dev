@@ -52,11 +52,13 @@ class GitHubItem:
         logger.debug("add_comment(#%d): %s", self.number, truncate_for_log(body))
         self._repo.client.gh("issue", "comment", str(self.number), "--body", body)
 
-    def add_label(self, label: str) -> None:
+    def add_label(self, label: str) -> bool:
         try:
             self._repo.client.gh("issue", "edit", str(self.number), "--add-label", label)
+            return True
         except subprocess.CalledProcessError:
             logger.warning("Failed to add label '%s' to #%d", label, self.number)
+            return False
 
     def remove_label(self, label: str) -> None:
         try:
@@ -77,17 +79,10 @@ class GitHubItem:
         return Comment.list_for_issue(self.number, repo=self._repo)
 
     def _recent_bot_failure_comments(self, bot_name: str, n: int) -> list[Comment]:
-        """Return the last *n* bot-authored failure comments on this item."""
-        from loony_dev.tasks.base import CI_FAILURE_MARKER, FAILURE_MARKER_PREFIX
-
+        """Return the last *n* bot-authored comments on this item."""
         all_comments = self.get_comments()
-        failure_comments = [
-            c for c in all_comments
-            if c.author == bot_name and (
-                FAILURE_MARKER_PREFIX in c.body or CI_FAILURE_MARKER in c.body
-            )
-        ]
-        return failure_comments[-n:]
+        bot_comments = [c for c in all_comments if c.author == bot_name]
+        return bot_comments[-n:]
 
     def check_and_post_failure(
         self, failure_body: str, bot_name: str, n: int, fallback_owner: str
@@ -110,7 +105,9 @@ class GitHubItem:
             for c in recent
         ):
             item_owner = getattr(self, "author", "") or fallback_owner
-            self.add_label("in-error")
+            if not self.add_label("in-error"):
+                self.add_comment(failure_body)
+                return False
             self.add_comment(
                 f"{IN_ERROR_MARKER}\n\n"
                 f"I've encountered the same failure {n + 1} time(s) in a row and will stop "
