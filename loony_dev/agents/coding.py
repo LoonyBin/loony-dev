@@ -91,7 +91,18 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         branch = task.branch_name
 
         # Prepare the worktree: checkout branch if it exists, create it if not.
-        git.checkout_or_create_branch(branch)
+        try:
+            git.checkout_or_create_branch(branch)
+        except Exception as exc:
+            logger.error(
+                "Issue #%d: failed to prepare branch '%s': %s",
+                task.issue.number, branch, exc,
+            )
+            return TaskResult(
+                success=False,
+                output=str(exc),
+                summary=f"failed to prepare branch '{branch}': {exc}",
+            )
         logger.info("Issue #%d: working on branch '%s'", task.issue.number, branch)
 
         # ── Phase 1: Implement ──────────────────────────────────────────────
