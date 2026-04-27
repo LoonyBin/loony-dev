@@ -148,9 +148,14 @@ class Repo:
             skip_ci_checks if skip_ci_checks is not None
             else set(config.settings.get("skip_ci_checks") or [])
         )
-        self.repeated_failure_threshold: int = int(
-            config.settings.get("repeated_failure_threshold", 2)
-        )
+        threshold = int(config.settings.get("repeated_failure_threshold", 2))
+        if threshold < 1:
+            logger.warning(
+                "Invalid repeated_failure_threshold=%s for %s; using 1",
+                threshold, self.name
+            )
+            threshold = 1
+        self.repeated_failure_threshold = threshold
         # Cache: username -> (permission_level, monotonic_timestamp)
         self._permission_cache: dict[str, tuple[str | None, float]] = {}
         # Tick-scoped cache: cleared at the start of each tick

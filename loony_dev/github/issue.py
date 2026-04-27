@@ -113,14 +113,14 @@ class GitHubItem:
             self.add_label("in-error")
             self.add_comment(
                 f"{IN_ERROR_MARKER}\n\n"
-                f"I've encountered the same failure {n} time(s) in a row and will stop "
+                f"I've encountered the same failure {n + 1} time(s) in a row and will stop "
                 f"retrying. @{item_owner}, please review.\n\n"
                 f"<details><summary>Repeated failure</summary>\n\n"
                 f"{failure_body}\n\n</details>"
             )
             logger.warning(
                 "#%d marked in-error after %d identical consecutive failure(s)",
-                self.number, n,
+                self.number, n + 1,
             )
             return True
 
