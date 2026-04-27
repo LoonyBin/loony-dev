@@ -211,15 +211,18 @@ class ClaudeQuotaMixin:
         cwd: Path,
         extra_flags: list[str] | None = None,
     ) -> tuple[str, str, int]:
-        """Spawn ``claude -p`` and return (stdout, stderr, returncode)."""
+        """Spawn ``claude -p`` and return (stdout, stderr, returncode).
+
+        Prompt is passed via stdin to avoid OS ARG_MAX limits on large inputs.
+        """
         cmd = ["claude", "-p", "--dangerously-skip-permissions"]
         if extra_flags:
             cmd.extend(extra_flags)
-        cmd.append(prompt)
 
         with subprocess.Popen(
             cmd,
             cwd=cwd,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -227,7 +230,7 @@ class ClaudeQuotaMixin:
         ) as proc:
             self._active_process = proc
             try:
-                stdout, stderr = proc.communicate()
+                stdout, stderr = proc.communicate(input=prompt)
             finally:
                 self._active_process = None
         return stdout, stderr, proc.returncode
