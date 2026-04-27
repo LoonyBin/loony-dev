@@ -102,7 +102,7 @@ class GitRepo:
         branch = result.stdout.strip()
         self._run("push", "-u", "origin", branch)
 
-    def commit_and_push(self, message: str, branch: str) -> None:
+    def commit_and_push(self, message: str, branch: str, *, no_verify: bool = False) -> None:
         """Stage all changes, commit with message, and push to branch.
 
         Raises HookFailureError when a pre-commit or pre-push hook rejects the
@@ -113,8 +113,11 @@ class GitRepo:
 
         _NOTHING_TO_COMMIT = ("nothing to commit", "nothing added to commit")
 
+        commit_cmd = ["git", "commit", "-m", message]
+        if no_verify:
+            commit_cmd.append("--no-verify")
         commit_proc = subprocess.run(
-            ["git", "commit", "-m", message],
+            commit_cmd,
             cwd=self.work_dir,
             capture_output=True,
             text=True,

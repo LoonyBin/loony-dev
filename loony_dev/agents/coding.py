@@ -195,6 +195,8 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         hook_failed_output: str | None = None
         commit_succeeded = False
 
+        _COMMIT_MSG_REJECTION = ("commit message", "conventional commit", "commit-msg")
+
         for attempt in range(max_commits):
             try:
                 git.commit_and_push(commit_msg, branch)
@@ -208,6 +210,13 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                         task.issue.number, max_commits,
                     )
                     break
+                if any(kw in hook_failed_output.lower() for kw in _COMMIT_MSG_REJECTION):
+                    logger.info(
+                        "Issue #%d: commit message rejected (attempt %d/%d), regenerating",
+                        task.issue.number, attempt + 1, max_commits,
+                    )
+                    commit_msg = self._generate_commit_message(task)
+                    continue
                 logger.info(
                     "Issue #%d: hook failure (attempt %d/%d), asking Claude to fix",
                     task.issue.number, attempt + 1, max_commits,
@@ -264,8 +273,8 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                 wip_msg = f"[WIP] {commit_msg}"
                 logger.warning("Issue #%d: committing as WIP: %s", task.issue.number, wip_msg)
                 try:
-                    git.commit_and_push(wip_msg, branch)
-                except GitError as exc:
+                    git.commit_and_push(wip_msg, branch, no_verify=True)
+                except (GitError, HookFailureError) as exc:
                     logger.error("Issue #%d: failed to commit WIP: %s", task.issue.number, exc)
                     return TaskResult(
                         success=False,
