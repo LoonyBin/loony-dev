@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 from pathlib import Path
 
 import click
@@ -224,7 +225,16 @@ def project_manager_cmd(**_) -> None:
 
     repo = config.settings.repo
     if repo is None:
-        repo = Repo.detect()
+        try:
+            repo = Repo.detect()
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or "").strip()
+            click.echo(
+                "Could not detect a GitHub repository. Pass --repo or run inside a repository checkout."
+                + (f"\n{detail}" if detail else ""),
+                err=True,
+            )
+            raise SystemExit(2) from exc
         click.echo(f"Detected repo: {repo}")
 
     github = Repo(repo)
@@ -241,9 +251,16 @@ def project_manager_cmd(**_) -> None:
         skip_planning=bool(pm_cfg.get("skip_planning", config.settings.skip_planning)),
         skip_merge=bool(pm_cfg.get("skip_merge", config.settings.skip_merge)),
         merge_delay=int(pm_cfg.get("merge_delay", config.settings.merge_delay)),
-        deploy_workflow=str(pm_cfg.get("deploy_workflow", config.settings.deploy_workflow)),
+        deploy_workflow=pm_cfg.get("deploy_workflow", config.settings.deploy_workflow) or None,
         milestone_soon_days=int(pm_cfg.get("milestone_soon_days", config.settings.milestone_soon_days)),
+        milestone_cache_ttl=float(
+            pm_cfg.get("milestone_cache_ttl", getattr(config.settings, "milestone_cache_ttl", 3600.0))
+        ),
         shortlist_size=int(pm_cfg.get("shortlist_size", config.settings.shortlist_size)),
+        dependency_patterns=pm_cfg.get(
+            "dependency_patterns",
+            getattr(config.settings, "dependency_patterns", None),
+        ),
         ai_model=str(pm_cfg.get("ai_model", config.settings.ai_model)),
     )
 
