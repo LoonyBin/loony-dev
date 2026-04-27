@@ -19,16 +19,38 @@ class GitRepo:
     @staticmethod
     def detect_default_branch(work_dir: Path) -> str:
         """Query the actual default branch from the remote HEAD ref."""
+        def _ref_exists(name: str) -> bool:
+            return subprocess.run(
+                ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{name}"],
+                cwd=work_dir, capture_output=True,
+            ).returncode == 0
+
         try:
             result = subprocess.run(
                 ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
                 cwd=work_dir, capture_output=True, text=True,
             )
             if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip().split("/")[-1]
+                candidate = result.stdout.strip().split("/")[-1]
+                if _ref_exists(candidate):
+                    return candidate
         except Exception:
             pass
+
+        for fallback in ("main", "master"):
+            if _ref_exists(fallback):
+                return fallback
         return "main"
+
+    def count_commits_ahead(self, base: str, branch: str) -> int:
+        """Return the number of commits on branch not reachable from base."""
+        result = subprocess.run(
+            ["git", "rev-list", "--count", f"{base}..{branch}"],
+            cwd=self.work_dir, capture_output=True, text=True,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return 0
+        return int(result.stdout.strip())
 
     def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
         cmd = ["git", *args]

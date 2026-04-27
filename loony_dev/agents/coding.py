@@ -105,13 +105,23 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             )
         logger.info("Issue #%d: working on branch '%s'", task.issue.number, branch)
 
+        # If the branch has no prior commits the session carries stale context
+        # from a different branch — skip it so Claude implements from scratch.
+        ahead = git.count_commits_ahead(default_branch, branch)
+        run_session_id = session_id if ahead > 0 else None
+        if run_session_id is None and ahead == 0:
+            logger.info(
+                "Issue #%d: branch '%s' is empty — using fresh session",
+                task.issue.number, branch,
+            )
+
         # ── Phase 1: Implement ──────────────────────────────────────────────
         logger.info("Issue #%d: phase 1 — implementing", task.issue.number)
         implement_prompt = task.implement_prompt()
         logger.debug("Claude prompt: %s", truncate_for_log(implement_prompt))
 
         stdout, stderr, returncode = self._run_claude_cli(
-            implement_prompt, cwd=self.work_dir, session_id=session_id,
+            implement_prompt, cwd=self.work_dir, session_id=run_session_id,
         )
         logger.debug("Claude CLI exited with code %d", returncode)
         if stdout:
@@ -160,7 +170,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                 fix_stdout, fix_stderr, fix_rc = self._run_claude_cli(
                     task.fix_review_prompt(cr_result.agent_prompt),
                     cwd=self.work_dir,
-                    session_id=session_id,
+                    session_id=run_session_id,
                 )
                 if fix_rc != 0:
                     combined = f"{fix_stdout}\n{fix_stderr}"
@@ -205,7 +215,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                 hook_fix_stdout, hook_fix_stderr, hook_fix_rc = self._run_claude_cli(
                     task.fix_hook_prompt(hook_failed_output),
                     cwd=self.work_dir,
-                    session_id=session_id,
+                    session_id=run_session_id,
                 )
                 if hook_fix_rc != 0:
                     combined = f"{hook_fix_stdout}\n{hook_fix_stderr}"
@@ -225,7 +235,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                             cr_fix_stdout, cr_fix_stderr, cr_fix_rc = self._run_claude_cli(
                                 task.fix_review_prompt(cr_result.agent_prompt),
                                 cwd=self.work_dir,
-                                session_id=session_id,
+                                session_id=run_session_id,
                             )
                             if cr_fix_rc != 0:
                                 combined = f"{cr_fix_stdout}\n{cr_fix_stderr}"
