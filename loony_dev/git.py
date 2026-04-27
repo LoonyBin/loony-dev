@@ -97,6 +97,7 @@ class GitRepo:
             capture_output=True,
             text=True,
         )
+        commit_created = False
         if commit_proc.returncode != 0:
             output = f"{commit_proc.stdout}\n{commit_proc.stderr}".strip()
             logger.debug("git commit failed: %s", output)
@@ -106,6 +107,8 @@ class GitRepo:
                 raise HookFailureError(output)
             else:
                 raise GitError(output)
+        else:
+            commit_created = True
 
         _ALREADY_UP_TO_DATE = ("everything up-to-date", "already up to date")
 
@@ -122,10 +125,13 @@ class GitRepo:
                 logger.debug("git push: already up to date, skipping (already done)")
             elif any(kw in output.lower() for kw in _HOOK_KEYWORDS):
                 # Undo the local commit so retries don't accumulate failed commits.
-                subprocess.run(
-                    ["git", "reset", "--soft", "HEAD~1"],
-                    cwd=self.work_dir, capture_output=True,
-                )
+                if commit_created:
+                    subprocess.run(
+                        ["git", "reset", "--soft", "HEAD~1"],
+                        cwd=self.work_dir,
+                        capture_output=True,
+                        text=True,
+                    )
                 raise HookFailureError(output)
             else:
                 raise GitError(output)
