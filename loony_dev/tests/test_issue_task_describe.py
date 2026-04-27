@@ -4,7 +4,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from loony_dev.github import Issue
-from loony_dev.tasks.issue_task import IssueTask
+from loony_dev.tasks.issue_task import IssueTask, _slugify
 
 
 def _make_issue(number: int = 1, title: str = "Test issue", body: str = "body") -> Issue:
@@ -13,14 +13,32 @@ def _make_issue(number: int = 1, title: str = "Test issue", body: str = "body") 
     return Issue(number=number, title=title, body=body, author="user", _repo=repo)
 
 
+def test_branch_name_is_deterministic():
+    task = IssueTask(_make_issue(number=42, title="Fix the bug"))
+    assert task.branch_name == "issue-42/fix-the-bug"
+    assert task.branch_name == "issue-42/fix-the-bug"
+
+
+def test_branch_name_slugifies_title():
+    task = IssueTask(_make_issue(number=189, title="PR A — Strip `scheduled` state"))
+    assert task.branch_name == "issue-189/pr-a-strip-scheduled-state"
+
+
+def test_branch_name_truncates_long_titles():
+    long_title = "A" * 100
+    task = IssueTask(_make_issue(number=1, title=long_title))
+    slug = task.branch_name.split("/", 1)[1]
+    assert len(slug) <= 50
+
+
 def test_describe_delegates_to_implement_prompt():
     task = IssueTask(_make_issue())
     assert task.describe() == task.implement_prompt()
 
 
-def test_implement_prompt_contains_branch_instruction():
-    task = IssueTask(_make_issue())
-    assert "Create a new branch" in task.implement_prompt()
+def test_implement_prompt_does_not_mention_branch():
+    task = IssueTask(_make_issue(number=7, title="Add login"))
+    assert "branch" not in task.implement_prompt().lower()
 
 
 def test_implement_prompt_does_not_instruct_commit_push_or_pr():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
@@ -9,6 +10,13 @@ from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, Task
 from loony_dev.tasks.planning_task import PLAN_MARKER, PLAN_MARKER_PREFIX
 
 _MAX_HOOK_OUTPUT_CHARS = 500
+_SLUG_MAX_LENGTH = 50
+
+
+def _slugify(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    return text.strip("-")[:_SLUG_MAX_LENGTH].rstrip("-")
 
 
 def _sanitize_hook_output(output: str) -> str:
@@ -79,6 +87,10 @@ class IssueTask(Task):
     # ------------------------------------------------------------------
 
     @property
+    def branch_name(self) -> str:
+        return f"issue-{self.issue.number}/{_slugify(self.issue.title)}"
+
+    @property
     def session_key(self) -> str:
         return f"issue:{self.issue.number}"
 
@@ -95,7 +107,6 @@ class IssueTask(Task):
             f"Implement the following GitHub issue.\n\n"
             f"{content}\n\n"
             f"Instructions:\n"
-            f"- Create a new branch for this work\n"
             f"- Implement the changes described in the issue\n"
             f"- Do NOT commit, push, or create a pull request — stop after making code changes"
         )
@@ -125,6 +136,23 @@ class IssueTask(Task):
             f"issue #{self.issue.number}: {self.issue.title}.\n\n"
             f"Output ONLY the commit message — no explanation, no preamble, no markdown fences. "
             f"The message must reference #{self.issue.number}."
+        )
+
+    def pr_body_prompt(self, diff: str) -> str:
+        """Prompt asking Claude to write a GitHub PR body."""
+        return (
+            f"Write a GitHub pull request body for the changes implementing "
+            f"issue #{self.issue.number}: {self.issue.title}.\n\n"
+            f"Issue description:\n{self.issue.body}\n\n"
+            f"Diff:\n{diff}\n\n"
+            f"Format the body exactly like this (no extra sections, no preamble):\n"
+            f"## Summary\n"
+            f"- <bullet points: what changed and why>\n\n"
+            f"## Test plan\n"
+            f"- [ ] <checkbox items to verify>\n\n"
+            f"🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n"
+            f"Closes #{self.issue.number}\n\n"
+            f"Output ONLY the PR body — no explanation, no markdown fences."
         )
 
     def mark_review_exhausted(self) -> None:

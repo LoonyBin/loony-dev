@@ -69,7 +69,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         """Multi-phase execution for IssueTask with optional Coderabbit verification.
 
         Phases:
-          1. Implement — Claude writes code, creates branch, does not commit.
+          1. Implement — branch prepared; Claude writes code, does not commit.
           2. Verify    — Coderabbit reviews; Claude fixes (up to max_review_retries).
           3. Commit    — Orchestrator commits+pushes; Claude fixes hooks (up to max_commit_retries).
           4. PR        — gh pr create with [WIP] prefix if retries exhausted.
@@ -88,13 +88,19 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         default_branch = GitRepo.detect_default_branch(self.work_dir)
         git = GitRepo(self.work_dir, default_branch=default_branch)
         session_id = self._session_id_for(task)
+        branch = task.branch_name
+
+        # Prepare the worktree: checkout branch if it exists, create it if not.
+        git.checkout_or_create_branch(branch)
+        logger.info("Issue #%d: working on branch '%s'", task.issue.number, branch)
 
         # ── Phase 1: Implement ──────────────────────────────────────────────
         logger.info("Issue #%d: phase 1 — implementing", task.issue.number)
-        logger.debug("Claude prompt: %s", truncate_for_log(task.implement_prompt()))
+        implement_prompt = task.implement_prompt()
+        logger.debug("Claude prompt: %s", truncate_for_log(implement_prompt))
 
         stdout, stderr, returncode = self._run_claude_cli(
-            task.implement_prompt(), cwd=self.work_dir, session_id=session_id,
+            implement_prompt, cwd=self.work_dir, session_id=session_id,
         )
         logger.debug("Claude CLI exited with code %d", returncode)
         if stdout:
@@ -112,21 +118,6 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                 output=combined,
                 summary=f"Agent exited with code {returncode}",
                 rate_limited=is_quota,
-            )
-
-        # Determine the branch Claude created (fall back to creating one if needed).
-        branch = git.current_branch()
-        if branch == git.default_branch:
-            logger.warning(
-                "Issue #%d: Claude did not create a feature branch; creating one now",
-                task.issue.number,
-            )
-            branch = f"fix/issue-{task.issue.number}"
-            subprocess.run(
-                ["git", "checkout", "-b", branch],
-                cwd=self.work_dir,
-                check=True,
-                capture_output=True,
             )
 
         # ── Phase 2: Coderabbit verify+fix loop ────────────────────────────
@@ -281,7 +272,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         """Run gh pr create for the given branch."""
         wip_prefix = "[WIP] " if (task.commit_exhausted or task.review_exhausted) else ""
         title = f"{wip_prefix}{task.issue.title} (#{task.issue.number})"
-        body = f"Closes #{task.issue.number}"
+        body = self._generate_pr_body(task, branch)
 
         try:
             repo_name = subprocess.check_output(
@@ -321,6 +312,26 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                 (exc.stderr or "").strip(),
             )
             raise
+
+    def _generate_pr_body(self, task: IssueTask, branch: str) -> str:
+        """Ask Claude to write a PR body using the issue description and diff."""
+        try:
+            diff = subprocess.check_output(
+                ["git", "diff", f"main...{branch}"],
+                cwd=self.work_dir,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            diff = diff[:8000]
+        except Exception:
+            diff = "(diff unavailable)"
+
+        stdout, _, returncode = self._invoke_claude(
+            task.pr_body_prompt(diff), cwd=self.work_dir,
+        )
+        if returncode == 0 and stdout.strip():
+            return stdout.strip()
+        return f"Closes #{task.issue.number}"
 
     def _generate_commit_message(self, task: IssueTask) -> str:
         """Ask Claude (no session) to produce a conventional commit message."""
