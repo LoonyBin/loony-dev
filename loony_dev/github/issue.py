@@ -16,6 +16,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _normalize_failure_body(body: str) -> str:
+    """Strip the leading marker line from a failure comment body.
+
+    Removes ``<!-- ... -->`` lines from the top so that comparisons between
+    failure comments are stable even when the marker encodes a dynamic value
+    such as a ``last-seen`` timestamp.
+    """
+    lines = body.strip().splitlines()
+    while lines and lines[0].strip().startswith("<!--") and lines[0].strip().endswith("-->"):
+        lines = lines[1:]
+    return "\n".join(lines).strip()
+
+
 # ---------------------------------------------------------------------------
 # GitHubItem — shared write operations for Issues and PRs
 # ---------------------------------------------------------------------------
@@ -56,6 +69,63 @@ class GitHubItem:
             self._repo.client.gh("issue", "edit", str(self.number), "--add-assignee", user)
         except subprocess.CalledProcessError:
             logger.warning("Failed to assign %s to #%d", user, self.number)
+
+    def get_comments(self) -> list[Comment]:
+        """Return all timeline comments on this item, fetched fresh from the API."""
+        from loony_dev.github.comment import Comment
+
+        return Comment.list_for_issue(self.number, repo=self._repo)
+
+    def _recent_bot_failure_comments(self, bot_name: str, n: int) -> list[Comment]:
+        """Return the last *n* bot-authored failure comments on this item."""
+        from loony_dev.tasks.base import CI_FAILURE_MARKER, FAILURE_MARKER_PREFIX
+
+        all_comments = self.get_comments()
+        failure_comments = [
+            c for c in all_comments
+            if c.author == bot_name and (
+                FAILURE_MARKER_PREFIX in c.body or CI_FAILURE_MARKER in c.body
+            )
+        ]
+        return failure_comments[-n:]
+
+    def check_and_post_failure(
+        self, failure_body: str, bot_name: str, n: int, fallback_owner: str
+    ) -> bool:
+        """Decide whether to post a regular failure comment or trigger in-error.
+
+        Compares the last *n* bot failure comments against *failure_body*
+        (ignoring dynamic marker attributes).  If all *n* match, applies the
+        ``in-error`` label and posts a sleeping notice tagging the item owner.
+
+        Returns True if the in-error path was taken, False otherwise.
+        """
+        from loony_dev.tasks.base import IN_ERROR_MARKER
+
+        normalized_current = _normalize_failure_body(failure_body)
+        recent = self._recent_bot_failure_comments(bot_name, n)
+
+        if len(recent) >= n and all(
+            _normalize_failure_body(str(c.body)) == normalized_current
+            for c in recent
+        ):
+            item_owner = getattr(self, "author", "") or fallback_owner
+            self.add_label("in-error")
+            self.add_comment(
+                f"{IN_ERROR_MARKER}\n\n"
+                f"I've encountered the same failure {n} time(s) in a row and will stop "
+                f"retrying. @{item_owner}, please review.\n\n"
+                f"<details><summary>Repeated failure</summary>\n\n"
+                f"{failure_body}\n\n</details>"
+            )
+            logger.warning(
+                "#%d marked in-error after %d identical consecutive failure(s)",
+                self.number, n,
+            )
+            return True
+
+        self.add_comment(failure_body)
+        return False
 
 
 # ---------------------------------------------------------------------------

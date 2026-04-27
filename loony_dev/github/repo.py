@@ -50,6 +50,7 @@ REQUIRED_LABELS = [
     {"name": "ready-for-development", "color": "0075ca", "description": "Issue is ready for implementation"},
     {"name": "ready-for-planning",    "color": "e4e669", "description": "Issue needs planning/triage"},
     {"name": "in-progress",           "color": "d93f0b", "description": "Bot is actively working on this"},
+    {"name": "in-error",              "color": "b60205", "description": "Bot has failed repeatedly; manual intervention required"},
 ]
 
 
@@ -147,6 +148,9 @@ class Repo:
             skip_ci_checks if skip_ci_checks is not None
             else set(config.settings.get("skip_ci_checks") or [])
         )
+        self.repeated_failure_threshold: int = int(
+            config.settings.get("repeated_failure_threshold", 2)
+        )
         # Cache: username -> (permission_level, monotonic_timestamp)
         self._permission_cache: dict[str, tuple[str | None, float]] = {}
         # Tick-scoped cache: cleared at the start of each tick
@@ -157,6 +161,11 @@ class Repo:
         self._ttl_cache: dict[str, tuple[Any, float]] = {}
         # Configurable TTL for the milestones cache (seconds); can be overridden by callers.
         self.milestone_cache_ttl: float = 3600.0
+
+    @property
+    def owner(self) -> str:
+        """The owner portion of the owner/repo name string."""
+        return self.name.split("/")[0]
 
     # --- Detection ---
 

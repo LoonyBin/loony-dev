@@ -48,6 +48,9 @@ class PlanningTask(Task):
                     issue.number, issue.assignees,
                 )
                 continue
+            if "in-error" in issue.labels:
+                logger.debug("Issue #%d is in-error — skipping", issue.number)
+                continue
             if "ready-for-development" in issue.labels:
                 logger.debug(
                     "Issue #%d has 'ready-for-development' — plan approved, removing 'ready-for-planning'",
@@ -165,6 +168,10 @@ class PlanningTask(Task):
                 self.issue.number,
             )
             return
-        self.issue.add_comment(
-            f"{FAILURE_MARKER}\n\nPlanning failed: {error}",
+        failure_body = f"{FAILURE_MARKER}\n\nPlanning failed: {error}"
+        self.issue.check_and_post_failure(
+            failure_body,
+            repo.bot_name,
+            repo.repeated_failure_threshold,
+            repo.owner,
         )

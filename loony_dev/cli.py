@@ -58,6 +58,10 @@ def cli() -> None:
     "--quota-fallback-seconds", "quota_fallback_seconds", default=1800, show_default=True,
     help="Seconds to disable a Claude agent for when quota is hit and no reset time can be parsed.",
 )
+@click.option(
+    "--repeated-failure-threshold", "repeated_failure_threshold", default=2, show_default=True,
+    help="Consecutive identical bot failure comments before an item is marked in-error and skipped.",
+)
 def worker(**_) -> None:
     """Run the orchestrator worker loop for a single repository."""
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"

@@ -57,6 +57,11 @@
 # when no reset time can be parsed from the error message.
 # quota_fallback_seconds = 1800
 
+# Number of identical consecutive bot failure comments on an item before it is
+# marked with the in-error label and excluded from discovery (requires manual
+# intervention to resume).
+# repeated_failure_threshold = 2
+
 
 # ---------------------------------------------------------------------------
 # [coderabbit] — Coderabbit CLI integration (optional pre-commit review)

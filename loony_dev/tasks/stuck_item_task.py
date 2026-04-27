@@ -38,6 +38,8 @@ class StuckItemCleanupTask(Task):
         cutoff = datetime.now(timezone.utc) - timedelta(hours=threshold_hours)
 
         for issue in Issue.list(label="in-progress", repo=repo):
+            if "in-error" in issue.labels:
+                continue
             if issue.updated_at is not None and issue.updated_at < cutoff:
                 logger.debug(
                     "Issue #%d has been in-progress since %s (threshold: %dh) — marking stuck",
@@ -49,6 +51,8 @@ class StuckItemCleanupTask(Task):
             if not pr.is_assigned_to(repo.bot_name):
                 continue
             if "in-progress" not in pr.labels:
+                continue
+            if "in-error" in pr.labels:
                 continue
             if pr.updated_at is not None and pr.updated_at < cutoff:
                 logger.debug(
