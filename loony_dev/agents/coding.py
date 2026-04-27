@@ -334,8 +334,9 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                 text=True,
             )
             diff = diff[:8000]
-        except Exception:
-            diff = "(diff unavailable)"
+        except Exception as exc:
+            logger.warning("Issue #%d: could not get diff for PR body: %s", task.issue.number, exc)
+            return f"Closes #{task.issue.number}"
 
         stdout, _, returncode = self._invoke_claude(
             task.pr_body_prompt(diff), cwd=self.work_dir,
