@@ -253,7 +253,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                 logger.warning("Issue #%d: committing as WIP: %s", task.issue.number, wip_msg)
                 try:
                     git.commit_and_push(wip_msg, branch)
-                except Exception as exc:
+                except GitError as exc:
                     logger.error("Issue #%d: failed to commit WIP: %s", task.issue.number, exc)
                     return TaskResult(
                         success=False,
@@ -301,6 +301,20 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             result = subprocess.run(cmd, cwd=self.work_dir, capture_output=True, text=True, check=True)
             logger.info("Created PR: %s", result.stdout.strip())
         except subprocess.CalledProcessError as exc:
+            err_text = f"{exc.stdout or ''}\n{exc.stderr or ''}".lower()
+            if "a pull request already exists" in err_text:
+                view_cmd = ["gh", "pr", "view", "--head", branch, "--json", "url", "-q", ".url"]
+                if repo_name:
+                    view_cmd += ["-R", repo_name]
+                try:
+                    existing_url = subprocess.check_output(
+                        view_cmd, cwd=self.work_dir, stderr=subprocess.DEVNULL,
+                    ).decode().strip()
+                    logger.info("Issue #%d: PR already exists: %s", task.issue.number, existing_url)
+                    return
+                except Exception:
+                    logger.info("Issue #%d: PR already exists for branch '%s'", task.issue.number, branch)
+                    return
             logger.error(
                 "Issue #%d: failed to create PR: %s",
                 task.issue.number,

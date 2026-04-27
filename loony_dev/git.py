@@ -89,18 +89,28 @@ class GitRepo:
         """
         self._run("add", "-A")
 
+        _NOTHING_TO_COMMIT = ("nothing to commit", "nothing added to commit")
+
         commit_proc = subprocess.run(
             ["git", "commit", "-m", message],
             cwd=self.work_dir,
             capture_output=True,
             text=True,
         )
+        commit_created = False
         if commit_proc.returncode != 0:
             output = f"{commit_proc.stdout}\n{commit_proc.stderr}".strip()
             logger.debug("git commit failed: %s", output)
-            if any(kw in output.lower() for kw in _HOOK_KEYWORDS):
+            if any(kw in output.lower() for kw in _NOTHING_TO_COMMIT):
+                logger.debug("git commit: nothing to commit, skipping (already done)")
+            elif any(kw in output.lower() for kw in _HOOK_KEYWORDS):
                 raise HookFailureError(output)
-            raise GitError(output)
+            else:
+                raise GitError(output)
+        else:
+            commit_created = True
+
+        _ALREADY_UP_TO_DATE = ("everything up-to-date", "already up to date")
 
         push_proc = subprocess.run(
             ["git", "push", "-u", "origin", branch],
@@ -111,14 +121,20 @@ class GitRepo:
         if push_proc.returncode != 0:
             output = f"{push_proc.stdout}\n{push_proc.stderr}".strip()
             logger.debug("git push failed: %s", output)
-            if any(kw in output.lower() for kw in _HOOK_KEYWORDS):
+            if any(kw in output.lower() for kw in _ALREADY_UP_TO_DATE):
+                logger.debug("git push: already up to date, skipping (already done)")
+            elif any(kw in output.lower() for kw in _HOOK_KEYWORDS):
                 # Undo the local commit so retries don't accumulate failed commits.
-                subprocess.run(
-                    ["git", "reset", "--soft", "HEAD~1"],
-                    cwd=self.work_dir, capture_output=True,
-                )
+                if commit_created:
+                    subprocess.run(
+                        ["git", "reset", "--soft", "HEAD~1"],
+                        cwd=self.work_dir,
+                        capture_output=True,
+                        text=True,
+                    )
                 raise HookFailureError(output)
-            raise GitError(output)
+            else:
+                raise GitError(output)
 
     def checkout_branch(self, branch: str) -> None:
         """Checkout an existing remote-tracking branch."""
