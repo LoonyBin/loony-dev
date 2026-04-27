@@ -20,6 +20,9 @@ if TYPE_CHECKING:
     from loony_dev.github import Repo
     from loony_dev.tasks.base import Task
 
+# Imported at runtime (not TYPE_CHECKING) so isinstance checks work.
+from loony_dev.agents.coding import CodingAgent
+
 logger = logging.getLogger(__name__)
 
 # Task classes ordered by priority (lowest number = highest priority).
@@ -129,18 +132,26 @@ class Orchestrator:
 
     def dispatch(self, agent: Agent, task: Task) -> None:
         logger.debug("Task description:\n%s", task.describe())
-        task.on_start(self.repo)
-        try:
-            logger.debug("Current branch before sync: %s", self.git.current_branch())
-            logger.debug("Uncommitted changes before sync: %s", self.git.has_uncommitted_changes())
-        except Exception:
-            logger.debug("Could not read git state before sync", exc_info=True)
-        self.git.ensure_main_up_to_date()
-
         self._active_agent = agent
         self._active_task = task
         try:
-            result = agent.execute(task)
+            task.on_start(self.repo)
+            try:
+                logger.debug("Current branch before sync: %s", self.git.current_branch())
+                logger.debug("Uncommitted changes before sync: %s", self.git.has_uncommitted_changes())
+            except Exception:
+                logger.debug("Could not read git state before sync", exc_info=True)
+            self.git.ensure_main_up_to_date()
+
+            target = task.target_branch
+            if target:
+                logger.info("Resetting branch %r to upstream state before task.", target)
+                self.git.reset_branch_to_upstream(target)
+
+            if isinstance(task, IssueTask) and isinstance(agent, CodingAgent):
+                result = agent.execute_issue(task)
+            else:
+                result = agent.execute(task)
             self._cleanup()
             if result.success:
                 task.on_complete(self.repo, result)

@@ -20,6 +20,7 @@ FAILURE_MARKER = "<!-- loony-failure -->"
 SUCCESS_MARKER = "<!-- loony-success -->"
 
 CI_FAILURE_MARKER = "<!-- loony-ci-failure -->"
+IN_ERROR_MARKER = "<!-- loony-in-error -->"
 
 _LAST_SEEN_RE = re.compile(r"last-seen=([^\s>]+)")
 
@@ -56,6 +57,11 @@ class Task(ABC):
         (e.g. planning -> implementation).  Return ``None`` to use a
         fresh session each time.
         """
+        return None
+
+    @property
+    def target_branch(self) -> str | None:
+        """The pre-existing branch this task will operate on, or None for tasks that create new branches."""
         return None
 
     @abstractmethod

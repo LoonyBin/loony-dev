@@ -19,6 +19,18 @@ class RateLimitedError(Exception):
     """
 
 
+class GitError(Exception):
+    """Raised on a git command failure unrelated to hooks."""
+
+
+class HookFailureError(Exception):
+    """Raised when a git commit or push is rejected by a pre-commit/pre-push hook."""
+
+    def __init__(self, output: str) -> None:
+        super().__init__(output)
+        self.output = output
+
+
 @dataclass
 class TaskResult:
     success: bool
