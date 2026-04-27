@@ -37,6 +37,8 @@ class ConflictResolutionTask(Task):
                 continue
             if "in-progress" in pr.labels:
                 continue
+            if "in-error" in pr.labels:
+                continue
             if pr.mergeable != "CONFLICTING":
                 continue
 
@@ -86,6 +88,13 @@ class ConflictResolutionTask(Task):
                 self.pr.number,
             )
             return
-        self.pr.add_comment(
-            f"{FAILURE_MARKER}\n\nFailed to resolve merge conflicts: {error}\n\nManual intervention is required.",
+        failure_body = (
+            f"{FAILURE_MARKER}\n\nFailed to resolve merge conflicts: {error}\n\n"
+            f"Manual intervention is required."
+        )
+        self.pr.check_and_post_failure(
+            failure_body,
+            repo.bot_name,
+            repo.repeated_failure_threshold,
+            repo.owner,
         )

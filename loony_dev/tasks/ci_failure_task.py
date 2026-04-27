@@ -37,6 +37,8 @@ class CIFailureTask(Task):
                 continue
             if "in-progress" in pr.labels:
                 continue
+            if "in-error" in pr.labels:
+                continue
             if not pr.head_sha:
                 continue
 
@@ -109,6 +111,13 @@ class CIFailureTask(Task):
                 self.pr.number,
             )
             return
-        self.pr.add_comment(
-            f"{CI_FAILURE_MARKER}\n\nFailed to fix CI failures: {error}\n\nManual intervention is required.",
+        failure_body = (
+            f"{CI_FAILURE_MARKER}\n\nFailed to fix CI failures: {error}\n\n"
+            f"Manual intervention is required."
+        )
+        self.pr.check_and_post_failure(
+            failure_body,
+            repo.bot_name,
+            repo.repeated_failure_threshold,
+            repo.owner,
         )

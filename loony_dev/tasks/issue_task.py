@@ -53,6 +53,9 @@ class IssueTask(Task):
                     issue.number, issue.assignees,
                 )
                 continue
+            if "in-error" in issue.labels:
+                logger.debug("Issue #%d is in-error — skipping", issue.number)
+                continue
             comments = issue.comments
             plan = IssueTask._find_plan(comments, repo.bot_name)
             if plan is not None:
@@ -186,17 +189,23 @@ class IssueTask(Task):
 
     def on_failure(self, repo: Repo, error: Exception) -> None:
         logger.debug(
-            "Issue #%d: task failed (%s), restoring 'ready-for-development'",
+            "Issue #%d: task failed (%s), removing 'in-progress'",
             self.issue.number, error,
         )
         self.issue.remove_label("in-progress")
-        self.issue.add_label("ready-for-development")
         if isinstance(error, RateLimitedError):
             logger.info(
                 "Issue #%d: rate-limited — skipping error comment (quota will reset automatically)",
                 self.issue.number,
             )
+            self.issue.add_label("ready-for-development")
             return
-        self.issue.add_comment(
-            f"{FAILURE_MARKER}\n\nImplementation failed: {error}",
+        failure_body = f"{FAILURE_MARKER}\n\nImplementation failed: {error}"
+        in_error = self.issue.check_and_post_failure(
+            failure_body,
+            repo.bot_name,
+            repo.repeated_failure_threshold,
+            repo.owner,
         )
+        if not in_error:
+            self.issue.add_label("ready-for-development")

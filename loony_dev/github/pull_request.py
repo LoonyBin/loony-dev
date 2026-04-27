@@ -28,6 +28,7 @@ class PullRequest(GitHubItem):
         number: int,
         branch: str = "",
         title: Content | str = "",
+        author: str = "",
         head_sha: str = "",
         mergeable: str | None = None,
         updated_at=None,
@@ -41,6 +42,7 @@ class PullRequest(GitHubItem):
         super().__init__(number=number, _repo=_repo)
         self.branch = branch
         self.title = title if isinstance(title, Content) else Content(title)
+        self.author = author
         self.head_sha = head_sha
         self.mergeable = mergeable
         self.updated_at = updated_at
@@ -57,7 +59,7 @@ class PullRequest(GitHubItem):
         """Fetch a single PR by number."""
         data = repo.client.gh_json(
             "pr", "view", str(number),
-            "--json", "number,headRefName,headRefOid,title,comments,reviews,labels,mergeable,updatedAt,assignees",
+            "--json", "number,headRefName,headRefOid,title,author,comments,reviews,labels,mergeable,updatedAt,assignees",
         )
         return cls._from_api(data, repo)
 
@@ -75,7 +77,7 @@ class PullRequest(GitHubItem):
         data = repo.client.gh_json(
             "pr", "list",
             "--state", "open",
-            "--json", "number,headRefName,headRefOid,title,comments,reviews,labels,mergeable,updatedAt,assignees",
+            "--json", "number,headRefName,headRefOid,title,author,comments,reviews,labels,mergeable,updatedAt,assignees",
         )
         result = [cls._from_api(item, repo) for item in data]
         logger.debug("PullRequest.list_open() returned %d open PR(s)", len(result))
@@ -113,6 +115,7 @@ class PullRequest(GitHubItem):
             number=pr_number,
             branch=data.get("headRefName", ""),
             title=Content(data.get("title", "")),
+            author=data.get("author", {}).get("login", ""),
             head_sha=data.get("headRefOid", ""),
             mergeable=data.get("mergeable"),
             updated_at=parse_datetime(data.get("updatedAt")),
@@ -124,6 +127,10 @@ class PullRequest(GitHubItem):
         )
 
     # --- Instance reads ---
+
+    def get_comments(self) -> list[Comment]:
+        """Return the general timeline comments already fetched for this PR."""
+        return list(self.comments)
 
     def is_assigned_to(self, username: str) -> bool:
         """Return True if *username* is listed as an assignee."""

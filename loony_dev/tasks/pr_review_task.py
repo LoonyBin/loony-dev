@@ -46,6 +46,9 @@ class PRReviewTask(Task):
             if "in-progress" in pr.labels:
                 logger.debug("PR #%d is in-progress — skipping", pr.number)
                 continue
+            if "in-error" in pr.labels:
+                logger.debug("PR #%d is in-error — skipping", pr.number)
+                continue
 
             all_comments = PRReviewTask._assemble_comments(pr, repo)
             new_comments = PRReviewTask._new_since_bot(all_comments, repo.bot_name)
@@ -179,6 +182,10 @@ class PRReviewTask(Task):
             return
         last_seen_ts = max((c.created_at for c in self.pr.new_comments), default="")
         marker = encode_marker(FAILURE_MARKER_PREFIX, last_seen_ts) if last_seen_ts else FAILURE_MARKER
-        self.pr.add_comment(
-            f"{marker}\n\nFailed to address review comments: {error}",
+        failure_body = f"{marker}\n\nFailed to address review comments: {error}"
+        self.pr.check_and_post_failure(
+            failure_body,
+            repo.bot_name,
+            repo.repeated_failure_threshold,
+            repo.owner,
         )
