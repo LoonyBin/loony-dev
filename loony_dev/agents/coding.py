@@ -259,7 +259,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
 
         # ── Phase 4: Create PR ──────────────────────────────────────────────
         logger.info("Issue #%d: phase 4 — creating PR", task.issue.number)
-        self._create_pr(task, branch)
+        self._create_pr(task, branch, default_branch)
 
         summary = self._generate_summary(stdout)
         return TaskResult(success=True, output=stdout, summary=summary, post_summary=True)
@@ -268,11 +268,11 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _create_pr(self, task: IssueTask, branch: str) -> None:
+    def _create_pr(self, task: IssueTask, branch: str, default_branch: str) -> None:
         """Run gh pr create for the given branch."""
         wip_prefix = "[WIP] " if (task.commit_exhausted or task.review_exhausted) else ""
         title = f"{wip_prefix}{task.issue.title} (#{task.issue.number})"
-        body = self._generate_pr_body(task, branch)
+        body = self._generate_pr_body(task, branch, default_branch)
 
         try:
             repo_name = subprocess.check_output(
@@ -313,11 +313,11 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             )
             raise
 
-    def _generate_pr_body(self, task: IssueTask, branch: str) -> str:
+    def _generate_pr_body(self, task: IssueTask, branch: str, default_branch: str) -> str:
         """Ask Claude to write a PR body using the issue description and diff."""
         try:
             diff = subprocess.check_output(
-                ["git", "diff", f"main...{branch}"],
+                ["git", "diff", f"{default_branch}...{branch}"],
                 cwd=self.work_dir,
                 stderr=subprocess.DEVNULL,
                 text=True,
