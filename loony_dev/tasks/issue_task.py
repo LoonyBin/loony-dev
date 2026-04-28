@@ -108,6 +108,8 @@ class IssueTask(Task):
             f"{content}\n\n"
             f"Instructions:\n"
             f"- Implement the changes described in the issue\n"
+            f"- After making changes, read `.githooks/pre-commit` to understand what checks this "
+            f"project requires, run all applicable checks, and fix any failures before stopping\n"
             f"- Do NOT commit, push, or create a pull request — stop after making code changes"
         )
 

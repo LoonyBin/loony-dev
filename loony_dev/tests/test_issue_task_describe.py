@@ -49,6 +49,13 @@ def test_implement_prompt_does_not_instruct_commit_push_or_pr():
     assert "git push" not in prompt
 
 
+def test_implement_prompt_instructs_pre_commit_check():
+    task = IssueTask(_make_issue())
+    prompt = task.implement_prompt()
+    assert ".githooks/pre-commit" in prompt
+    assert "fix any failures" in prompt.lower()
+
+
 def test_implement_prompt_instructs_no_git_ops():
     task = IssueTask(_make_issue())
     assert "Do NOT commit, push, or create a pull request" in task.implement_prompt()
