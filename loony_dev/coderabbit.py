@@ -1,6 +1,7 @@
 """Coderabbit CLI integration for pre-commit code review."""
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import subprocess
@@ -13,19 +14,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Output patterns that indicate no issues were found.
-_NO_ISSUE_PATTERNS = [
-    "no issues found",
-    "no actionable comments",
-    "0 issues",
-    "lgtm",
-    "looks good",
-]
-
-# The coderabbit CLI wraps its AI-agent prompt between these delimiters.
-_AGENT_PROMPT_START = "---AGENT PROMPT---"
-_AGENT_PROMPT_END = "---END AGENT PROMPT---"
-
 
 class CodeRabbitError(Exception):
     """Raised when the coderabbit CLI exits with an unexpected error code."""
@@ -35,8 +23,6 @@ class CodeRabbitError(Exception):
 class CodeRabbitResult:
     has_issues: bool
     raw_output: str
-    # Prompt text to feed to an AI agent for fixing; may be the full output
-    # when no structured agent-prompt block is present.
     agent_prompt: str
 
 
@@ -60,7 +46,7 @@ def run_review(repo_dir: Path) -> CodeRabbitResult:
     """
     logger.info("Running coderabbit review in %s", repo_dir)
     proc = subprocess.run(
-        ["coderabbit", "review"],
+        ["coderabbit", "review", "--agent"],
         cwd=repo_dir,
         capture_output=True,
         text=True,
@@ -74,22 +60,33 @@ def run_review(repo_dir: Path) -> CodeRabbitResult:
             f"coderabbit exited with code {proc.returncode}: {output[:200]}"
         )
 
-    lower = output.lower()
-    has_issues = not any(p in lower for p in _NO_ISSUE_PATTERNS)
-
-    # Extract the structured AI-agent prompt block if present.
-    agent_prompt = ""
-    if _AGENT_PROMPT_START in output:
-        start = output.index(_AGENT_PROMPT_START) + len(_AGENT_PROMPT_START)
-        end = output.find(_AGENT_PROMPT_END, start)
-        agent_prompt = output[start:end].strip() if end >= 0 else output[start:].strip()
-
-    if not agent_prompt and has_issues:
-        # Fall back to the full output so the agent still gets actionable context.
-        agent_prompt = output
+    complete_event = _find_complete_event(proc.stdout)
+    if complete_event is None:
+        raise CodeRabbitError("coderabbit --agent output did not contain a complete event")
+    findings = complete_event.get("findings")
+    if not isinstance(findings, int):
+        raise CodeRabbitError(
+            f"coderabbit --agent complete event had invalid findings: {findings!r}"
+        )
+    has_issues = findings > 0
+    agent_prompt = output if has_issues else ""
 
     return CodeRabbitResult(
         has_issues=has_issues,
         raw_output=output,
         agent_prompt=agent_prompt,
     )
+
+
+def _find_complete_event(output: str) -> dict | None:
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "complete":
+            return event
+    return None
