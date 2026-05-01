@@ -93,6 +93,28 @@ class GitHubClient:
             return []
         return json.loads(output)
 
+    def gh_api_patch(self, endpoint: str, **fields: str) -> dict:
+        """PATCH a GitHub REST API endpoint, passing fields as JSON body via stdin."""
+        payload = json.dumps(fields)
+        cmd = ["gh", "api", "-X", "PATCH", f"repos/{self.repo}/{endpoint}", "--input", "-"]
+        max_retries = int(gh_setting("max_retries"))
+        backoff = float(gh_setting("initial_backoff"))
+        for attempt in range(max_retries + 1):
+            try:
+                result = subprocess.run(cmd, input=payload, capture_output=True, text=True, check=True)
+                return json.loads(result.stdout) if result.stdout.strip() else {}
+            except subprocess.CalledProcessError as exc:
+                if attempt < max_retries and is_retryable_gh_error(exc):
+                    logger.warning(
+                        "gh api PATCH rate-limited (attempt %d/%d), retrying in %.1fs",
+                        attempt + 1, max_retries + 1, backoff,
+                    )
+                    time.sleep(backoff)
+                    backoff *= 2
+                else:
+                    raise
+        raise RuntimeError("unreachable")  # pragma: no cover
+
     def gh_json(self, *args: str) -> list | dict:
         """Run a gh CLI command and parse JSON output."""
         output = self.gh(*args)
