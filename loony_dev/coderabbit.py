@@ -60,8 +60,15 @@ def run_review(repo_dir: Path) -> CodeRabbitResult:
             f"coderabbit exited with code {proc.returncode}: {output[:200]}"
         )
 
-    complete_event = _find_complete_event(output)
-    has_issues = complete_event.get("findings", 0) > 0 if complete_event else False
+    complete_event = _find_complete_event(proc.stdout)
+    if complete_event is None:
+        raise CodeRabbitError("coderabbit --agent output did not contain a complete event")
+    findings = complete_event.get("findings")
+    if not isinstance(findings, int):
+        raise CodeRabbitError(
+            f"coderabbit --agent complete event had invalid findings: {findings!r}"
+        )
+    has_issues = findings > 0
     agent_prompt = output if has_issues else ""
 
     return CodeRabbitResult(
