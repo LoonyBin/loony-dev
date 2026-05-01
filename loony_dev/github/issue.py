@@ -52,6 +52,13 @@ class GitHubItem:
         logger.debug("add_comment(#%d): %s", self.number, truncate_for_log(body))
         self._repo.client.gh("issue", "comment", str(self.number), "--body", body)
 
+    def edit_comment(self, comment_id: int, body: str) -> None:
+        """Edit an existing comment by its database ID."""
+        from loony_dev.models import truncate_for_log
+
+        logger.debug("edit_comment(#%d, comment=%d): %s", self.number, comment_id, truncate_for_log(body))
+        self._repo.client.gh("issue", "comment", "edit", str(comment_id), "--body", body)
+
     def add_label(self, label: str) -> bool:
         try:
             self._repo.client.gh("issue", "edit", str(self.number), "--add-label", label)
