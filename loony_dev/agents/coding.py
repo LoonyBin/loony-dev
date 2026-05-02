@@ -157,10 +157,9 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
 
                 if attempt == max_review - 1:
                     logger.warning(
-                        "Issue #%d: Coderabbit review retries exhausted",
+                        "Issue #%d: Coderabbit review retries exhausted — continuing anyway",
                         task.issue.number,
                     )
-                    task.mark_review_exhausted()
                     break
 
                 logger.info(
@@ -267,24 +266,18 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                     summary=f"git error during commit/push: {exc}",
                 )
 
-        if not commit_succeeded or task.review_exhausted:
-            if not commit_succeeded:
-                task.mark_commit_exhausted(hook_failed_output)
-                wip_msg = f"[WIP] {commit_msg}"
-                logger.warning("Issue #%d: committing as WIP: %s", task.issue.number, wip_msg)
-                try:
-                    git.commit_and_push(wip_msg, branch, no_verify=True)
-                except (GitError, HookFailureError) as exc:
-                    logger.error("Issue #%d: failed to commit WIP: %s", task.issue.number, exc)
-                    return TaskResult(
-                        success=False,
-                        output=str(exc),
-                        summary=f"Failed to commit even as WIP: {exc}",
-                    )
-            else:
-                logger.warning(
-                    "Issue #%d: review retries exhausted, PR will be marked as WIP",
-                    task.issue.number,
+        if not commit_succeeded:
+            task.mark_commit_exhausted(hook_failed_output)
+            wip_msg = f"[WIP] {commit_msg}"
+            logger.warning("Issue #%d: committing as WIP: %s", task.issue.number, wip_msg)
+            try:
+                git.commit_and_push(wip_msg, branch, no_verify=True)
+            except (GitError, HookFailureError) as exc:
+                logger.error("Issue #%d: failed to commit WIP: %s", task.issue.number, exc)
+                return TaskResult(
+                    success=False,
+                    output=str(exc),
+                    summary=f"Failed to commit even as WIP: {exc}",
                 )
 
         # ── Phase 4: Create PR ──────────────────────────────────────────────
@@ -300,7 +293,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
 
     def _create_pr(self, task: IssueTask, branch: str, default_branch: str) -> None:
         """Run gh pr create for the given branch."""
-        wip_prefix = "[WIP] " if (task.commit_exhausted or task.review_exhausted) else ""
+        wip_prefix = "[WIP] " if task.commit_exhausted else ""
         title = f"{wip_prefix}{task.issue.title} (#{task.issue.number})"
         body = self._generate_pr_body(task, branch, default_branch)
 

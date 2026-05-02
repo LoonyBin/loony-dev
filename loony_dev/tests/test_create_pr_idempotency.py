@@ -14,7 +14,6 @@ def _mock_task(issue_number: int = 42, title: str = "My feature") -> MagicMock:
     task.issue.number = issue_number
     task.issue.title = title
     task.commit_exhausted = False
-    task.review_exhausted = False
     return task
 
 

@@ -40,7 +40,6 @@ class IssueTask(Task):
         self.issue = issue
         self.plan = plan
         # State flags set by CodingAgent.execute_issue() before on_complete() runs.
-        self.review_exhausted: bool = False
         self.commit_exhausted: bool = False
         self.hook_output: str | None = None
 
@@ -157,9 +156,6 @@ class IssueTask(Task):
             f"Output ONLY the PR body — no explanation, no markdown fences."
         )
 
-    def mark_review_exhausted(self) -> None:
-        self.review_exhausted = True
-
     def mark_commit_exhausted(self, hook_output: str | None) -> None:
         self.commit_exhausted = True
         self.hook_output = hook_output
@@ -188,11 +184,6 @@ class IssueTask(Task):
                     f"\n\n<details><summary>Hook output</summary>\n\n"
                     f"```\n{safe_output}\n```\n</details>"
                 )
-        elif self.review_exhausted:
-            status_notes += (
-                "\n\n⚠️ Coderabbit review retries exhausted — some issues may remain."
-            )
-
         self.issue.add_comment(
             f"{SUCCESS_MARKER}\n\nImplementation complete.{status_notes}\n\n{result.summary}",
         )
