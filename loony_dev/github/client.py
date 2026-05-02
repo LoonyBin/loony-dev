@@ -101,7 +101,7 @@ class GitHubClient:
         backoff = float(gh_setting("initial_backoff"))
         for attempt in range(max_retries + 1):
             try:
-                result = subprocess.run(cmd, input=payload, capture_output=True, text=True, check=True)
+                result = subprocess.run(cmd, input=payload, capture_output=True, text=True, check=True, cwd=self.cwd)
                 return json.loads(result.stdout) if result.stdout.strip() else {}
             except subprocess.CalledProcessError as exc:
                 if attempt < max_retries and is_retryable_gh_error(exc):
