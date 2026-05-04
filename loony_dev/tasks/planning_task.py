@@ -26,10 +26,12 @@ class PlanningTask(Task):
         issue: Issue,
         existing_plan: str | None,
         new_comments: list[Comment],
+        existing_plan_comment_id: int | None = None,
     ) -> None:
         self.issue = issue
         self.existing_plan = existing_plan
         self.new_comments = new_comments
+        self.existing_plan_comment_id = existing_plan_comment_id
 
     # ------------------------------------------------------------------
     # Task discovery
@@ -59,7 +61,7 @@ class PlanningTask(Task):
                 issue.remove_label("ready-for-planning")
                 continue
             comments = issue.comments
-            existing_plan, new_comments = PlanningTask._analyze_planning_comments(
+            existing_plan, existing_plan_comment_id, new_comments = PlanningTask._analyze_planning_comments(
                 comments, repo.bot_name
             )
             if existing_plan is not None:
@@ -78,7 +80,7 @@ class PlanningTask(Task):
                     if repo.is_authorized(c.author)
                 ]
                 if authorized_new:
-                    yield PlanningTask(issue, existing_plan, authorized_new)
+                    yield PlanningTask(issue, existing_plan, authorized_new, existing_plan_comment_id)
                 else:
                     logger.debug(
                         "Issue #%d: %d new comment(s) but none from authorized users — skipping",
@@ -90,14 +92,16 @@ class PlanningTask(Task):
     @staticmethod
     def _analyze_planning_comments(
         comments: list[Comment], bot_name: str
-    ) -> tuple[str | None, list[Comment]]:
-        """Return (existing_plan, new_user_comments_since_last_plan)."""
+    ) -> tuple[str | None, int | None, list[Comment]]:
+        """Return (existing_plan, existing_plan_comment_id, new_user_comments_since_last_plan)."""
         bot_last_plan_idx = -1
         bot_last_plan: str | None = None
+        bot_last_plan_comment_id: int | None = None
 
         for i, c in enumerate(comments):
             if c.author == bot_name and c.body.startswith(PLAN_MARKER_PREFIX):
                 bot_last_plan_idx = i
+                bot_last_plan_comment_id = c.id
                 end = c.body.find("-->")
                 bot_last_plan = c.body[end + 3:].strip() if end >= 0 else c.body[len(PLAN_MARKER):].strip()
 
@@ -112,7 +116,7 @@ class PlanningTask(Task):
                     c for c in comments[bot_last_plan_idx + 1:] if c.author != bot_name
                 ]
 
-        return bot_last_plan, new_comments
+        return bot_last_plan, bot_last_plan_comment_id, new_comments
 
     # ------------------------------------------------------------------
     # Task interface
@@ -143,7 +147,10 @@ class PlanningTask(Task):
             f"{self.issue.body}\n\n"
             f"## Current Plan\n\n{self.existing_plan}\n\n"
             f"## User Feedback\n\n{feedback}\n\n"
-            f"Output ONLY the updated plan text in well-structured markdown. "
+            f"Output the updated plan in well-structured markdown, then end with:\n\n"
+            f"---\n\n"
+            f"**Revision note:** A short (2-4 sentence) summary of what changed in this revision "
+            f"and any questions or pushback you have about the feedback.\n\n"
             f"Do NOT implement anything — planning only."
         )
 
@@ -153,12 +160,19 @@ class PlanningTask(Task):
 
     def on_complete(self, repo: Repo, result: TaskResult) -> None:
         logger.debug(
-            "Issue #%d: posting plan (%d chars): %s",
-            self.issue.number, len(result.summary), truncate_for_log(result.summary),
+            "Issue #%d: %s plan (%d chars): %s",
+            self.issue.number,
+            "updating" if self.existing_plan_comment_id else "posting",
+            len(result.summary),
+            truncate_for_log(result.summary),
         )
         last_seen_ts = max((c.created_at for c in self.new_comments), default="")
         marker = encode_marker(PLAN_MARKER_PREFIX, last_seen_ts) if last_seen_ts else PLAN_MARKER
-        self.issue.add_comment(f"{marker}\n\n{result.summary}")
+        body = f"{marker}\n\n{result.summary}"
+        if self.existing_plan_comment_id is not None:
+            self.issue.edit_comment(self.existing_plan_comment_id, body)
+        else:
+            self.issue.add_comment(body)
 
     def on_failure(self, repo: Repo, error: Exception) -> None:
         logger.debug("Issue #%d: planning failed (%s)", self.issue.number, error)

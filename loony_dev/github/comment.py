@@ -22,12 +22,14 @@ class Comment:
         author: str,
         body: Content | str,
         created_at: str,
+        id: int | None = None,
         path: str | None = None,
         line: int | None = None,
     ) -> None:
         self.author = author
         self.body = body if isinstance(body, Content) else Content(body)
         self.created_at = created_at
+        self.id = id
         self.path = path
         self.line = line
 
@@ -101,6 +103,7 @@ class Comment:
             author=author,
             body=Content(body_text, safe=safe),
             created_at=data.get("createdAt", ""),
+            id=data.get("databaseId"),
         )
 
     def __repr__(self) -> str:
