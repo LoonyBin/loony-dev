@@ -161,15 +161,16 @@ class PRReviewTask(Task):
     def on_complete(self, repo: Repo, result: TaskResult) -> None:
         logger.debug("PR #%d: removing 'in-progress'", self.pr.number)
         self.pr.remove_label("in-progress")
+        last_seen_ts = max((c.created_at for c in self.pr.new_comments), default="")
+        marker = encode_marker(SUCCESS_MARKER_PREFIX, last_seen_ts) if last_seen_ts else SUCCESS_MARKER
         if result.post_summary:
-            last_seen_ts = max((c.created_at for c in self.pr.new_comments), default="")
-            marker = encode_marker(SUCCESS_MARKER_PREFIX, last_seen_ts) if last_seen_ts else SUCCESS_MARKER
             logger.debug("Completion comment body: %s", truncate_for_log(result.summary))
             self.pr.add_comment(
                 f"{marker}\n\nReview comments addressed.\n\n{result.summary}",
             )
         else:
-            logger.debug("PR #%d: no code changes detected — skipping summary comment", self.pr.number)
+            logger.debug("PR #%d: no code changes detected — posting silent marker", self.pr.number)
+            self.pr.add_comment(f"{marker}\n\nNo changes needed.")
 
     def on_failure(self, repo: Repo, error: Exception) -> None:
         logger.debug("PR #%d: task failed (%s), removing 'in-progress'", self.pr.number, error)
