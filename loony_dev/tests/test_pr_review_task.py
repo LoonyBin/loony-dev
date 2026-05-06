@@ -18,6 +18,7 @@ from loony_dev.github.comment import Comment
 from loony_dev.github.content import Content
 from loony_dev.github.pull_request import PullRequest
 from loony_dev.tasks.base import SUCCESS_MARKER, SUCCESS_MARKER_PREFIX, encode_marker
+from loony_dev.models import TaskResult
 from loony_dev.tasks.pr_review_task import PRReviewTask
 
 BOT_NAME = "loony-bot"
@@ -191,6 +192,68 @@ class TestDiscoverInlineOnly(unittest.TestCase):
         tasks = list(PRReviewTask.discover(repo))
 
         self.assertEqual(tasks, [])
+
+
+class TestOnComplete(unittest.TestCase):
+    """on_complete must always write a success marker, even when post_summary=False."""
+
+    def _make_pr(self, comment_ts: str = "2024-01-01T10:00:00Z") -> MagicMock:
+        pr = MagicMock()
+        pr.number = 1
+        pr.new_comments = [_comment(REVIEWER, "Review comment", comment_ts)]
+        return pr
+
+    def _make_repo(self) -> MagicMock:
+        return _mock_repo()
+
+    def _make_result(self, post_summary: bool, summary: str = "Some summary") -> TaskResult:
+        return TaskResult(success=True, output="", summary=summary, post_summary=post_summary)
+
+    def test_post_summary_true_posts_marker_with_summary(self) -> None:
+        pr = self._make_pr()
+        task = PRReviewTask(pr)
+        result = self._make_result(post_summary=True, summary="Fixed the bug.")
+
+        task.on_complete(self._make_repo(), result)
+
+        pr.add_comment.assert_called_once()
+        body = pr.add_comment.call_args[0][0]
+        self.assertIn("loony-success", body)
+        self.assertIn("last-seen=", body)
+        self.assertIn("Fixed the bug.", body)
+
+    def test_post_summary_false_still_posts_marker(self) -> None:
+        """When no code changes are made, on_complete must still post a success marker
+        so that _new_since_bot advances last-seen and doesn't re-trigger the task."""
+        pr = self._make_pr()
+        task = PRReviewTask(pr)
+        result = self._make_result(post_summary=False)
+
+        task.on_complete(self._make_repo(), result)
+
+        pr.add_comment.assert_called_once()
+        body = pr.add_comment.call_args[0][0]
+        self.assertIn("loony-success", body)
+        self.assertIn("last-seen=", body)
+
+    def test_post_summary_false_marker_prevents_retrigger(self) -> None:
+        """Simulate a full cycle: on_complete posts marker, then _new_since_bot
+        sees no new comments because last-seen was advanced."""
+        comment_ts = "2024-01-01T10:00:00Z"
+        pr = self._make_pr(comment_ts)
+        task = PRReviewTask(pr)
+        result = self._make_result(post_summary=False)
+
+        task.on_complete(self._make_repo(), result)
+
+        posted_body = pr.add_comment.call_args[0][0]
+        # Simulate next tick: the posted marker comment is now in the comment list
+        marker_comment = _comment(BOT_NAME, posted_body, "2024-01-01T10:05:00Z")
+        original_comment = _comment(REVIEWER, "Review comment", comment_ts)
+        all_comments = sorted([original_comment, marker_comment], key=lambda c: c.created_at)
+
+        new = PRReviewTask._new_since_bot(all_comments, BOT_NAME)
+        self.assertEqual(new, [], "No comments should be new after marker is posted")
 
 
 if __name__ == "__main__":
