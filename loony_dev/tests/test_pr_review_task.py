@@ -18,6 +18,7 @@ from loony_dev.github.comment import Comment
 from loony_dev.github.content import Content
 from loony_dev.github.pull_request import PullRequest
 from loony_dev.tasks.base import SUCCESS_MARKER, SUCCESS_MARKER_PREFIX, encode_marker
+from loony_dev.models import TaskResult
 from loony_dev.tasks.pr_review_task import PRReviewTask
 
 BOT_NAME = "loony-bot"
@@ -205,8 +206,7 @@ class TestOnComplete(unittest.TestCase):
     def _make_repo(self) -> MagicMock:
         return _mock_repo()
 
-    def _make_result(self, post_summary: bool, summary: str = "Some summary") -> "TaskResult":
-        from loony_dev.models import TaskResult
+    def _make_result(self, post_summary: bool, summary: str = "Some summary") -> TaskResult:
         return TaskResult(success=True, output="", summary=summary, post_summary=post_summary)
 
     def test_post_summary_true_posts_marker_with_summary(self) -> None:
