@@ -10,7 +10,13 @@ import unittest
 from loony_dev.github.comment import Comment
 from loony_dev.github.content import Content
 from loony_dev.tasks.base import encode_marker
-from loony_dev.tasks.planning_task import PLAN_MARKER, PLAN_MARKER_PREFIX, PlanningTask
+from loony_dev.tasks.planning_task import (
+    PLAN_MARKER,
+    PLAN_MARKER_PREFIX,
+    REVISION_NOTE_DELIMITER,
+    PlanningTask,
+    _split_revision_note,
+)
 
 BOT_NAME = "loony-bot"
 USER = "alice"
@@ -119,6 +125,32 @@ class TestAnalyzePlanningComments(unittest.TestCase):
         plan, _, new = PlanningTask._analyze_planning_comments(comments, BOT_NAME)
         self.assertEqual(plan, "Revised plan")
         self.assertEqual(new, [new_feedback])
+
+
+class TestSplitRevisionNote(unittest.TestCase):
+
+    def test_explicit_delimiter(self) -> None:
+        summary = f"# Plan\n\nStep 1\n\n{REVISION_NOTE_DELIMITER}\n\nClarified step 1."
+        plan, note = _split_revision_note(summary)
+        self.assertEqual(plan, "# Plan\n\nStep 1")
+        self.assertEqual(note, "Clarified step 1.")
+
+    def test_strips_trailing_horizontal_rule_before_delimiter(self) -> None:
+        summary = f"Plan body\n\n---\n\n{REVISION_NOTE_DELIMITER}\n\nNote."
+        plan, note = _split_revision_note(summary)
+        self.assertEqual(plan, "Plan body")
+        self.assertEqual(note, "Note.")
+
+    def test_fallback_to_revision_note_heading(self) -> None:
+        summary = "Plan body\n\n---\n\n**Revision note:** Adjusted scope."
+        plan, note = _split_revision_note(summary)
+        self.assertEqual(plan, "Plan body")
+        self.assertEqual(note, "Adjusted scope.")
+
+    def test_no_delimiter_returns_whole_summary_as_plan(self) -> None:
+        plan, note = _split_revision_note("Just a plan with no note.")
+        self.assertEqual(plan, "Just a plan with no note.")
+        self.assertEqual(note, "")
 
 
 if __name__ == "__main__":

@@ -15,6 +15,26 @@ logger = logging.getLogger(__name__)
 
 PLAN_MARKER_PREFIX = "<!-- loony-plan"
 PLAN_MARKER = "<!-- loony-plan -->"  # legacy fixed string; kept for backward compatibility
+REVISION_NOTE_DELIMITER = "<!-- loony-revision-note -->"
+
+
+def _split_revision_note(summary: str) -> tuple[str, str]:
+    """Split agent output into (plan, revision_note) on the revision-note delimiter.
+
+    Falls back to splitting on a trailing `**Revision note:**` heading if the explicit
+    delimiter is absent (older outputs). Returns ``(summary, "")`` if neither marker
+    is present.
+    """
+    if REVISION_NOTE_DELIMITER in summary:
+        plan, _, note = summary.partition(REVISION_NOTE_DELIMITER)
+    elif "**Revision note:**" in summary:
+        plan, _, note = summary.rpartition("**Revision note:**")
+    else:
+        return summary.strip(), ""
+    plan = plan.rstrip()
+    while plan.endswith("---"):
+        plan = plan[:-3].rstrip()
+    return plan.strip(), note.strip()
 
 
 class PlanningTask(Task):
@@ -147,10 +167,12 @@ class PlanningTask(Task):
             f"{self.issue.body}\n\n"
             f"## Current Plan\n\n{self.existing_plan}\n\n"
             f"## User Feedback\n\n{feedback}\n\n"
-            f"Output the updated plan in well-structured markdown, then end with:\n\n"
-            f"---\n\n"
-            f"**Revision note:** A short (2-4 sentence) summary of what changed in this revision "
-            f"and any questions or pushback you have about the feedback.\n\n"
+            f"Output the updated plan in well-structured markdown. Then on a new line emit "
+            f"the literal delimiter `{REVISION_NOTE_DELIMITER}` (exactly, on its own line), "
+            f"followed by a short (2-4 sentence) revision note summarising what changed in this "
+            f"revision and any questions or pushback you have about the feedback. The plan must "
+            f"come before the delimiter and the revision note after it; do not include the "
+            f"delimiter anywhere else.\n\n"
             f"Do NOT implement anything — planning only."
         )
 
@@ -168,9 +190,12 @@ class PlanningTask(Task):
         )
         last_seen_ts = max((c.created_at for c in self.new_comments), default="")
         marker = encode_marker(PLAN_MARKER_PREFIX, last_seen_ts) if last_seen_ts else PLAN_MARKER
-        body = f"{marker}\n\n{result.summary}"
+        plan_text, revision_note = _split_revision_note(result.summary)
+        body = f"{marker}\n\n{plan_text}"
         if self.existing_plan_comment_id is not None:
             self.issue.edit_comment(self.existing_plan_comment_id, body)
+            if revision_note:
+                self.issue.add_comment(f"**Revision note:**\n\n{revision_note}")
         else:
             self.issue.add_comment(body)
 
