@@ -152,6 +152,24 @@ class TestSplitRevisionNote(unittest.TestCase):
         self.assertEqual(plan, "Just a plan with no note.")
         self.assertEqual(note, "")
 
+    def test_fallback_picks_last_trailing_heading(self) -> None:
+        summary = (
+            "Plan body\n\n**Revision note:** earlier mention in plan body\n\n"
+            "More plan content\n\n**Revision note:** Real trailing note."
+        )
+        plan, note = _split_revision_note(summary)
+        self.assertEqual(
+            plan,
+            "Plan body\n\n**Revision note:** earlier mention in plan body\n\nMore plan content",
+        )
+        self.assertEqual(note, "Real trailing note.")
+
+    def test_fallback_ignores_inline_revision_note_phrase(self) -> None:
+        summary = "Plan body mentions **Revision note:** inline but no trailing heading."
+        plan, note = _split_revision_note(summary)
+        self.assertEqual(plan, summary)
+        self.assertEqual(note, "")
+
 
 if __name__ == "__main__":
     unittest.main()

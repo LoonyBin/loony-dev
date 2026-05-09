@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
@@ -17,6 +18,14 @@ PLAN_MARKER_PREFIX = "<!-- loony-plan"
 PLAN_MARKER = "<!-- loony-plan -->"  # legacy fixed string; kept for backward compatibility
 REVISION_NOTE_DELIMITER = "<!-- loony-revision-note -->"
 
+# Matches a trailing `**Revision note:**` heading at the start of a line whose
+# content runs to end-of-string. Greedy `.*` ensures we anchor on the LAST such
+# heading, so an embedded `**Revision note:**` earlier in the plan body doesn't
+# truncate valid content.
+_REVISION_NOTE_FALLBACK_RE = re.compile(
+    r"(?s)\A(.*)(?:\n|\A)\*\*Revision note:\*\*\s*(.+?)\s*\Z"
+)
+
 
 def _split_revision_note(summary: str) -> tuple[str, str]:
     """Split agent output into (plan, revision_note) on the revision-note delimiter.
@@ -27,10 +36,11 @@ def _split_revision_note(summary: str) -> tuple[str, str]:
     """
     if REVISION_NOTE_DELIMITER in summary:
         plan, _, note = summary.partition(REVISION_NOTE_DELIMITER)
-    elif "**Revision note:**" in summary:
-        plan, _, note = summary.rpartition("**Revision note:**")
     else:
-        return summary.strip(), ""
+        match = _REVISION_NOTE_FALLBACK_RE.match(summary.strip())
+        if match is None:
+            return summary.strip(), ""
+        plan, note = match.group(1), match.group(2)
     plan = plan.rstrip()
     while plan.endswith("---"):
         plan = plan[:-3].rstrip()
@@ -191,6 +201,12 @@ class PlanningTask(Task):
         last_seen_ts = max((c.created_at for c in self.new_comments), default="")
         marker = encode_marker(PLAN_MARKER_PREFIX, last_seen_ts) if last_seen_ts else PLAN_MARKER
         plan_text, revision_note = _split_revision_note(result.summary)
+        if not plan_text.strip():
+            logger.warning(
+                "Issue #%d: parsed plan text is empty; preserving raw summary to avoid data loss",
+                self.issue.number,
+            )
+            plan_text = result.summary.strip()
         body = f"{marker}\n\n{plan_text}"
         if self.existing_plan_comment_id is not None:
             self.issue.edit_comment(self.existing_plan_comment_id, body)
