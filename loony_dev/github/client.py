@@ -121,3 +121,19 @@ class GitHubClient:
         if not output:
             return []
         return json.loads(output)
+
+    def gh_graphql(self, query: str, **variables: object) -> dict:
+        """Call ``gh api graphql`` with retry and parse JSON output.
+
+        Strings are passed as ``-f``, scalars (int/bool/float) as ``-F`` so the
+        gh CLI sends them with the correct GraphQL type.
+        """
+        cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
+        for key, value in variables.items():
+            flag = "-F" if isinstance(value, (int, float, bool)) else "-f"
+            cmd += [flag, f"{key}={value}"]
+        output = run_gh(*cmd, cwd=self.cwd)
+        if not output:
+            return {}
+        parsed = json.loads(output)
+        return parsed if isinstance(parsed, dict) else {}

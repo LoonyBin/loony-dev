@@ -25,6 +25,10 @@ class Comment:
         id: int | None = None,
         path: str | None = None,
         line: int | None = None,
+        kind: str = "issue",
+        html_url: str | None = None,
+        thread_id: str | None = None,
+        in_reply_to_id: int | None = None,
     ) -> None:
         self.author = author
         self.body = body if isinstance(body, Content) else Content(body)
@@ -32,6 +36,13 @@ class Comment:
         self.id = id
         self.path = path
         self.line = line
+        # kind: "issue" (conversation comment), "review_body" (review summary),
+        # or "inline" (inline review-thread comment).  Determines how Claude
+        # should reply and whether the thread is resolvable.
+        self.kind = kind
+        self.html_url = html_url
+        self.thread_id = thread_id
+        self.in_reply_to_id = in_reply_to_id
 
     # --- Class-level reads ---
 
@@ -46,53 +57,108 @@ class Comment:
         logger.debug("Comment.list_for_issue(#%d) returned %d comment(s)", number, len(comments))
         return comments
 
+    _INLINE_REVIEW_THREADS_QUERY = """\
+query($owner:String!, $repo:String!, $pr:Int!) {
+  repository(owner:$owner, name:$repo) {
+    pullRequest(number:$pr) {
+      reviewThreads(first:100) {
+        nodes {
+          id
+          isResolved
+          isOutdated
+          comments(first:50) {
+            nodes {
+              databaseId
+              author { login }
+              body
+              url
+              createdAt
+              path
+              line
+              replyTo { databaseId }
+              pullRequestReview { submittedAt }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
     @classmethod
     def list_inline_for_pr(cls, pr_number: int, *, repo: Repo) -> list[Comment]:
-        """Fetch inline review comments for a PR.
+        """Fetch inline review-thread comments for a PR via GraphQL.
 
-        Uses each comment's associated review ``submitted_at`` as the effective
-        ``created_at`` timestamp.
+        Uses the parent review's ``submittedAt`` as the effective ``created_at``
+        timestamp (REST's ``createdAt`` on an inline comment is the *drafted*
+        time, which silently dropped comments from the polling loop — see #78).
+        Each returned :class:`Comment` carries ``thread_id`` (GraphQL node ID,
+        used to resolve the thread) and ``in_reply_to_id`` (databaseId of the
+        top-level comment in the thread, used for REST reply endpoints).
         """
         import subprocess
 
+        owner, _, name = repo.name.partition("/")
         try:
-            data = repo.client.gh_api(f"pulls/{pr_number}/comments")
-            data_reviews = repo.client.gh_api(f"pulls/{pr_number}/reviews")
-            review_submitted_at: dict[int, str] = {}
-            if isinstance(data_reviews, list):
-                review_submitted_at = {
-                    r["id"]: r["submitted_at"]
-                    for r in data_reviews
-                    if r.get("submitted_at")
-                }
-            logger.debug(
-                "Comment.list_inline_for_pr(#%d) fetched %d review(s)",
-                pr_number, len(review_submitted_at),
+            response = repo.client.gh_graphql(
+                cls._INLINE_REVIEW_THREADS_QUERY,
+                owner=owner,
+                repo=name,
+                pr=pr_number,
             )
-            if isinstance(data, list):
-                comments = []
-                for c in data:
-                    author = c.get("user", {}).get("login", "")
-                    body_text = c.get("body", "")
-                    safe = (author == repo.bot_name)
-                    review_id = c.get("pull_request_review_id")
-                    effective_ts = (
-                        review_submitted_at.get(review_id)
-                        if review_id is not None
-                        else None
-                    ) or c.get("created_at", "")
-                    comments.append(Comment(
-                        author=author,
-                        body=Content(body_text, safe=safe),
-                        created_at=effective_ts,
-                        path=c.get("path"),
-                        line=c.get("line"),
-                    ))
-                logger.debug("Comment.list_inline_for_pr(#%d) returned %d comment(s)", pr_number, len(comments))
-                return comments
         except subprocess.CalledProcessError:
             logger.warning("Failed to fetch inline review comments for PR #%d", pr_number)
-        return []
+            return []
+
+        threads = (
+            response.get("data", {})
+            .get("repository", {})
+            .get("pullRequest", {})
+            .get("reviewThreads", {})
+            .get("nodes", [])
+        ) or []
+
+        comments: list[Comment] = []
+        for thread in threads:
+            thread_id = thread.get("id")
+            thread_comments = (thread.get("comments") or {}).get("nodes") or []
+            # The first comment in the thread is the top-level; replies carry
+            # in_reply_to pointing at its databaseId.
+            top_db_id: int | None = None
+            for node in thread_comments:
+                author = (node.get("author") or {}).get("login", "")
+                body_text = node.get("body", "")
+                safe = (author == repo.bot_name)
+                db_id = node.get("databaseId")
+                if top_db_id is None:
+                    top_db_id = db_id
+                reply_to = (node.get("replyTo") or {}).get("databaseId")
+                # Prefer the parent review's submittedAt; fall back to createdAt
+                # so we never lose a comment that hasn't been assigned to a
+                # published review yet.
+                review = node.get("pullRequestReview") or {}
+                effective_ts = review.get("submittedAt") or node.get("createdAt", "")
+                comments.append(Comment(
+                    author=author,
+                    body=Content(body_text, safe=safe),
+                    created_at=effective_ts,
+                    id=db_id,
+                    path=node.get("path"),
+                    line=node.get("line"),
+                    kind="inline",
+                    html_url=node.get("url"),
+                    thread_id=thread_id,
+                    in_reply_to_id=reply_to if reply_to is not None else (
+                        None if db_id == top_db_id else top_db_id
+                    ),
+                ))
+
+        logger.debug(
+            "Comment.list_inline_for_pr(#%d) returned %d comment(s) across %d thread(s)",
+            pr_number, len(comments), len(threads),
+        )
+        return comments
 
     @classmethod
     def _from_api(cls, data: dict, repo: Repo) -> Comment:
@@ -104,6 +170,8 @@ class Comment:
             body=Content(body_text, safe=safe),
             created_at=data.get("createdAt", ""),
             id=data.get("databaseId"),
+            kind="issue",
+            html_url=data.get("url"),
         )
 
     def __repr__(self) -> str:
