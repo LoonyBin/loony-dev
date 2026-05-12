@@ -97,6 +97,8 @@ class PullRequest(GitHubItem):
                     safe=(c.get("author", {}).get("login", "") == repo.bot_name),
                 ),
                 created_at=c.get("createdAt", ""),
+                kind="issue",
+                html_url=c.get("url"),
             )
             for c in data.get("comments", [])
         ]
@@ -108,6 +110,8 @@ class PullRequest(GitHubItem):
                     safe=(r.get("author", {}).get("login", "") == repo.bot_name),
                 ),
                 created_at=r.get("submittedAt", ""),
+                kind="review_body",
+                html_url=r.get("url"),
             )
             for r in data.get("reviews", [])
         ]

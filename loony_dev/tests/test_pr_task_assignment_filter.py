@@ -159,17 +159,27 @@ class TestPRReviewTaskFilter(unittest.TestCase):
 
     def _make_review_repo(self, assigned_to_bot: bool) -> MagicMock:
         repo, _ = _make_repo([_pr_data(assigned_to_bot=assigned_to_bot, mergeable="MERGEABLE")])
-        # Return inline comments from an authorized reviewer
-        repo.client.gh_api.return_value = [
-            {
-                "user": {"login": REVIEWER},
-                "body": "Fix this.",
-                "created_at": "2024-01-01T01:00:00Z",
-                "path": "foo.py",
-                "line": 10,
-                "pull_request_review_id": None,
-            }
-        ]
+        repo.name = "owner/repo"
+        # Return one inline review thread containing a single comment from an
+        # authorized reviewer.
+        repo.client.gh_graphql.return_value = {
+            "data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [{
+                "id": "thread0",
+                "isResolved": False,
+                "isOutdated": False,
+                "comments": {"nodes": [{
+                    "databaseId": 1000,
+                    "author": {"login": REVIEWER},
+                    "body": "Fix this.",
+                    "url": "https://github.com/owner/repo/pull/1#discussion_r1000",
+                    "createdAt": "2024-01-01T00:00:00Z",
+                    "path": "foo.py",
+                    "line": 10,
+                    "replyTo": None,
+                    "pullRequestReview": {"submittedAt": "2024-01-01T01:00:00Z"},
+                }]},
+            }]}}}},
+        }
         return repo
 
     def test_yields_assigned_pr_with_new_comments(self) -> None:

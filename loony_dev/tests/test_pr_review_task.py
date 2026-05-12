@@ -137,23 +137,48 @@ class TestDiscoverInlineOnly(unittest.TestCase):
         repo._tick_cache = {}
         repo.skip_ci_checks = set()
         repo._check_runs_cache = {}
+        repo.name = "owner/repo"
 
         prs = [PullRequest._from_api(d, repo) for d in pr_data]
         # Patch list_open to return our PRs
         repo._tick_cache["open_prs"] = prs
 
-        # Patch inline_comments via the client
-        repo.client.gh_api.return_value = [
-            {
-                "user": {"login": c.author},
-                "body": str(c.body),
-                "created_at": c.created_at,
-                "path": c.path,
-                "line": c.line,
-                "pull_request_review_id": None,
-            }
-            for c in inline_comments
-        ]
+        # Patch inline_comments via the GraphQL transport.  Each inline comment
+        # becomes its own thread (mirrors single-comment review submissions in
+        # the live API and keeps the fixture flat).
+        repo.client.gh_graphql.return_value = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "nodes": [
+                                {
+                                    "id": f"thread{i}",
+                                    "isResolved": False,
+                                    "isOutdated": False,
+                                    "comments": {"nodes": [{
+                                        "databaseId": 1000 + i,
+                                        "author": {"login": c.author},
+                                        "body": str(c.body),
+                                        "url": f"https://github.com/owner/repo/pull/1#discussion_r{1000+i}",
+                                        # createdAt is the *drafted* time in GraphQL
+                                        # (mirrors REST) -- we deliberately use a
+                                        # different value as submittedAt to lock
+                                        # down the #78 fix.
+                                        "createdAt": "2024-01-01T00:00:00Z",
+                                        "path": c.path,
+                                        "line": c.line,
+                                        "replyTo": None,
+                                        "pullRequestReview": {"submittedAt": c.created_at},
+                                    }]},
+                                }
+                                for i, c in enumerate(inline_comments)
+                            ],
+                        },
+                    },
+                },
+            },
+        }
         repo.is_authorized = MagicMock(return_value=True)
         return repo
 
