@@ -86,9 +86,23 @@ class GitHubItem:
         return Comment.list_for_issue(self.number, repo=self._repo)
 
     def _recent_bot_failure_comments(self, bot_name: str, n: int) -> list[Comment]:
-        """Return the last *n* bot-authored comments on this item."""
+        """Return the last *n* bot-authored failure comments on this item.
+
+        Only comments whose body starts with a failure marker (implementation
+        failure or CI failure) are considered; success and plan comments are
+        ignored so a recent success does not displace prior failures from the
+        repeated-failure window.
+        """
+        from loony_dev.tasks.base import CI_FAILURE_MARKER, FAILURE_MARKER_PREFIX
+
         all_comments = self.get_comments()
-        bot_comments = [c for c in all_comments if c.author == bot_name]
+        bot_comments = [
+            c for c in all_comments
+            if c.author == bot_name and (
+                str(c.body).startswith(FAILURE_MARKER_PREFIX)
+                or str(c.body).startswith(CI_FAILURE_MARKER)
+            )
+        ]
         return bot_comments[-n:]
 
     def check_and_post_failure(
