@@ -81,9 +81,10 @@ DEFER (valid but out of scope per the diff-scope test):
 - For inline review threads (kind=inline), do NOT resolve the thread
   yourself.
 
-For FIX verdicts on inline review threads, resolve the thread after the
-commit lands (the commit speaks for itself). For human-authored threads,
-err toward leaving resolution to the human.
+For FIX verdicts on bot-authored inline review threads, resolve the thread
+after the commit lands (the commit speaks for itself).
+Do NOT resolve human-authored inline review threads; leave those for the
+human reviewer.
 
 ## Replying and resolving
 
@@ -244,9 +245,14 @@ class PRReviewTask(Task):
     def describe(self) -> str:
         from loony_dev import config
 
-        allow_create_issues = bool(
-            config.settings.get("pr_review_allow_create_issues", True)
-        )
+        # The key is documented under [worker], which lands in
+        # config.settings as a nested dict — not a flat top-level key.
+        worker_cfg = config.settings.get("worker")
+        allow_create_issues = True
+        if isinstance(worker_cfg, dict):
+            allow_create_issues = bool(
+                worker_cfg.get("pr_review_allow_create_issues", True)
+            )
         repo = self.pr._repo
         owner = repo.owner
         repo_name = repo.name.split("/", 1)[1] if "/" in repo.name else repo.name

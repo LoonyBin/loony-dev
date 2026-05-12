@@ -63,7 +63,7 @@
 # repeated_failure_threshold = 2
 
 # When DEFERring a PR review comment that flags a pre-existing latent bug,
-# allow trixy to open a follow-up tracking issue with `gh issue create`.
+# allow the worker to open a follow-up tracking issue with `gh issue create`.
 # Set to false to require a human to file follow-ups.
 # pr_review_allow_create_issues = true
 
