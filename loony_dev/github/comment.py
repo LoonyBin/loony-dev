@@ -47,30 +47,22 @@ class Comment:
     # --- Class-level reads ---
 
     _ISSUE_COMMENTS_QUERY = """\
+fragment CommentFields on IssueComment {
+  databaseId
+  author { login }
+  body
+  url
+  createdAt
+}
+
 query($owner:String!, $repo:String!, $number:Int!) {
   repository(owner:$owner, name:$repo) {
     issueOrPullRequest(number:$number) {
       ... on Issue {
-        comments(first:100) {
-          nodes {
-            databaseId
-            author { login }
-            body
-            url
-            createdAt
-          }
-        }
+        comments(first:100) { nodes { ...CommentFields } }
       }
       ... on PullRequest {
-        comments(first:100) {
-          nodes {
-            databaseId
-            author { login }
-            body
-            url
-            createdAt
-          }
-        }
+        comments(first:100) { nodes { ...CommentFields } }
       }
     }
   }
