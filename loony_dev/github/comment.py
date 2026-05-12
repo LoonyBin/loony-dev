@@ -46,13 +46,60 @@ class Comment:
 
     # --- Class-level reads ---
 
+    _ISSUE_COMMENTS_QUERY = """\
+fragment CommentFields on IssueComment {
+  databaseId
+  author { login }
+  body
+  url
+  createdAt
+}
+
+query($owner:String!, $repo:String!, $number:Int!) {
+  repository(owner:$owner, name:$repo) {
+    issueOrPullRequest(number:$number) {
+      ... on Issue {
+        comments(first:100) { nodes { ...CommentFields } }
+      }
+      ... on PullRequest {
+        comments(first:100) { nodes { ...CommentFields } }
+      }
+    }
+  }
+}
+"""
+
     @classmethod
     def list_for_issue(cls, number: int, *, repo: Repo) -> list[Comment]:
-        """Get all comments on an issue, sorted by creation time."""
-        data = repo.client.gh_json("issue", "view", str(number), "--json", "comments")
-        if not isinstance(data, dict):
+        """Get all comments on an issue (or PR), sorted by creation time.
+
+        Uses GraphQL so each comment carries ``databaseId`` (the integer REST
+        ID needed to edit it via ``PATCH /repos/{owner}/{repo}/issues/comments/{id}``).
+        ``gh issue view --json comments`` only exposes the GraphQL node ID,
+        which the REST edit endpoint rejects — so the plan-comment-reuse path
+        silently fell through to posting a new comment.
+        """
+        import subprocess
+
+        owner, _, name = repo.name.partition("/")
+        try:
+            response = repo.client.gh_graphql(
+                cls._ISSUE_COMMENTS_QUERY,
+                owner=owner,
+                repo=name,
+                number=number,
+            )
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to fetch comments for #%d", number)
             return []
-        comments = [cls._from_api(c, repo) for c in data.get("comments", [])]
+
+        node = (
+            response.get("data", {})
+            .get("repository", {})
+            .get("issueOrPullRequest")
+        ) or {}
+        raw = (node.get("comments") or {}).get("nodes") or []
+        comments = [cls._from_api(c, repo) for c in raw]
         comments.sort(key=lambda c: c.created_at)
         logger.debug("Comment.list_for_issue(#%d) returned %d comment(s)", number, len(comments))
         return comments

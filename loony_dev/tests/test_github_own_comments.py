@@ -56,6 +56,88 @@ class TestCommentFromApi(unittest.TestCase):
         comment = Comment._from_api(data, repo)
         self.assertFalse(comment.body.is_safe)
 
+    def test_database_id_is_populated(self) -> None:
+        """Comment.id must carry the integer databaseId so REST edits work."""
+        repo = _make_repo()
+        data = {
+            "author": {"login": BOT_NAME},
+            "body": f"{PLAN_MARKER}\n\nThe plan.",
+            "createdAt": "2024-01-01T00:00:00Z",
+            "databaseId": 1234567890,
+            "url": "https://github.com/o/r/issues/1#issuecomment-1234567890",
+        }
+        comment = Comment._from_api(data, repo)
+        self.assertEqual(comment.id, 1234567890)
+
+
+class TestCommentListForIssue(unittest.TestCase):
+    """Comment.list_for_issue must round-trip databaseId end-to-end.
+
+    Regression for plan-comment-reuse silently falling back to posting a new
+    comment because ``gh issue view --json comments`` returned only the
+    GraphQL node ID, leaving ``Comment.id = None``.
+    """
+
+    def _graphql_response(self) -> dict:
+        return {
+            "data": {
+                "repository": {
+                    "issueOrPullRequest": {
+                        "comments": {
+                            "nodes": [
+                                {
+                                    "databaseId": 111,
+                                    "author": {"login": "alice"},
+                                    "body": "second",
+                                    "url": "https://github.com/o/r/issues/1#issuecomment-111",
+                                    "createdAt": "2024-01-02T00:00:00Z",
+                                },
+                                {
+                                    "databaseId": 222,
+                                    "author": {"login": BOT_NAME},
+                                    "body": f"{PLAN_MARKER}\n\nplan",
+                                    "url": "https://github.com/o/r/issues/1#issuecomment-222",
+                                    "createdAt": "2024-01-01T00:00:00Z",
+                                },
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+
+    def test_round_trips_database_id(self) -> None:
+        repo = _make_repo()
+        repo.name = "o/r"
+        repo.client = MagicMock()
+        repo.client.gh_graphql.return_value = self._graphql_response()
+
+        comments = Comment.list_for_issue(1, repo=repo)
+
+        self.assertEqual([c.id for c in comments], [222, 111])  # sorted by createdAt
+        self.assertEqual([c.author for c in comments], [BOT_NAME, "alice"])
+        self.assertTrue(comments[0].body.is_safe)
+        self.assertFalse(comments[1].body.is_safe)
+
+    def test_graphql_failure_returns_empty(self) -> None:
+        import subprocess
+        repo = _make_repo()
+        repo.name = "o/r"
+        repo.client = MagicMock()
+        repo.client.gh_graphql.side_effect = subprocess.CalledProcessError(1, "gh")
+
+        self.assertEqual(Comment.list_for_issue(1, repo=repo), [])
+
+    def test_missing_issue_returns_empty(self) -> None:
+        repo = _make_repo()
+        repo.name = "o/r"
+        repo.client = MagicMock()
+        repo.client.gh_graphql.return_value = {
+            "data": {"repository": {"issueOrPullRequest": None}}
+        }
+
+        self.assertEqual(Comment.list_for_issue(1, repo=repo), [])
+
 
 # ---------------------------------------------------------------------------
 # PullRequest._from_api
