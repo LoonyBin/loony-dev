@@ -69,6 +69,30 @@ class TestCommentFromApi(unittest.TestCase):
         comment = Comment._from_api(data, repo)
         self.assertEqual(comment.id, 1234567890)
 
+    def test_bot_author_gets_bot_suffix(self) -> None:
+        """GraphQL Bot authors should round-trip with the ``[bot]`` REST suffix.
+
+        Regression for #297: without the suffix, ``coderabbitai`` failed the
+        ``is_authorized`` check against ``allowed_users = ["coderabbitai[bot]"]``
+        and CodeRabbit-only review comments were silently skipped.
+        """
+        repo = _make_repo()
+        data = {
+            "author": {"__typename": "Bot", "login": "coderabbitai"},
+            "body": "hi",
+            "createdAt": "2024-01-01T00:00:00Z",
+        }
+        self.assertEqual(Comment._from_api(data, repo).author, "coderabbitai[bot]")
+
+    def test_user_author_keeps_plain_login(self) -> None:
+        repo = _make_repo()
+        data = {
+            "author": {"__typename": "User", "login": "alice"},
+            "body": "hi",
+            "createdAt": "2024-01-01T00:00:00Z",
+        }
+        self.assertEqual(Comment._from_api(data, repo).author, "alice")
+
 
 class TestCommentListForIssue(unittest.TestCase):
     """Comment.list_for_issue must round-trip databaseId end-to-end.
@@ -137,6 +161,93 @@ class TestCommentListForIssue(unittest.TestCase):
         }
 
         self.assertEqual(Comment.list_for_issue(1, repo=repo), [])
+
+    def test_bot_login_is_normalised(self) -> None:
+        """A GraphQL Bot author round-trips with the REST-form ``[bot]`` suffix."""
+        repo = _make_repo()
+        repo.name = "o/r"
+        repo.client = MagicMock()
+        repo.client.gh_graphql.return_value = {
+            "data": {
+                "repository": {
+                    "issueOrPullRequest": {
+                        "comments": {
+                            "nodes": [{
+                                "databaseId": 1,
+                                "author": {"__typename": "Bot", "login": "coderabbitai"},
+                                "body": "hi",
+                                "url": "u",
+                                "createdAt": "2024-01-01T00:00:00Z",
+                            }]
+                        }
+                    }
+                }
+            }
+        }
+
+        comments = Comment.list_for_issue(1, repo=repo)
+
+        self.assertEqual([c.author for c in comments], ["coderabbitai[bot]"])
+
+
+class TestCommentListInlineForPr(unittest.TestCase):
+    """Comment.list_inline_for_pr must normalise Bot author logins.
+
+    Regression for #297: ``coderabbitai`` (GraphQL form, no suffix) failed the
+    ``is_authorized`` check against ``allowed_users = ["coderabbitai[bot]"]``,
+    so bot-only PR reviews were silently skipped after the inline-comments
+    fetch switched from REST to GraphQL.
+    """
+
+    def _graphql_response(self, typename: str, login: str) -> dict:
+        return {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "nodes": [{
+                                "id": "t1",
+                                "isResolved": False,
+                                "isOutdated": False,
+                                "comments": {"nodes": [{
+                                    "databaseId": 1,
+                                    "author": {"__typename": typename, "login": login},
+                                    "body": "review me",
+                                    "url": "https://x/y/pull/1#discussion_r1",
+                                    "createdAt": "2024-01-01T00:00:00Z",
+                                    "path": "a.py",
+                                    "line": 1,
+                                    "replyTo": None,
+                                    "pullRequestReview": {"submittedAt": "2024-01-02T00:00:00Z"},
+                                }]},
+                            }]
+                        }
+                    }
+                }
+            }
+        }
+
+    def _make_repo(self) -> MagicMock:
+        repo = _make_repo()
+        repo.name = "o/r"
+        repo.client = MagicMock()
+        return repo
+
+    def test_bot_author_gets_bot_suffix(self) -> None:
+        repo = self._make_repo()
+        repo.client.gh_graphql.return_value = self._graphql_response("Bot", "coderabbitai")
+
+        comments = Comment.list_inline_for_pr(1, repo=repo)
+
+        self.assertEqual([c.author for c in comments], ["coderabbitai[bot]"])
+
+    def test_user_author_keeps_plain_login(self) -> None:
+        repo = self._make_repo()
+        repo.client.gh_graphql.return_value = self._graphql_response("User", "alice")
+
+        comments = Comment.list_inline_for_pr(1, repo=repo)
+
+        self.assertEqual([c.author for c in comments], ["alice"])
 
 
 # ---------------------------------------------------------------------------
