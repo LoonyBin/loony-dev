@@ -13,6 +13,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _author_login(author: dict | None) -> str:
+    """Extract a login from a GraphQL author node, appending ``[bot]`` for Bots.
+
+    GitHub's REST API renders a Bot actor's login with a trailing ``[bot]``
+    suffix (e.g. ``coderabbitai[bot]``); GraphQL's ``author { login }`` returns
+    just ``coderabbitai``. Operators configure ``allowed_users`` with the REST
+    form, so normalise here so the two halves can be compared directly.
+    """
+    if not author:
+        return ""
+    login = author.get("login", "")
+    if login and author.get("__typename") == "Bot":
+        return f"{login}[bot]"
+    return login
+
+
 class Comment:
     """A GitHub issue or PR comment."""
 
@@ -49,7 +65,7 @@ class Comment:
     _ISSUE_COMMENTS_QUERY = """\
 fragment CommentFields on IssueComment {
   databaseId
-  author { login }
+  author { __typename login }
   body
   url
   createdAt
@@ -116,7 +132,7 @@ query($owner:String!, $repo:String!, $pr:Int!) {
           comments(first:50) {
             nodes {
               databaseId
-              author { login }
+              author { __typename login }
               body
               url
               createdAt
@@ -174,7 +190,7 @@ query($owner:String!, $repo:String!, $pr:Int!) {
             # in_reply_to pointing at its databaseId.
             top_db_id: int | None = None
             for node in thread_comments:
-                author = (node.get("author") or {}).get("login", "")
+                author = _author_login(node.get("author"))
                 body_text = node.get("body", "")
                 safe = (author == repo.bot_name)
                 db_id = node.get("databaseId")
@@ -209,7 +225,7 @@ query($owner:String!, $repo:String!, $pr:Int!) {
 
     @classmethod
     def _from_api(cls, data: dict, repo: Repo) -> Comment:
-        author = data.get("author", {}).get("login", "")
+        author = _author_login(data.get("author"))
         body_text = data.get("body", "")
         safe = (author == repo.bot_name)
         return cls(
