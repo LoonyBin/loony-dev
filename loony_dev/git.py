@@ -268,8 +268,9 @@ class GitRepo:
             raise ValueError("branch must be non-empty")
         resolved_base = base if base is not None else self.default_branch
 
+        normalized_target = path.resolve()
         for info in self.list_worktrees():
-            if info.path == path and info.branch == branch:
+            if info.path.resolve() == normalized_target and info.branch == branch:
                 logger.debug("Worktree at %s already on %s; reusing", path, branch)
                 return path
 
