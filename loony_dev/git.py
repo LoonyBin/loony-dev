@@ -300,7 +300,8 @@ class GitRepo:
 
         Tolerates the path having been deleted manually or never having existed
         as a worktree — the prune step still runs so leftover administrative
-        entries are cleaned up.
+        entries are cleaned up. Any other ``git worktree remove`` failure is
+        raised so callers do not mask stale-lock or repo-state issues.
         """
         remove_proc = subprocess.run(
             ["git", "worktree", "remove", "--force", str(path)],
@@ -308,14 +309,11 @@ class GitRepo:
             capture_output=True,
             text=True,
         )
+        unknown_failure: str | None = None
         if remove_proc.returncode != 0:
             output = f"{remove_proc.stdout}\n{remove_proc.stderr}".lower()
             if not any(marker in output for marker in _MISSING_WORKTREE_MARKERS):
-                logger.debug(
-                    "git worktree remove failed for %s: %s",
-                    path,
-                    output.strip(),
-                )
+                unknown_failure = output.strip()
 
         subprocess.run(
             ["git", "worktree", "prune"],
@@ -324,3 +322,8 @@ class GitRepo:
             text=True,
             check=False,
         )
+
+        if unknown_failure is not None:
+            raise GitError(
+                f"git worktree remove failed for {path}: {unknown_failure}"
+            )

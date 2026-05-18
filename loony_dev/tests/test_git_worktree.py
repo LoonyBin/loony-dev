@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from loony_dev.git import GitRepo, WorktreeInfo
+from loony_dev.models import GitError
 
 
 def _proc(returncode: int, stdout: str = "", stderr: str = "") -> MagicMock:
@@ -267,12 +268,13 @@ class TestRemoveWorktree(unittest.TestCase):
         self.assertEqual(mock_run.call_count, 2)
         self.assertEqual(mock_run.call_args_list[1].args[0], ["git", "worktree", "prune"])
 
-    def test_tolerates_unknown_failure_and_still_prunes(self) -> None:
+    def test_raises_on_unknown_failure_but_still_prunes(self) -> None:
         with patch(
             "subprocess.run",
             side_effect=[_proc(1, stderr="some unexpected error"), _proc(0)],
         ) as mock_run:
-            self.repo.remove_worktree(Path("/repo/wt/x"))
+            with self.assertRaises(GitError):
+                self.repo.remove_worktree(Path("/repo/wt/x"))
 
         self.assertEqual(mock_run.call_count, 2)
         self.assertEqual(mock_run.call_args_list[1].args[0], ["git", "worktree", "prune"])
