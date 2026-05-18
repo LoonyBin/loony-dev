@@ -118,18 +118,43 @@ class TestCreateWorktree(unittest.TestCase):
 
     def test_invokes_worktree_add_with_default_base(self) -> None:
         with patch.object(self.repo, "list_worktrees", return_value=[]):
-            with patch("subprocess.run", return_value=_proc(0)) as mock_run:
+            with patch(
+                "subprocess.run",
+                side_effect=[_proc(1), _proc(0)],
+            ) as mock_run:
                 result = self.repo.create_worktree(
                     "issue-1/foo", Path("/repo/wt/issue-1")
                 )
 
         self.assertEqual(result, Path("/repo/wt/issue-1"))
-        mock_run.assert_called_once_with(
+        self.assertEqual(mock_run.call_count, 2)
+        show_ref_call, add_call = mock_run.call_args_list
+        self.assertEqual(
+            show_ref_call.args[0],
+            ["git", "show-ref", "--verify", "--quiet", "refs/heads/issue-1/foo"],
+        )
+        self.assertEqual(
+            add_call.args[0],
             ["git", "worktree", "add", "-B", "issue-1/foo", "/repo/wt/issue-1", "main"],
-            cwd=Path("/repo"),
-            capture_output=True,
-            text=True,
-            check=True,
+        )
+        self.assertEqual(add_call.kwargs["cwd"], Path("/repo"))
+        self.assertTrue(add_call.kwargs["check"])
+
+    def test_uses_existing_branch_as_start_ref_when_present(self) -> None:
+        with patch.object(self.repo, "list_worktrees", return_value=[]):
+            with patch(
+                "subprocess.run",
+                side_effect=[_proc(0), _proc(0)],
+            ) as mock_run:
+                self.repo.create_worktree(
+                    "issue-1/foo", Path("/repo/wt/issue-1")
+                )
+
+        self.assertEqual(mock_run.call_count, 2)
+        add_call = mock_run.call_args_list[1]
+        self.assertEqual(
+            add_call.args[0],
+            ["git", "worktree", "add", "-B", "issue-1/foo", "/repo/wt/issue-1", "issue-1/foo"],
         )
 
     def test_explicit_base_is_passed_through(self) -> None:
@@ -174,11 +199,14 @@ class TestCreateWorktree(unittest.TestCase):
             head="abc123",
         )
         with patch.object(self.repo, "list_worktrees", return_value=[existing]):
-            with patch("subprocess.run", return_value=_proc(0)) as mock_run:
+            with patch(
+                "subprocess.run",
+                side_effect=[_proc(1), _proc(0)],
+            ) as mock_run:
                 self.repo.create_worktree(
                     "issue-1/foo", Path("/repo/wt/issue-1")
                 )
-        mock_run.assert_called_once()
+        self.assertEqual(mock_run.call_count, 2)
         self.assertEqual(mock_run.call_args.args[0][:4], ["git", "worktree", "add", "-B"])
 
     def test_empty_branch_rejected(self) -> None:
@@ -189,11 +217,14 @@ class TestCreateWorktree(unittest.TestCase):
         with patch.object(self.repo, "list_worktrees", return_value=[]):
             with patch(
                 "subprocess.run",
-                side_effect=subprocess.CalledProcessError(
-                    returncode=128,
-                    cmd=["git", "worktree", "add"],
-                    stderr="fatal: target path already exists",
-                ),
+                side_effect=[
+                    _proc(1),
+                    subprocess.CalledProcessError(
+                        returncode=128,
+                        cmd=["git", "worktree", "add"],
+                        stderr="fatal: target path already exists",
+                    ),
+                ],
             ):
                 with self.assertRaises(subprocess.CalledProcessError):
                     self.repo.create_worktree(

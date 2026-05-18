@@ -260,13 +260,14 @@ class GitRepo:
     def create_worktree(self, branch: str, path: Path, base: str | None = None) -> Path:
         """Create a worktree at ``path`` checked out on ``branch`` based on ``base``.
 
-        Runs ``git worktree add -B <branch> <path> <base>``. If a worktree
-        already exists at ``path`` on the requested branch, returns immediately
-        without touching it.
+        Runs ``git worktree add -B <branch> <path> <start-ref>``. ``start-ref``
+        is ``base`` when given; otherwise it is the existing local branch (to
+        preserve its history) and falls back to ``default_branch`` when no such
+        branch exists yet. If a worktree already exists at ``path`` on the
+        requested branch, returns immediately without touching it.
         """
         if not branch.strip():
             raise ValueError("branch must be non-empty")
-        resolved_base = base if base is not None else self.default_branch
 
         normalized_target = path.resolve()
         for info in self.list_worktrees():
@@ -274,8 +275,19 @@ class GitRepo:
                 logger.debug("Worktree at %s already on %s; reusing", path, branch)
                 return path
 
+        if base is not None:
+            start_ref = base
+        else:
+            existing = subprocess.run(
+                ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+                cwd=self.work_dir,
+                capture_output=True,
+                text=True,
+            )
+            start_ref = branch if existing.returncode == 0 else self.default_branch
+
         subprocess.run(
-            ["git", "worktree", "add", "-B", branch, str(path), resolved_base],
+            ["git", "worktree", "add", "-B", branch, str(path), start_ref],
             cwd=self.work_dir,
             capture_output=True,
             text=True,
