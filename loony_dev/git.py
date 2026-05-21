@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from loony_dev.models import GitError, HookFailureError
@@ -9,6 +10,25 @@ from loony_dev.models import GitError, HookFailureError
 logger = logging.getLogger(__name__)
 
 _HOOK_KEYWORDS = ("pre-commit", "pre-push", "commit-msg", "hook failed", "hook exited", "hook script")
+
+_MISSING_WORKTREE_MARKERS = (
+    "is not a working tree",
+    "not a working tree",
+    "no such file or directory",
+    "does not exist",
+    "is not a valid path",
+)
+
+
+@dataclass(frozen=True)
+class WorktreeInfo:
+    """A single entry from ``git worktree list --porcelain``."""
+
+    path: Path
+    branch: str | None
+    head: str | None
+    detached: bool = False
+    bare: bool = False
 
 
 class GitRepo:
@@ -189,3 +209,121 @@ class GitRepo:
     def current_branch(self) -> str:
         result = self._run("rev-parse", "--abbrev-ref", "HEAD")
         return result.stdout.strip()
+
+    def list_worktrees(self) -> list[WorktreeInfo]:
+        """Parse ``git worktree list --porcelain`` into structured records."""
+        result = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=self.work_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        worktrees: list[WorktreeInfo] = []
+        current: dict[str, object] = {}
+
+        def flush() -> None:
+            if not current.get("path"):
+                return
+            branch = current.get("branch")
+            if isinstance(branch, str) and branch.startswith("refs/heads/"):
+                branch = branch[len("refs/heads/"):]
+            worktrees.append(
+                WorktreeInfo(
+                    path=Path(str(current["path"])),
+                    branch=branch if isinstance(branch, str) else None,
+                    head=str(current["head"]) if current.get("head") else None,
+                    detached=bool(current.get("detached", False)),
+                    bare=bool(current.get("bare", False)),
+                )
+            )
+
+        for raw_line in result.stdout.splitlines():
+            line = raw_line.rstrip()
+            if not line:
+                flush()
+                current = {}
+                continue
+            if line.startswith("worktree "):
+                current["path"] = line[len("worktree "):]
+            elif line.startswith("HEAD "):
+                current["head"] = line[len("HEAD "):]
+            elif line.startswith("branch "):
+                current["branch"] = line[len("branch "):]
+            elif line == "detached":
+                current["detached"] = True
+            elif line == "bare":
+                current["bare"] = True
+        flush()
+        return worktrees
+
+    def create_worktree(self, branch: str, path: Path, base: str | None = None) -> Path:
+        """Create a worktree at ``path`` checked out on ``branch`` based on ``base``.
+
+        Runs ``git worktree add -B <branch> <path> <start-ref>``. ``start-ref``
+        is ``base`` when given; otherwise it is the existing local branch (to
+        preserve its history) and falls back to ``default_branch`` when no such
+        branch exists yet. If a worktree already exists at ``path`` on the
+        requested branch, returns immediately without touching it.
+        """
+        if not branch.strip():
+            raise ValueError("branch must be non-empty")
+
+        normalized_target = path.resolve()
+        for info in self.list_worktrees():
+            if info.path.resolve() == normalized_target and info.branch == branch:
+                logger.debug("Worktree at %s already on %s; reusing", path, branch)
+                return path
+
+        if base is not None:
+            start_ref = base
+        else:
+            existing = subprocess.run(
+                ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+                cwd=self.work_dir,
+                capture_output=True,
+                text=True,
+            )
+            start_ref = branch if existing.returncode == 0 else self.default_branch
+
+        subprocess.run(
+            ["git", "worktree", "add", "-B", branch, str(path), start_ref],
+            cwd=self.work_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return path
+
+    def remove_worktree(self, path: Path) -> None:
+        """Remove the worktree at ``path`` and prune stale metadata.
+
+        Tolerates the path having been deleted manually or never having existed
+        as a worktree — the prune step still runs so leftover administrative
+        entries are cleaned up. Any other ``git worktree remove`` failure is
+        raised so callers do not mask stale-lock or repo-state issues.
+        """
+        remove_proc = subprocess.run(
+            ["git", "worktree", "remove", "--force", str(path)],
+            cwd=self.work_dir,
+            capture_output=True,
+            text=True,
+        )
+        unknown_failure: str | None = None
+        if remove_proc.returncode != 0:
+            output = f"{remove_proc.stdout}\n{remove_proc.stderr}".lower()
+            if not any(marker in output for marker in _MISSING_WORKTREE_MARKERS):
+                unknown_failure = output.strip()
+
+        subprocess.run(
+            ["git", "worktree", "prune"],
+            cwd=self.work_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if unknown_failure is not None:
+            raise GitError(
+                f"git worktree remove failed for {path}: {unknown_failure}"
+            )
