@@ -143,14 +143,22 @@ class TestCommentListForIssue(unittest.TestCase):
         self.assertTrue(comments[0].body.is_safe)
         self.assertFalse(comments[1].body.is_safe)
 
-    def test_graphql_failure_returns_empty(self) -> None:
+    def test_graphql_failure_raises(self) -> None:
+        """A failed fetch must raise — never be mistaken for "no comments".
+
+        Regression for duplicate plans: a transient ``gh`` error was swallowed
+        into ``[]``, so ``PlanningTask`` saw no existing plan and re-posted one
+        on a dormant issue. The error must propagate so the tick is skipped.
+        """
         import subprocess
+        from loony_dev.github.comment import CommentFetchError
         repo = _make_repo()
         repo.name = "o/r"
         repo.client = MagicMock()
         repo.client.gh_graphql.side_effect = subprocess.CalledProcessError(1, "gh")
 
-        self.assertEqual(Comment.list_for_issue(1, repo=repo), [])
+        with self.assertRaises(CommentFetchError):
+            Comment.list_for_issue(1, repo=repo)
 
     def test_missing_issue_returns_empty(self) -> None:
         repo = _make_repo()

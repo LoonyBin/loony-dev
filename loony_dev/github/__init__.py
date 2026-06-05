@@ -13,7 +13,7 @@ Usage::
 """
 from loony_dev.github.check_run import CheckRun
 from loony_dev.github.client import GitHubClient
-from loony_dev.github.comment import Comment, WarningComment
+from loony_dev.github.comment import Comment, CommentFetchError, WarningComment
 from loony_dev.github.content import Content, ValidationResult
 from loony_dev.github.issue import GitHubItem, Issue
 from loony_dev.github.pull_request import PullRequest
@@ -22,6 +22,7 @@ from loony_dev.github.repo import Repo
 __all__ = [
     "CheckRun",
     "Comment",
+    "CommentFetchError",
     "Content",
     "GitHubClient",
     "GitHubItem",
