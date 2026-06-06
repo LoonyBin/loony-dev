@@ -257,6 +257,16 @@ class TestCommentListInlineForPr(unittest.TestCase):
 
         self.assertEqual([c.author for c in comments], ["alice"])
 
+    def test_graphql_failure_raises(self) -> None:
+        """A failed inline fetch must raise, not be read as "no review comments"."""
+        import subprocess
+        from loony_dev.github.comment import CommentFetchError
+        repo = self._make_repo()
+        repo.client.gh_graphql.side_effect = subprocess.CalledProcessError(1, "gh")
+
+        with self.assertRaises(CommentFetchError):
+            Comment.list_inline_for_pr(1, repo=repo)
+
 
 # ---------------------------------------------------------------------------
 # PullRequest._from_api

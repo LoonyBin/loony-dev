@@ -185,9 +185,14 @@ query($owner:String!, $repo:String!, $pr:Int!) {
                 repo=name,
                 pr=pr_number,
             )
-        except subprocess.CalledProcessError:
-            logger.warning("Failed to fetch inline review comments for PR #%d", pr_number)
-            return []
+        except subprocess.CalledProcessError as exc:
+            detail = ((exc.stderr or "") + (exc.stdout or "")).strip()[:200]
+            logger.warning(
+                "Failed to fetch inline review comments for PR #%d: %s", pr_number, detail
+            )
+            raise CommentFetchError(
+                f"Failed to fetch inline review comments for PR #{pr_number}"
+            ) from exc
 
         threads = (
             response.get("data", {})
