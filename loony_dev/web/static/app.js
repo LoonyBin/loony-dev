@@ -69,6 +69,65 @@ function renderSession(s) {
   return tr;
 }
 
+function formatAge(seconds) {
+  const s = Math.max(0, Math.floor(Number(seconds) || 0));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+async function killProcess(pid) {
+  if (!window.confirm(`Send SIGTERM to PID ${pid}? It will be SIGKILLed if it does not exit.`)) {
+    return;
+  }
+  try {
+    const resp = await fetch(`/api/processes/${pid}/kill`, { method: "POST" });
+    if (!resp.ok) {
+      const detail = await resp.text();
+      throw new Error(`${resp.status}: ${detail}`);
+    }
+  } catch (err) {
+    window.alert(`Failed to kill PID ${pid}: ${err.message}`);
+  }
+  refresh();
+}
+
+function renderStuck(s) {
+  const tr = document.createElement("tr");
+  tr.appendChild(cell(s.worker_repo));
+  tr.appendChild(cell(s.task_key));
+  tr.appendChild(cell(s.pid));
+  const cmd = cell(s.cmdline);
+  cmd.className = "cmdline";
+  tr.appendChild(cmd);
+  tr.appendChild(cell(formatAge(s.age_seconds)));
+  tr.appendChild(cell(s.blocked_on));
+  const actionTd = document.createElement("td");
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "kill-btn";
+  btn.textContent = "Kill";
+  btn.addEventListener("click", () => killProcess(s.pid));
+  actionTd.appendChild(btn);
+  tr.appendChild(actionTd);
+  return tr;
+}
+
+function renderStuckSection(stuck) {
+  const banner = document.getElementById("stuck-banner");
+  const section = document.getElementById("stuck-section");
+  const has = stuck.length > 0;
+  banner.hidden = !has;
+  section.hidden = !has;
+  if (has) {
+    const noun = stuck.length === 1 ? "process" : "processes";
+    banner.textContent = `⚠ ${stuck.length} stuck ${noun} detected — a Claude descendant appears wedged.`;
+    setRows("stuck", stuck, renderStuck, "");
+  }
+}
+
 async function loadLog(repo) {
   const title = document.getElementById("log-title");
   const pre = document.getElementById("log");
@@ -84,11 +143,13 @@ async function loadLog(repo) {
 
 async function refresh() {
   try {
-    const [workers, worktrees, sessions] = await Promise.all([
+    const [workers, worktrees, sessions, stuck] = await Promise.all([
       getJSON("/api/workers"),
       getJSON("/api/worktrees"),
       getJSON("/api/sessions"),
+      getJSON("/api/stuck"),
     ]);
+    renderStuckSection(stuck);
     setRows("workers", workers, renderWorker, "No workers discovered.");
     setRows("worktrees", worktrees, renderWorktree, "No worktrees found.");
     setRows("sessions", sessions, renderSession, "No active sessions.");
