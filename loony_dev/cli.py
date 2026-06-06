@@ -163,10 +163,49 @@ def supervisor_cmd(**_) -> None:
 )
 def ui_cmd(**_) -> None:
     """Launch the terminal UI to monitor the supervisor and workers."""
+    click.echo("Note: 'loony-dev ui' (Textual TUI) will be superseded by 'loony-dev web'.")
     from loony_dev.tui import SupervisorApp
 
     app = SupervisorApp()
     app.run()
+
+
+@cli.command("web")
+@click.option(
+    "--base-dir", default=".", show_default=True,
+    help="Base directory for log/PID discovery (same default as supervisor)",
+)
+@click.option(
+    "--supervisor-log", default=None, type=click.Path(), metavar="PATH",
+    help="Path to supervisor log file (default: <base-dir>/.logs/supervisor.log)",
+)
+@click.option(
+    "--port", default=8765, show_default=True,
+    help="Port for the web dashboard (bound to 127.0.0.1 only).",
+)
+@click.option(
+    "--tail-lines", "tail_lines", default=100, show_default=True,
+    help="Default number of log lines returned by the log-tail endpoint.",
+)
+def web_cmd(**_) -> None:
+    """Launch the read-only web dashboard to monitor the supervisor and workers.
+
+    The dashboard runs as a separate process from the supervisor and reads all
+    state from the on-disk file layout under <base-dir>/.logs. It binds to
+    127.0.0.1 only; tunnel in (e.g. SSH port-forward) to reach it remotely.
+    """
+    import uvicorn
+
+    from loony_dev.web import create_app
+
+    base_dir = config.settings.base_dir
+    supervisor_log = config.settings.supervisor_log
+    port = int(config.settings.get("port", 8765))
+    tail_lines = int(config.settings.get("tail_lines", 100))
+
+    app = create_app(base_dir=base_dir, supervisor_log=supervisor_log, tail_lines=tail_lines)
+    click.echo(f"Serving loony-dev dashboard at http://127.0.0.1:{port} (base-dir: {base_dir})")
+    uvicorn.run(app, host="127.0.0.1", port=port)
 
 
 # Keep 'main' as an alias so existing scripts that imported it continue to work.
