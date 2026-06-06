@@ -218,6 +218,7 @@ __marimo__/
 # Temp files
 tmp/
 .claude/*.local.*
+.claude/*.lock
 
 # Worker clones created by the supervisor in dev/dog-fooding mode
 workspace/
