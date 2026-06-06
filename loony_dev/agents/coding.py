@@ -89,19 +89,8 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         session_id = self._session_id_for(task)
         branch = task.branch_name
 
-        # Prepare the worktree: checkout branch if it exists, create it if not.
-        try:
-            git.checkout_or_create_branch(branch)
-        except Exception as exc:
-            logger.error(
-                "Issue #%d: failed to prepare branch '%s': %s",
-                task.issue.number, branch, exc,
-            )
-            return TaskResult(
-                success=False,
-                output=str(exc),
-                summary=f"failed to prepare branch '{branch}': {exc}",
-            )
+        # The worktree handed to us by the orchestrator is already checked out
+        # on `branch` (git worktree add -B), so no branch preparation is needed.
         logger.info("Issue #%d: working on branch '%s'", task.issue.number, branch)
 
         # If the branch has no prior commits the session carries stale context
