@@ -82,6 +82,170 @@ async function loadLog(repo) {
   }
 }
 
+// --- Skills & Commands editor -------------------------------------------
+// Not part of the 5s poll: editing UI must never auto-clobber the textarea.
+// The list refreshes only on explicit actions / scope changes.
+
+let knownRepos = [];      // ["owner/repo", ...] from the latest worktrees/workers fetch
+let selectedEntry = null; // currently-loaded entry name
+
+function entryEls() {
+  return {
+    kind: document.getElementById("entry-kind"),
+    scope: document.getElementById("entry-scope"),
+    repoLabel: document.getElementById("entry-repo-label"),
+    repo: document.getElementById("entry-repo"),
+    name: document.getElementById("entry-name"),
+    content: document.getElementById("entry-content"),
+    error: document.getElementById("entry-error"),
+  };
+}
+
+function entryScopeParams() {
+  const { scope, repo } = entryEls();
+  const params = new URLSearchParams();
+  if (scope.value === "repo") {
+    const [owner, name] = (repo.value || "").split("/");
+    params.set("scope", "repo");
+    if (owner) params.set("owner", owner);
+    if (name) params.set("repo", name);
+  } else {
+    params.set("scope", "global");
+  }
+  return params;
+}
+
+function showEntryError(msg) {
+  entryEls().error.textContent = msg || "";
+}
+
+async function apiText(url, opts) {
+  const resp = await fetch(url, opts);
+  if (!resp.ok) {
+    let detail = `${resp.status}`;
+    try { detail = (await resp.json()).detail || detail; } catch (_) { /* no body */ }
+    throw new Error(detail);
+  }
+  return resp;
+}
+
+function updateRepoPicker() {
+  const { scope, repoLabel, repo } = entryEls();
+  const isRepo = scope.value === "repo";
+  repoLabel.style.display = isRepo ? "" : "none";
+  if (!isRepo) return;
+  const prev = repo.value;
+  repo.innerHTML = "";
+  for (const r of knownRepos) {
+    const opt = document.createElement("option");
+    opt.value = r;
+    opt.textContent = r;
+    repo.appendChild(opt);
+  }
+  if (knownRepos.includes(prev)) repo.value = prev;
+}
+
+async function refreshEntries() {
+  const { kind, scope, content } = entryEls();
+  showEntryError("");
+  const tbody = document.querySelector("#entries-list tbody");
+  if (scope.value === "repo" && !entryScopeParams().get("repo")) {
+    setRows("entries-list", [], () => {}, "Select a repo.");
+    return;
+  }
+  try {
+    const params = entryScopeParams();
+    const rows = await getJSON(`/api/${kind.value}?${params}`);
+    setRows("entries-list", rows, renderEntry, "No entries installed.");
+  } catch (err) {
+    setRows("entries-list", [], () => {}, "Failed to load entries.");
+    showEntryError(`Failed to list: ${err.message}`);
+  }
+}
+
+function renderEntry(e) {
+  const tr = document.createElement("tr");
+  tr.className = "entry-row";
+  if (e.name === selectedEntry) tr.classList.add("selected");
+  tr.appendChild(cell(e.name));
+  tr.appendChild(cell(e.size));
+  tr.appendChild(cell(e.modified_at));
+  tr.addEventListener("click", () => loadEntry(e.name));
+  return tr;
+}
+
+async function loadEntry(name) {
+  const { kind, name: nameInput, content } = entryEls();
+  showEntryError("");
+  try {
+    const params = entryScopeParams();
+    const data = await getJSON(`/api/${kind.value}/${encodeURIComponent(name)}?${params}`);
+    nameInput.value = data.name;
+    content.value = data.content;
+    selectedEntry = data.name;
+    refreshEntries();
+  } catch (err) {
+    showEntryError(`Failed to load: ${err.message}`);
+  }
+}
+
+async function saveEntry() {
+  const { kind, name, content } = entryEls();
+  const entryName = (name.value || "").trim();
+  showEntryError("");
+  if (!entryName) { showEntryError("Name is required."); return; }
+  try {
+    const params = entryScopeParams();
+    await apiText(`/api/${kind.value}/${encodeURIComponent(entryName)}?${params}`, {
+      method: "PUT",
+      headers: { "Content-Type": "text/markdown" },
+      body: content.value,
+    });
+    selectedEntry = entryName;
+    await refreshEntries();
+  } catch (err) {
+    showEntryError(`Failed to save: ${err.message}`);
+  }
+}
+
+async function deleteEntry() {
+  const { kind, name, content } = entryEls();
+  const entryName = (name.value || "").trim();
+  showEntryError("");
+  if (!entryName) { showEntryError("Name is required."); return; }
+  try {
+    const params = entryScopeParams();
+    await apiText(`/api/${kind.value}/${encodeURIComponent(entryName)}?${params}`, { method: "DELETE" });
+    name.value = "";
+    content.value = "";
+    selectedEntry = null;
+    await refreshEntries();
+  } catch (err) {
+    showEntryError(`Failed to delete: ${err.message}`);
+  }
+}
+
+function newEntry() {
+  const { name, content } = entryEls();
+  name.value = "";
+  content.value = "";
+  selectedEntry = null;
+  showEntryError("");
+  refreshEntries();
+}
+
+function initEntryEditor() {
+  const els = entryEls();
+  els.kind.addEventListener("change", () => { newEntry(); });
+  els.scope.addEventListener("change", () => { updateRepoPicker(); newEntry(); });
+  els.repo.addEventListener("change", () => { newEntry(); });
+  document.getElementById("entry-save").addEventListener("click", saveEntry);
+  document.getElementById("entry-delete").addEventListener("click", deleteEntry);
+  document.getElementById("entry-new").addEventListener("click", newEntry);
+  updateRepoPicker();
+  refreshEntries();
+}
+
 async function refresh() {
   try {
     const [workers, worktrees, sessions] = await Promise.all([
@@ -92,10 +256,19 @@ async function refresh() {
     setRows("workers", workers, renderWorker, "No workers discovered.");
     setRows("worktrees", worktrees, renderWorktree, "No worktrees found.");
     setRows("sessions", sessions, renderSession, "No active sessions.");
+
+    // Keep the per-repo picker in sync with discovered repos (cheap, no clobber).
+    const repos = new Set([...workers.map((w) => w.repo), ...worktrees.map((w) => w.repo)]);
+    const next = [...repos].sort();
+    if (next.join("\n") !== knownRepos.join("\n")) {
+      knownRepos = next;
+      updateRepoPicker();
+    }
   } catch (err) {
     console.error("dashboard refresh failed", err);
   }
 }
 
+initEntryEditor();
 refresh();
 setInterval(refresh, 5000);

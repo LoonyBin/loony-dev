@@ -22,6 +22,19 @@
     pre#log { background: #0008; color: #eee; padding: 0.75rem; border-radius: 4px;
               max-height: 22rem; overflow: auto; font-size: 0.8rem; white-space: pre-wrap; }
     .muted { color: #888; font-size: 0.8rem; }
+    .controls { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-bottom: 0.5rem; }
+    .controls label { font-size: 0.85rem; }
+    .editor-grid { display: grid; grid-template-columns: minmax(12rem, 1fr) 2fr; gap: 1rem; align-items: start; }
+    #entries-list { max-height: 18rem; overflow: auto; }
+    #entries-list .entry-row { cursor: pointer; }
+    #entries-list .entry-row.selected td { background: #8882; }
+    .editor-pane textarea { width: 100%; min-height: 16rem; box-sizing: border-box;
+                            font-family: ui-monospace, monospace; font-size: 0.8rem; }
+    .editor-actions { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.5rem; }
+    .editor-actions input { flex: 1; font: inherit; padding: 0.2rem 0.4rem; }
+    #entry-error { color: #c62828; font-size: 0.85rem; min-height: 1.1em; }
+    button.action { font: inherit; padding: 0.25rem 0.75rem; cursor: pointer; }
+    @media (max-width: 720px) { .editor-grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -49,6 +62,45 @@
       <thead><tr><th>Session ID</th><th>Repo</th><th>Key</th></tr></thead>
       <tbody></tbody>
     </table>
+  </section>
+
+  <section>
+    <h2>Skills &amp; Commands</h2>
+    <div class="controls">
+      <label>Kind
+        <select id="entry-kind">
+          <option value="skills">Skills</option>
+          <option value="commands">Commands</option>
+        </select>
+      </label>
+      <label>Scope
+        <select id="entry-scope">
+          <option value="global">Global (~/.claude)</option>
+          <option value="repo">Per-repo</option>
+        </select>
+      </label>
+      <label id="entry-repo-label" style="display:none">Repo
+        <select id="entry-repo"></select>
+      </label>
+    </div>
+    <div class="editor-grid">
+      <div>
+        <table id="entries-list">
+          <thead><tr><th>Name</th><th>Size</th><th>Modified</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="editor-pane">
+        <textarea id="entry-content" placeholder="Paste or edit markdown (with frontmatter) here…"></textarea>
+        <div class="editor-actions">
+          <input id="entry-name" type="text" placeholder="entry-name (no slashes)" />
+          <button id="entry-save" class="action" type="button">Save</button>
+          <button id="entry-delete" class="action" type="button">Delete</button>
+          <button id="entry-new" class="action" type="button">New</button>
+        </div>
+        <div id="entry-error"></div>
+      </div>
+    </div>
   </section>
 
   <section>

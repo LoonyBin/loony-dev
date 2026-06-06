@@ -187,6 +187,10 @@ def ui_cmd(**_) -> None:
     "--tail-lines", "tail_lines", default=100, show_default=True,
     help="Default number of log lines returned by the log-tail endpoint.",
 )
+@click.option(
+    "--claude-home", "claude_home", default=None, type=click.Path(), metavar="PATH",
+    help="Global Claude config root for the skills/commands editor (default: ~/.claude).",
+)
 def web_cmd(**_) -> None:
     """Launch the read-only web dashboard to monitor the supervisor and workers.
 
@@ -202,8 +206,13 @@ def web_cmd(**_) -> None:
     supervisor_log = config.settings.supervisor_log
     port = int(config.settings.get("port", 8765))
     tail_lines = int(config.settings.get("tail_lines", 100))
+    claude_home_raw = config.settings.get("claude_home")
+    claude_home = Path(claude_home_raw) if claude_home_raw else None
 
-    app = create_app(base_dir=base_dir, supervisor_log=supervisor_log, tail_lines=tail_lines)
+    app = create_app(
+        base_dir=base_dir, supervisor_log=supervisor_log,
+        tail_lines=tail_lines, claude_home=claude_home,
+    )
     click.echo(f"Serving loony-dev dashboard at http://127.0.0.1:{port} (base-dir: {base_dir})")
     uvicorn.run(app, host="127.0.0.1", port=port)
 
