@@ -6,6 +6,8 @@ from loony_dev.agents.base import Agent
 from loony_dev.models import TaskResult
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from loony_dev.tasks.base import Task
 
 
@@ -21,5 +23,5 @@ class NullAgent(Agent):
     def can_handle(self, task: Task) -> bool:
         return task.task_type == "cleanup_stuck"
 
-    def execute(self, task: Task) -> TaskResult:
+    def execute(self, task: Task, work_dir: Path) -> TaskResult:
         return TaskResult(success=True, output="", summary="Cleanup task completed.")

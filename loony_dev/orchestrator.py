@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import signal
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loony_dev.tasks.ci_failure_task import CIFailureTask
@@ -51,6 +53,10 @@ class Orchestrator:
         self._graceful_shutdown: bool = False
         self._active_agent: Agent | None = None
         self._active_task: Task | None = None
+
+        repo_short_name = repo.name.split("/", 1)[1] if "/" in repo.name else repo.name
+        self.worktree_root = git.work_dir / ".worktrees" / repo.owner / repo_short_name
+        self._prune_stale_worktrees()
 
     def run(self) -> None:
         """Main polling loop."""
@@ -134,6 +140,7 @@ class Orchestrator:
         logger.debug("Task description:\n%s", task.describe())
         self._active_agent = agent
         self._active_task = task
+        worktree_path: Path | None = None
         try:
             task.on_start(self.repo)
             try:
@@ -141,6 +148,7 @@ class Orchestrator:
                 logger.debug("Uncommitted changes before sync: %s", self.git.has_uncommitted_changes())
             except Exception:
                 logger.debug("Could not read git state before sync", exc_info=True)
+            # Sync the base checkout so the ref the worktree forks from is current.
             self.git.ensure_main_up_to_date()
 
             target = task.target_branch
@@ -148,11 +156,26 @@ class Orchestrator:
                 logger.info("Resetting branch %r to upstream state before task.", target)
                 self.git.reset_branch_to_upstream(target)
 
+            # Each task runs in its own worktree so stray state never lands in
+            # the base checkout. Tasks with no worktree_key (e.g. cleanup) run
+            # against the base checkout directly.
+            work_dir = self.git.work_dir
+            key = task.worktree_key
+            if key is not None:
+                worktree_path = self.worktree_root / key
+                worktree_path.parent.mkdir(parents=True, exist_ok=True)
+                branch, base = self._worktree_branch_and_base(task, key, target)
+                logger.info(
+                    "Creating worktree for task at %s (branch=%s, base=%s)",
+                    worktree_path, branch, base,
+                )
+                self.git.create_worktree(branch=branch, path=worktree_path, base=base)
+                work_dir = worktree_path
+
             if isinstance(task, IssueTask) and isinstance(agent, CodingAgent):
-                result = agent.execute_issue(task)
+                result = agent.execute_issue(task, work_dir=work_dir)
             else:
-                result = agent.execute(task)
-            self._cleanup()
+                result = agent.execute(task, work_dir=work_dir)
             if result.success:
                 task.on_complete(self.repo, result)
             elif result.rate_limited:
@@ -160,21 +183,66 @@ class Orchestrator:
             else:
                 task.on_failure(self.repo, RuntimeError(result.summary))
         except Exception as e:
-            self._cleanup()
             task.on_failure(self.repo, e)
         finally:
+            self._remove_worktree(worktree_path)
             self._active_agent = None
             self._active_task = None
 
-    def _cleanup(self) -> None:
-        """Ensure working directory is clean and on the default branch."""
+    def _worktree_branch_and_base(
+        self, task: Task, key: str, target: str | None,
+    ) -> tuple[str, str | None]:
+        """Decide the branch and start-ref for a task's worktree.
+
+        A worktree maps 1:1 to a branch, and the base checkout is pinned to the
+        default branch, so no worktree may reuse the default branch directly.
+
+        - PR tasks operate on an existing branch (``target``); fork from it.
+        - IssueTask creates its feature branch from the default branch.
+        - Everything else (e.g. PlanningTask, which only reads code) forks a
+          throwaway branch named after ``key`` from the default branch. It is
+          never pushed and is discarded with the worktree.
+        """
+        if target:
+            return target, None
+        if isinstance(task, IssueTask):
+            return task.branch_name, self.git.default_branch
+        return key, self.git.default_branch
+
+    def _remove_worktree(self, path: Path | None) -> None:
+        """Remove the per-task worktree at *path*, if any. Never raises."""
+        if path is None:
+            return
         try:
-            if self.git.has_uncommitted_changes():
-                logger.warning("Uncommitted changes detected after task. Force committing.")
-                self.git.force_commit_and_push("chore: auto-commit uncommitted changes")
+            self.git.remove_worktree(path)
         except Exception:
-            logger.exception("Failed to clean up uncommitted changes")
+            logger.exception("Failed to remove worktree at %s", path)
+
+    def _prune_stale_worktrees(self) -> None:
+        """Remove worktrees left over from crashed or killed prior runs.
+
+        Runs at startup before the polling loop, when no tasks are active, so
+        any worktree under ``worktree_root`` is by definition orphaned.
+        """
         try:
-            self.git.checkout_main()
+            self.git._run("worktree", "prune")
         except Exception:
-            logger.exception("Failed to checkout default branch")
+            logger.debug("git worktree prune failed during startup sweep", exc_info=True)
+
+        root = self.worktree_root.resolve()
+        try:
+            for info in self.git.list_worktrees():
+                if info.bare:
+                    continue
+                try:
+                    under_root = info.path.resolve().is_relative_to(root)
+                except (OSError, ValueError):
+                    continue
+                if under_root:
+                    logger.info("Pruning stale worktree at %s", info.path)
+                    self._remove_worktree(info.path)
+        except Exception:
+            logger.exception("Failed to enumerate worktrees during startup sweep")
+
+        # Nuke any empty directories left behind once git metadata is pruned.
+        shutil.rmtree(self.worktree_root, ignore_errors=True)

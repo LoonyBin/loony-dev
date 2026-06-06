@@ -90,6 +90,10 @@ class IssueTask(Task):
         return f"issue-{self.issue.number}/{_slugify(self.issue.title)}"
 
     @property
+    def worktree_key(self) -> str:
+        return f"issue-{self.issue.number}"
+
+    @property
     def session_key(self) -> str:
         return f"issue:{self.issue.number}"
 

@@ -56,6 +56,10 @@ class ConflictResolutionTask(Task):
     def target_branch(self) -> str:
         return self.pr.branch
 
+    @property
+    def worktree_key(self) -> str:
+        return f"pr-{self.pr.number}-conflicts"
+
     def describe(self) -> str:
         return (
             f"Resolve merge conflicts on PR #{self.pr.number}: {self.pr.title}\n\n"

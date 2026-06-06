@@ -242,6 +242,10 @@ class PRReviewTask(Task):
     def target_branch(self) -> str:
         return self.pr.branch
 
+    @property
+    def worktree_key(self) -> str:
+        return f"pr-{self.pr.number}"
+
     def describe(self) -> str:
         from loony_dev import config
 

@@ -21,26 +21,25 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
 
     name = "coding"
 
-    def __init__(self, work_dir: Path, repo: str = "") -> None:
-        self.work_dir = work_dir
+    def __init__(self, repo: str = "") -> None:
         self.repo = repo
 
     def _can_handle_task(self, task: Task) -> bool:
         return task.task_type in ("implement_issue", "address_review", "resolve_conflicts", "fix_ci")
 
-    def execute(self, task: Task) -> TaskResult:
+    def execute(self, task: Task, work_dir: Path) -> TaskResult:
         prompt = task.describe()
         session_id = self._session_id_for(task)
         logger.debug(
             "Running Claude CLI (cwd=%s, session=%s): claude -p --dangerously-skip-permissions <prompt>",
-            self.work_dir, session_id,
+            work_dir, session_id,
         )
         logger.debug("Claude prompt: %s", truncate_for_log(prompt))
 
-        baseline_commit = self._get_head_commit()
+        baseline_commit = self._get_head_commit(work_dir)
 
         stdout, stderr, returncode = self._run_claude_cli(
-            prompt, cwd=self.work_dir, session_id=session_id,
+            prompt, cwd=work_dir, session_id=session_id,
         )
 
         logger.debug("Claude CLI exited with code %d", returncode)
@@ -61,11 +60,11 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                 rate_limited=is_quota,
             )
 
-        summary = self._generate_summary(stdout)
-        has_changes = self._has_code_changes(baseline_commit)
+        summary = self._generate_summary(stdout, work_dir)
+        has_changes = self._has_code_changes(baseline_commit, work_dir)
         return TaskResult(success=True, output=stdout, summary=summary, post_summary=has_changes)
 
-    def execute_issue(self, task: IssueTask) -> TaskResult:
+    def execute_issue(self, task: IssueTask, work_dir: Path) -> TaskResult:
         """Multi-phase execution for IssueTask with optional Coderabbit verification.
 
         Phases:
@@ -85,8 +84,8 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         max_commits = int(coderabbit_cfg.get("max_commit_retries", 3))
         cr_available = cr.is_available(config.settings)
 
-        default_branch = GitRepo.detect_default_branch(self.work_dir)
-        git = GitRepo(self.work_dir, default_branch=default_branch)
+        default_branch = GitRepo.detect_default_branch(work_dir)
+        git = GitRepo(work_dir, default_branch=default_branch)
         session_id = self._session_id_for(task)
         branch = task.branch_name
 
@@ -121,7 +120,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         logger.debug("Claude prompt: %s", truncate_for_log(implement_prompt))
 
         stdout, stderr, returncode = self._run_claude_cli(
-            implement_prompt, cwd=self.work_dir, session_id=run_session_id,
+            implement_prompt, cwd=work_dir, session_id=run_session_id,
         )
         logger.debug("Claude CLI exited with code %d", returncode)
         if stdout:
@@ -146,7 +145,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             logger.info("Issue #%d: phase 2 — Coderabbit review (max %d)", task.issue.number, max_review)
             for attempt in range(max_review):
                 try:
-                    cr_result = cr.run_review(self.work_dir)
+                    cr_result = cr.run_review(work_dir)
                 except cr.CodeRabbitError as exc:
                     logger.warning("Coderabbit review failed: %s", exc)
                     break
@@ -168,7 +167,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                 )
                 fix_stdout, fix_stderr, fix_rc = self._run_claude_cli(
                     task.fix_review_prompt(cr_result.agent_prompt),
-                    cwd=self.work_dir,
+                    cwd=work_dir,
                     session_id=run_session_id,
                 )
                 if fix_rc != 0:
@@ -187,7 +186,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
 
         # ── Phase 3: Commit message + commit+push loop ──────────────────────
         logger.info("Issue #%d: phase 3 — generating commit message", task.issue.number)
-        commit_msg = self._generate_commit_message(task)
+        commit_msg = self._generate_commit_message(task, work_dir)
         self._save_commit_message(commit_msg, task)
 
         logger.info("Issue #%d: committing to branch '%s' (max %d attempts)", task.issue.number, branch, max_commits)
@@ -214,7 +213,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                         "Issue #%d: commit message rejected (attempt %d/%d), regenerating",
                         task.issue.number, attempt + 1, max_commits,
                     )
-                    commit_msg = self._generate_commit_message(task)
+                    commit_msg = self._generate_commit_message(task, work_dir)
                     continue
                 logger.info(
                     "Issue #%d: hook failure (attempt %d/%d), asking Claude to fix",
@@ -222,7 +221,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                 )
                 hook_fix_stdout, hook_fix_stderr, hook_fix_rc = self._run_claude_cli(
                     task.fix_hook_prompt(hook_failed_output),
-                    cwd=self.work_dir,
+                    cwd=work_dir,
                     session_id=run_session_id,
                 )
                 if hook_fix_rc != 0:
@@ -238,11 +237,11 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                     )
                 if cr_available:
                     try:
-                        cr_result = cr.run_review(self.work_dir)
+                        cr_result = cr.run_review(work_dir)
                         if cr_result.has_issues:
                             cr_fix_stdout, cr_fix_stderr, cr_fix_rc = self._run_claude_cli(
                                 task.fix_review_prompt(cr_result.agent_prompt),
-                                cwd=self.work_dir,
+                                cwd=work_dir,
                                 session_id=run_session_id,
                             )
                             if cr_fix_rc != 0:
@@ -282,25 +281,25 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
 
         # ── Phase 4: Create PR ──────────────────────────────────────────────
         logger.info("Issue #%d: phase 4 — creating PR", task.issue.number)
-        self._create_pr(task, branch, default_branch)
+        self._create_pr(task, branch, default_branch, work_dir)
 
-        summary = self._generate_summary(stdout)
+        summary = self._generate_summary(stdout, work_dir)
         return TaskResult(success=True, output=stdout, summary=summary, post_summary=True)
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
-    def _create_pr(self, task: IssueTask, branch: str, default_branch: str) -> None:
+    def _create_pr(self, task: IssueTask, branch: str, default_branch: str, work_dir: Path) -> None:
         """Run gh pr create for the given branch."""
         wip_prefix = "[WIP] " if task.commit_exhausted else ""
         title = f"{wip_prefix}{task.issue.title} (#{task.issue.number})"
-        body = self._generate_pr_body(task, branch, default_branch)
+        body = self._generate_pr_body(task, branch, default_branch, work_dir)
 
         try:
             repo_name = subprocess.check_output(
                 ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
-                cwd=self.work_dir,
+                cwd=work_dir,
                 stderr=subprocess.DEVNULL,
             ).decode().strip()
         except Exception as exc:
@@ -312,7 +311,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             cmd += ["-R", repo_name]
 
         try:
-            result = subprocess.run(cmd, cwd=self.work_dir, capture_output=True, text=True, check=True)
+            result = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, check=True)
             logger.info("Created PR: %s", result.stdout.strip())
         except subprocess.CalledProcessError as exc:
             err_text = f"{exc.stdout or ''}\n{exc.stderr or ''}".lower()
@@ -322,7 +321,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                     view_cmd += ["-R", repo_name]
                 try:
                     existing_url = subprocess.check_output(
-                        view_cmd, cwd=self.work_dir, stderr=subprocess.DEVNULL,
+                        view_cmd, cwd=work_dir, stderr=subprocess.DEVNULL,
                     ).decode().strip()
                     logger.info("Issue #%d: PR already exists: %s", task.issue.number, existing_url)
                     return
@@ -336,12 +335,12 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             )
             raise
 
-    def _generate_pr_body(self, task: IssueTask, branch: str, default_branch: str) -> str:
+    def _generate_pr_body(self, task: IssueTask, branch: str, default_branch: str, work_dir: Path) -> str:
         """Ask Claude to write a PR body using the issue description and diff."""
         try:
             diff = subprocess.check_output(
                 ["git", "diff", f"{default_branch}...{branch}"],
-                cwd=self.work_dir,
+                cwd=work_dir,
                 stderr=subprocess.DEVNULL,
                 text=True,
             )
@@ -351,16 +350,16 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             return f"Closes #{task.issue.number}"
 
         stdout, _, returncode = self._invoke_claude(
-            task.pr_body_prompt(diff), cwd=self.work_dir,
+            task.pr_body_prompt(diff), cwd=work_dir,
         )
         if returncode == 0 and stdout.strip():
             return stdout.strip()
         return f"Closes #{task.issue.number}"
 
-    def _generate_commit_message(self, task: IssueTask) -> str:
+    def _generate_commit_message(self, task: IssueTask, work_dir: Path) -> str:
         """Ask Claude (no session) to produce a conventional commit message."""
         stdout, _, returncode = self._invoke_claude(
-            task.commit_message_prompt(), cwd=self.work_dir,
+            task.commit_message_prompt(), cwd=work_dir,
         )
         if returncode == 0 and stdout.strip():
             return _parse_commit_message(stdout)
@@ -382,24 +381,24 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         except Exception as exc:
             logger.debug("Could not save commit message: %s", exc)
 
-    def _get_head_commit(self) -> str | None:
+    def _get_head_commit(self, work_dir: Path) -> str | None:
         """Return the current HEAD commit hash, or None if git is unavailable."""
         try:
             return subprocess.check_output(
                 ["git", "rev-parse", "HEAD"],
-                cwd=self.work_dir,
+                cwd=work_dir,
                 stderr=subprocess.DEVNULL,
             ).decode().strip()
         except Exception:
             return None
 
-    def _has_code_changes(self, baseline_commit: str | None) -> bool:
+    def _has_code_changes(self, baseline_commit: str | None, work_dir: Path) -> bool:
         """Return True if commits were added or files are staged/modified since baseline."""
         try:
             # Check for uncommitted changes (staged or unstaged)
             result = subprocess.run(
                 ["git", "status", "--porcelain"],
-                cwd=self.work_dir,
+                cwd=work_dir,
                 capture_output=True,
                 text=True,
             )
@@ -410,7 +409,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             if baseline_commit:
                 current = subprocess.check_output(
                     ["git", "rev-parse", "HEAD"],
-                    cwd=self.work_dir,
+                    cwd=work_dir,
                     stderr=subprocess.DEVNULL,
                 ).decode().strip()
                 return current != baseline_commit
@@ -420,7 +419,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
 
         return True  # safe default: post summary if we can't determine
 
-    def _generate_summary(self, output: str) -> str:
+    def _generate_summary(self, output: str, work_dir: Path) -> str:
         """Use Claude to generate a brief summary of the work done."""
         summary_prompt = f"Summarize what was done in 2-3 sentences based on this output:\n\n{output[-3000:]}"
         logger.debug("Running summary Claude call")
@@ -429,7 +428,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         # session would corrupt the conversation history that planning and
         # future review rounds rely on.
         stdout, _, returncode = self._invoke_claude(
-            summary_prompt, cwd=self.work_dir,
+            summary_prompt, cwd=work_dir,
         )
         logger.debug("Summary Claude call exited with code %d", returncode)
         if stdout:

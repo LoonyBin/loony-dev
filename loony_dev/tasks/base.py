@@ -64,6 +64,17 @@ class Task(ABC):
         """The pre-existing branch this task will operate on, or None for tasks that create new branches."""
         return None
 
+    @property
+    def worktree_key(self) -> str | None:
+        """Stable filesystem-safe identifier for this task's worktree.
+
+        The orchestrator creates a dedicated git worktree at
+        ``<base>/.worktrees/<owner>/<repo>/<worktree_key>`` for tasks that
+        return a key. Return ``None`` if the task does not need a worktree
+        (e.g. cleanup tasks that do no code execution).
+        """
+        return None
+
     @abstractmethod
     def describe(self) -> str:
         """Human/agent-readable description of work to do."""

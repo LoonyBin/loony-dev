@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loony_dev.agents.base import Agent
@@ -9,6 +8,8 @@ from loony_dev.agents.claude_quota import ClaudeQuotaMixin
 from loony_dev.models import TaskResult, truncate_for_log
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from loony_dev.tasks.base import Task
 
 logger = logging.getLogger(__name__)
@@ -19,21 +20,20 @@ class PlanningAgent(ClaudeQuotaMixin, Agent):
 
     name = "planning"
 
-    def __init__(self, work_dir: Path, repo: str = "") -> None:
-        self.work_dir = work_dir
+    def __init__(self, repo: str = "") -> None:
         self.repo = repo
 
     def _can_handle_task(self, task: Task) -> bool:
         return task.task_type == "plan_issue"
 
-    def execute(self, task: Task) -> TaskResult:
+    def execute(self, task: Task, work_dir: Path) -> TaskResult:
         prompt = task.describe()
         session_id = self._session_id_for(task)
-        logger.debug("Running planning Claude CLI (cwd=%s, session=%s)", self.work_dir, session_id)
+        logger.debug("Running planning Claude CLI (cwd=%s, session=%s)", work_dir, session_id)
         logger.debug("Planning prompt: %s", truncate_for_log(prompt))
 
         stdout, stderr, returncode = self._run_claude_cli(
-            prompt, cwd=self.work_dir, session_id=session_id,
+            prompt, cwd=work_dir, session_id=session_id,
         )
 
         logger.debug("Planning Claude CLI exited with code %d", returncode)

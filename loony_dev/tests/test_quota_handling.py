@@ -189,7 +189,7 @@ class TestQuotaWorkerGracefulHandling(unittest.TestCase):
         from loony_dev.agents.coding import CodingAgent
         from loony_dev.models import TaskResult
 
-        agent = CodingAgent(work_dir=Path("/tmp"))
+        agent = CodingAgent()
         quota_stderr = "You've hit your limit · resets 7:30pm (Asia/Calcutta)"
         mock_proc = self._make_popen_mock(stdout="", stderr=quota_stderr, returncode=1)
 
@@ -199,7 +199,7 @@ class TestQuotaWorkerGracefulHandling(unittest.TestCase):
 
         with patch("subprocess.Popen", return_value=mock_proc), \
              patch("subprocess.check_output", return_value=b"abc123\n"):
-            result = agent.execute(mock_task)
+            result = agent.execute(mock_task, Path("/tmp"))
 
         self.assertIsInstance(result, TaskResult)
         self.assertFalse(result.success)
@@ -209,7 +209,7 @@ class TestQuotaWorkerGracefulHandling(unittest.TestCase):
         """After a quota error the agent must be disabled, not in an error state."""
         from loony_dev.agents.coding import CodingAgent
 
-        agent = CodingAgent(work_dir=Path("/tmp"))
+        agent = CodingAgent()
         mock_proc = self._make_popen_mock(
             stdout="rate limit exceeded",
             stderr="",
@@ -221,7 +221,7 @@ class TestQuotaWorkerGracefulHandling(unittest.TestCase):
 
         with patch("subprocess.Popen", return_value=mock_proc), \
              patch("subprocess.check_output", return_value=b"deadbeef\n"):
-            agent.execute(mock_task)
+            agent.execute(mock_task, Path("/tmp"))
 
         self.assertTrue(agent.is_disabled())
         self.assertFalse(agent.can_handle(mock_task))
