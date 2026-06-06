@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>loony-dev dashboard</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 1rem 1.5rem; line-height: 1.4; }
+    h1 { font-size: 1.3rem; margin: 0 0 1rem; }
+    h2 { font-size: 1rem; margin: 1.5rem 0 0.5rem; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+    th, td { text-align: left; padding: 0.3rem 0.6rem; border-bottom: 1px solid #8884; }
+    th { font-weight: 600; }
+    .status { font-weight: 600; }
+    .status-running { color: #2e7d32; }
+    .status-stale { color: #888; }
+    .status-unknown { color: #b58900; }
+    .repo-link { cursor: pointer; text-decoration: underline dotted; background: none;
+                 border: none; padding: 0; margin: 0; font: inherit; color: inherit; }
+    .empty { color: #888; font-style: italic; padding: 0.3rem 0.6rem; }
+    pre#log { background: #0008; color: #eee; padding: 0.75rem; border-radius: 4px;
+              max-height: 22rem; overflow: auto; font-size: 0.8rem; white-space: pre-wrap; }
+    .muted { color: #888; font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <h1>loony-dev dashboard</h1>
+
+  <section>
+    <h2>Workers</h2>
+    <table id="workers">
+      <thead><tr><th>Repo</th><th>PID</th><th>Status</th><th>Started (approx)</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Worktrees</h2>
+    <table id="worktrees">
+      <thead><tr><th>Repo</th><th>Branch</th><th>HEAD</th><th>Path</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Sessions</h2>
+    <table id="sessions">
+      <thead><tr><th>Session ID</th><th>Repo</th><th>Key</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Log <span id="log-title" class="muted"></span></h2>
+    <pre id="log">Click a worker repo to tail its log.</pre>
+  </section>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
