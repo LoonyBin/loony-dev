@@ -1,6 +1,7 @@
-"""Tests for the read-only web dashboard (issue #130)."""
+"""Tests for the read-only web dashboard (issues #130, #131)."""
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 import unittest
@@ -9,7 +10,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from loony_dev.web import create_app
-from loony_dev.web import services
+from loony_dev.web import services, streaming
 
 
 def _make_worker(base: Path, owner: str, repo: str, pid: int, log_lines: list[str]) -> None:
@@ -167,6 +168,200 @@ class WebAppTestCase(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)  # sanity: the happy path works
         bad = self.client.get("/api/logs/%2e%2e/etc/tail")
         self.assertIn(bad.status_code, (404, 422))
+
+
+async def _anext_with_timeout(gen, timeout=5.0):
+    return await asyncio.wait_for(gen.__anext__(), timeout=timeout)
+
+
+class AsyncLogWatcherTestCase(unittest.IsolatedAsyncioTestCase):
+    """Unit tests for the async log tailer (issue #131, A2)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.log = self.base / "worker.log"
+
+    async def test_backlog_then_new_lines(self) -> None:
+        self.log.write_text("one\ntwo\n")
+        gen = streaming.tail_lines(self.log, backlog=10, poll_interval=0.05)
+        try:
+            self.assertEqual(await _anext_with_timeout(gen), "one")
+            self.assertEqual(await _anext_with_timeout(gen), "two")
+            with self.log.open("a") as fh:
+                fh.write("three\n")
+                fh.flush()
+            self.assertEqual(await _anext_with_timeout(gen), "three")
+        finally:
+            await gen.aclose()
+
+    async def test_backlog_is_bounded(self) -> None:
+        self.log.write_text("".join(f"line{i}\n" for i in range(50)))
+        gen = streaming.tail_lines(self.log, backlog=3, poll_interval=0.05)
+        try:
+            got = [await _anext_with_timeout(gen) for _ in range(3)]
+            self.assertEqual(got, ["line47", "line48", "line49"])
+        finally:
+            await gen.aclose()
+
+    async def test_file_appears_late(self) -> None:
+        gen = streaming.tail_lines(self.log, backlog=10, poll_interval=0.05)
+        try:
+            # No file yet; create it after the generator has started waiting.
+            await asyncio.sleep(0.1)
+            self.log.write_text("late\n")
+            self.assertEqual(await _anext_with_timeout(gen), "late")
+        finally:
+            await gen.aclose()
+
+    async def test_fallback_polling_path(self) -> None:
+        # Force the non-inotify branch and confirm new lines still arrive.
+        import unittest.mock as mock
+
+        self.log.write_text("a\n")
+        with mock.patch.object(streaming.inotify, "INOTIFY_AVAILABLE", False):
+            gen = streaming.tail_lines(self.log, backlog=10, poll_interval=0.05)
+            try:
+                self.assertEqual(await _anext_with_timeout(gen), "a")
+                with self.log.open("a") as fh:
+                    fh.write("b\n")
+                self.assertEqual(await _anext_with_timeout(gen), "b")
+            finally:
+                await gen.aclose()
+
+    async def test_cleanup_releases_descriptors(self) -> None:
+        self.log.write_text("x\n")
+        watcher = streaming.AsyncLogWatcher(self.log, poll_interval=0.05)
+        gen = watcher.lines(backlog=10)
+        # Pull one line so the file + inotify watch are set up.
+        await _anext_with_timeout(gen)
+        await gen.aclose()
+        self.assertIsNone(watcher._file)
+        self.assertEqual(watcher._inotify_fd, -1)
+        self.assertFalse(watcher._reader_registered)
+
+
+class _SSEDriver:
+    """Drive an ASGI app's SSE endpoint in-process.
+
+    httpx's ASGITransport buffers the entire response body before returning, so
+    it deadlocks on an unbounded ``text/event-stream``. This minimal driver
+    speaks ASGI directly: it feeds one empty request body, collects sent body
+    chunks, and can deliver an ``http.disconnect`` to exercise teardown.
+    """
+
+    def __init__(self, app, path: str) -> None:
+        self._app = app
+        self._scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1",
+            "method": "GET",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "headers": [(b"host", b"test")],
+            "scheme": "http",
+            "server": ("test", 80),
+            "client": ("test", 12345),
+            "root_path": "",
+        }
+        self._sent: asyncio.Queue = asyncio.Queue()
+        self._disconnect = asyncio.Event()
+        self._request_sent = False
+        self._task = None
+        self.status = None
+        self.headers: dict[str, str] = {}
+
+    async def _receive(self):
+        if not self._request_sent:
+            self._request_sent = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await self._disconnect.wait()
+        return {"type": "http.disconnect"}
+
+    async def _send(self, message) -> None:
+        await self._sent.put(message)
+
+    async def __aenter__(self) -> "_SSEDriver":
+        self._task = asyncio.create_task(self._app(self._scope, self._receive, self._send))
+        msg = await asyncio.wait_for(self._sent.get(), timeout=5)
+        assert msg["type"] == "http.response.start", msg
+        self.status = msg["status"]
+        self.headers = {k.decode(): v.decode() for k, v in msg["headers"]}
+        return self
+
+    async def read_until(self, needle: str, timeout: float = 5.0) -> str:
+        buf = ""
+        while needle not in buf:
+            msg = await asyncio.wait_for(self._sent.get(), timeout=timeout)
+            if msg["type"] == "http.response.body":
+                buf += msg.get("body", b"").decode()
+        return buf
+
+    async def __aexit__(self, *exc) -> None:
+        self._disconnect.set()
+        if self._task is not None:
+            await asyncio.wait_for(self._task, timeout=5)
+
+
+class SSEEndpointTestCase(unittest.IsolatedAsyncioTestCase):
+    """Tests for the SSE live-log endpoint (issue #131, A3 — acceptance)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        _make_worker(self.base, "acme", "widgets", os.getpid(), ["alpha", "beta"])
+        self.app = create_app(base_dir=self.base, supervisor_log=None)
+        self.log = self.base / ".logs" / "acme" / "widgets" / services.WORKER_LOG_NAME
+
+    async def test_stream_emits_backlog_and_new_line(self) -> None:
+        async with _SSEDriver(self.app, "/api/logs/acme/widgets/stream") as drv:
+            self.assertEqual(drv.status, 200)
+            self.assertEqual(drv.headers.get("content-type"), "text/event-stream; charset=utf-8")
+            self.assertEqual(drv.headers.get("cache-control"), "no-cache")
+            self.assertEqual(drv.headers.get("x-accel-buffering"), "no")
+            # Backlog is delivered first.
+            backlog = await drv.read_until("data: beta")
+            self.assertIn("data: alpha", backlog)
+            # A freshly appended line is pushed live.
+            with self.log.open("a") as fh:
+                fh.write("gamma-live\n")
+                fh.flush()
+            tail = await drv.read_until("data: gamma-live")
+            self.assertIn("data: gamma-live", tail)
+
+    def test_stream_unknown_repo_404(self) -> None:
+        client = TestClient(self.app)
+        self.assertEqual(client.get("/api/logs/acme/nope/stream").status_code, 404)
+
+    def test_stream_traversal_rejected(self) -> None:
+        client = TestClient(self.app)
+        bad = client.get("/api/logs/%2e%2e/etc/stream")
+        self.assertIn(bad.status_code, (404, 422))
+
+    async def test_no_fd_leak_across_reconnects(self) -> None:
+        fd_dir = Path("/proc/self/fd")
+        if not fd_dir.exists():
+            self.skipTest("/proc/self/fd unavailable on this platform")
+
+        async def one_cycle() -> None:
+            async with _SSEDriver(self.app, "/api/logs/acme/widgets/stream") as drv:
+                await drv.read_until("data: beta")
+                with self.log.open("a") as fh:
+                    fh.write("ping\n")
+                    fh.flush()
+                await drv.read_until("data: ping")
+
+        await one_cycle()  # warm up (lazy imports, etc.)
+        before = len(os.listdir(fd_dir))
+        for _ in range(25):
+            await one_cycle()
+        after = len(os.listdir(fd_dir))
+        # Allow a tiny slack for unrelated runtime fds; a real leak would add ~25.
+        self.assertLessEqual(after, before + 2, f"fd leak: {before} -> {after}")
 
 
 if __name__ == "__main__":
