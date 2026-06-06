@@ -52,6 +52,20 @@ class ServicesTestCase(unittest.TestCase):
         self.assertEqual(w.status, "stale")
         self.assertIsNone(w.pid)
 
+    def test_list_workers_nonpositive_pid_is_stale(self) -> None:
+        # A PID file containing 0 or a negative value must not be treated as a
+        # live PID: os.kill(0/-N, 0) targets a process group, not a process.
+        for bad_pid in ("0", "-1"):
+            with self.subTest(pid=bad_pid):
+                repo_dir = self.base / ".logs" / "acme" / f"pid{bad_pid}"
+                repo_dir.mkdir(parents=True)
+                (repo_dir / services.WORKER_PID_NAME).write_text(bad_pid)
+                (repo_dir / services.WORKER_LOG_NAME).write_text("x\n")
+        workers = {w.repo: w for w in services.list_workers(self.base)}
+        for name in ("acme/pid0", "acme/pid-1"):
+            self.assertEqual(workers[name].status, "stale")
+            self.assertIsNone(workers[name].pid)
+
     def test_list_workers_skips_hidden_dirs(self) -> None:
         _make_worker(self.base, "acme", "widgets", os.getpid(), ["x"])
         (self.base / ".logs" / services.SESSIONS_DIR_NAME).mkdir(parents=True)

@@ -87,7 +87,8 @@ def process_status(pid: int) -> str:
 def _read_pid(pid_path: Path) -> int | None:
     """Read a bare integer PID from *pid_path*; return None if unreadable."""
     try:
-        return int(pid_path.read_text().strip())
+        pid = int(pid_path.read_text().strip())
+        return pid if pid > 0 else None
     except (FileNotFoundError, ValueError, OSError):
         return None
 
