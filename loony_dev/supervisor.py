@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import logging
 import multiprocessing
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import time
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from loony_dev import config
@@ -347,32 +351,362 @@ def launch_worker(repo: str, work_dir: Path, log_file: Path, pid_file: Path) -> 
 
 
 # ---------------------------------------------------------------------------
+# Remote-control process management
+# ---------------------------------------------------------------------------
+#
+# When a worker is launched for a repo, the supervisor also spawns a sibling
+# process that runs ``claude --remote-control`` in the repo's *base checkout*
+# (``<base>/<owner>/<repo>``). After #126, tasks run in per-task worktrees, so
+# the base checkout is idle and can host a long-lived interactive Claude session
+# that the user attaches to from the Claude mobile/web app via an Anthropic-hosted
+# relay. Remote control is interactive (a TUI), so the child must allocate a PTY;
+# there is no local port/token printed to stdout — the deterministic, stable
+# session *name* (``loony-<owner>-<repo>``) is the attach handle.
+#
+# Each (re)launch writes a "connection file" describing how to join. This file is
+# the canonical contract consumed by the web sessions track (see
+# ``loony_dev/web/services.py``): the first three keys ``{session_id, repo, key}``
+# are what ``services.SessionView`` reads. The writer is atomic and additive —
+# unknown keys must be ignorable by readers.
+
+# Reserved per-session work key (a.k.a. task_key) for the base-checkout session.
+# The base remote-control session is not bound to a per-task worktree, so its key
+# is this sentinel rather than ``null`` — distinct from any future per-task session
+# (#132), which would carry that task's worktree key.
+REMOTE_CONTROL_KEY = "base"
+
+
+@dataclass
+class RemoteControlProcess:
+    repo: str
+    base_dir: Path  # cwd = the repo's base checkout (<base>/<owner>/<repo>)
+    session_id: str
+    key: str
+    log_file: Path
+    pid_file: Path
+    conn_file: Path
+    process: multiprocessing.Process
+    started_at: float
+    restart_count: int = field(default=0)
+
+
+def _remote_control_session_id(repo: str) -> str:
+    """Return the deterministic, stable relay session name for *repo*.
+
+    ``loony-<owner>-<repo>`` with any non-alphanumeric run collapsed to a single
+    ``-``. The id is reused on every (re)launch so it survives restarts unchanged
+    and is predictable for the dashboard.
+    """
+    safe = re.sub(r"[^A-Za-z0-9]+", "-", repo).strip("-")
+    return f"loony-{safe}"
+
+
+def _remote_control_command(session_id: str) -> list[str]:
+    """Build the ``claude --remote-control`` command line.
+
+    ``--dangerously-skip-permissions`` matches how workers already invoke
+    ``claude`` and (combined with the pre-trusted base checkout) clears the
+    interactive folder-trust prompt so the session can run unattended.
+    """
+    return ["claude", "--remote-control", session_id, "--dangerously-skip-permissions"]
+
+
+_JOIN_URL_RE = re.compile(rb"https://\S*claude\.ai/\S+")
+
+
+def _scan_for_join_url(data: bytes) -> str | None:
+    """Best-effort scan of PTY output for a claude.ai join/deep-link URL.
+
+    Returns the first match decoded as text, or ``None``. The scan is per-chunk
+    (no cross-chunk buffering) and intentionally narrow to avoid false positives;
+    ``join_url`` stays ``null`` unless a link is actually emitted.
+    """
+    match = _JOIN_URL_RE.search(data)
+    if not match:
+        return None
+    return match.group(0).decode("utf-8", errors="replace").rstrip(".,)'\"")
+
+
+def _write_connection_file(
+    conn_file: Path,
+    *,
+    repo: str,
+    session_id: str,
+    key: str,
+    cwd: Path | str,
+    pid: int | None,
+    started_at: str,
+    command: list[str],
+    status: str = "running",
+    join_url: str | None = None,
+) -> None:
+    """Atomically serialise the canonical remote-control connection schema.
+
+    Single source of truth for the on-disk shape, used by both the launcher and
+    the child's refresh/``join_url`` update. Writes to a temp file and renames so
+    readers never observe a partial file.
+    """
+    conn_file.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "repo": repo,
+        "mode": "remote-control",
+        "session_id": session_id,
+        "key": key,
+        "cwd": str(cwd),
+        "pid": pid,
+        "status": status,
+        "started_at": started_at,
+        "join_url": join_url,
+        "command": list(command),
+    }
+    tmp = conn_file.with_name(conn_file.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(payload, indent=2))
+        os.replace(tmp, conn_file)
+    except OSError as exc:
+        logger.warning("Failed to write connection file %s: %s", conn_file, exc)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _remove_connection_file(path: Path) -> None:
+    """Remove the connection file at *path* if it exists (logs are preserved)."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("Failed to remove connection file %s: %s", path, exc)
+
+
+def _run_remote_control_process(
+    log_file: Path,
+    conn_file: Path,
+    repo: str,
+    base_dir: Path,
+    session_id: str,
+    key: str,
+    started_at: str,
+) -> None:
+    """Entry point for a remote-control multiprocessing.Process.
+
+    Allocates a PTY (remote control is an interactive TUI), refreshes the
+    connection file with the live PID, launches ``claude --remote-control`` with
+    the PTY slave as its stdio in a new session, and drains the PTY master into
+    *log_file*. Exits with ``claude``'s return code so the supervisor's health
+    check observes a non-``None`` ``exitcode`` and restarts via the backoff loop.
+    """
+    import errno
+    import pty
+    import select
+
+    command = _remote_control_command(session_id)
+
+    # Refresh the connection file with this process's live PID.
+    _write_connection_file(
+        conn_file,
+        repo=repo,
+        session_id=session_id,
+        key=key,
+        cwd=base_dir,
+        pid=os.getpid(),
+        started_at=started_at,
+        command=command,
+    )
+
+    master_fd, slave_fd = pty.openpty()
+    try:
+        proc = subprocess.Popen(
+            command,
+            cwd=str(base_dir),
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception:
+        os.close(master_fd)
+        os.close(slave_fd)
+        import traceback
+        with open(log_file, "a") as f:
+            traceback.print_exc(file=f)
+        sys.exit(1)
+
+    # The child holds the slave end; this wrapper only reads from the master.
+    os.close(slave_fd)
+
+    join_url_found = False
+    with open(log_file, "ab") as logf:
+        while True:
+            try:
+                rlist, _, _ = select.select([master_fd], [], [], 1.0)
+            except OSError:
+                break
+            if master_fd in rlist:
+                try:
+                    chunk = os.read(master_fd, 4096)
+                except OSError as exc:
+                    if exc.errno != errno.EIO:
+                        logger.debug("Error reading remote-control PTY for %s: %s", repo, exc)
+                    break  # EIO => slave closed (child exited)
+                if not chunk:
+                    break
+                logf.write(chunk)
+                logf.flush()
+                if not join_url_found:
+                    url = _scan_for_join_url(chunk)
+                    if url:
+                        join_url_found = True
+                        _write_connection_file(
+                            conn_file,
+                            repo=repo,
+                            session_id=session_id,
+                            key=key,
+                            cwd=base_dir,
+                            pid=os.getpid(),
+                            started_at=started_at,
+                            command=command,
+                            join_url=url,
+                        )
+            elif proc.poll() is not None:
+                break
+
+    try:
+        os.close(master_fd)
+    except OSError:
+        pass
+    sys.exit(proc.wait())
+
+
+def launch_remote_control(
+    repo: str,
+    base_dir: Path,
+    log_file: Path,
+    pid_file: Path,
+    conn_file: Path,
+) -> RemoteControlProcess:
+    """Spawn a sibling remote-control process for *repo* in its base checkout."""
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    session_id = _remote_control_session_id(repo)
+    key = REMOTE_CONTROL_KEY
+    started_at_iso = datetime.now(timezone.utc).isoformat()
+    command = _remote_control_command(session_id)
+
+    logger.info(
+        "Launching remote-control for %s (session=%s, log=%s)", repo, session_id, log_file
+    )
+
+    ctx = multiprocessing.get_context("spawn")
+    process = ctx.Process(
+        target=_run_remote_control_process,
+        args=(log_file, conn_file, repo, base_dir, session_id, key, started_at_iso),
+        name=f"remote-control-{repo.replace('/', '-')}",
+    )
+    process.start()
+
+    _write_pid_file(pid_file, process.pid)
+    _write_connection_file(
+        conn_file,
+        repo=repo,
+        session_id=session_id,
+        key=key,
+        cwd=base_dir,
+        pid=process.pid,
+        started_at=started_at_iso,
+        command=command,
+    )
+
+    return RemoteControlProcess(
+        repo=repo,
+        base_dir=base_dir,
+        session_id=session_id,
+        key=key,
+        log_file=log_file,
+        pid_file=pid_file,
+        conn_file=conn_file,
+        process=process,
+        started_at=time.monotonic(),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Supervisor loop
 # ---------------------------------------------------------------------------
 
-def _terminate_worker(wp: WorkerProcess, timeout: float = 10.0) -> None:
-    """Send SIGTERM, wait *timeout* seconds, then SIGKILL if still alive."""
+def _terminate_process(
+    process: multiprocessing.Process,
+    pid_file: Path,
+    label: str,
+    timeout: float = 10.0,
+) -> None:
+    """Send SIGTERM, wait *timeout* seconds, then SIGKILL if still alive.
+
+    Shared by worker and remote-control teardown. Connection-file removal is
+    remote-control-specific and handled by the caller.
+    """
     try:
-        wp.process.terminate()
+        process.terminate()
     except OSError:
-        _remove_pid_file(wp.pid_file)
+        _remove_pid_file(pid_file)
         return
     try:
-        wp.process.join(timeout=timeout)
+        process.join(timeout=timeout)
     except Exception:
         pass
-        
-    if wp.process.exitcode is None:
-        logger.warning("Worker for %s did not stop in %.0fs; killing.", wp.repo, timeout)
+
+    if process.exitcode is None:
+        logger.warning("%s did not stop in %.0fs; killing.", label, timeout)
         try:
-            wp.process.kill()
+            process.kill()
         except OSError:
             pass
         try:
-            wp.process.join(timeout=5)
+            process.join(timeout=5)
         except Exception:
             pass
-    _remove_pid_file(wp.pid_file)
+    _remove_pid_file(pid_file)
+
+
+def _interruptible_sleep(seconds: float, should_stop: Callable[[], bool]) -> None:
+    """Sleep up to *seconds*, waking early (in <=1s) once *should_stop* is true."""
+    deadline = time.monotonic() + seconds
+    while not should_stop() and time.monotonic() < deadline:
+        time.sleep(min(1.0, deadline - time.monotonic()))
+
+
+def _restart_after_backoff(
+    record: WorkerProcess | RemoteControlProcess,
+    label: str,
+    relaunch: Callable[[], WorkerProcess | RemoteControlProcess],
+    should_stop: Callable[[], bool],
+) -> WorkerProcess | RemoteControlProcess | None:
+    """Apply exponential backoff, then relaunch *record* via *relaunch*.
+
+    Shared by worker and remote-control restart. Computes the same
+    ``min(min_restart_delay * 2**restart_count, max_restart_delay)`` delay, sleeps
+    interruptibly, and (unless shutdown was requested meanwhile) relaunches with an
+    incremented ``restart_count``. Returns the new record, or ``None`` if shutdown
+    interrupted the delay or the relaunch failed.
+    """
+    delay = min(
+        config.settings.min_restart_delay * (2 ** record.restart_count),
+        config.settings.max_restart_delay,
+    )
+    logger.info("Restarting %s for %s in %.1fs…", label, record.repo, delay)
+
+    _interruptible_sleep(delay, should_stop)
+    if should_stop():
+        return None
+
+    try:
+        new_record = relaunch()
+    except Exception:
+        logger.exception("Failed to restart %s for %s", label, record.repo)
+        return None
+    new_record.restart_count = record.restart_count + 1
+    return new_record
 
 
 def run_supervisor() -> None:
@@ -387,6 +721,7 @@ def run_supervisor() -> None:
     _write_pid_file(supervisor_pid_file, os.getpid())
 
     workers: dict[str, WorkerProcess] = {}
+    remote_controls: dict[str, RemoteControlProcess] = {}
     shutdown_requested = False
     graceful_shutdown = False
 
@@ -476,6 +811,25 @@ def run_supervisor() -> None:
                         workers[repo] = wp
                     except Exception:
                         logger.exception("Failed to launch worker for %s", repo)
+                        continue
+
+                    # Also launch a sibling remote-control session in the base
+                    # checkout (unless opted out). A failure here must never
+                    # block the worker.
+                    if config.settings.get("no_remote_control"):
+                        continue
+                    log_dir = config.settings.base_dir / ".logs" / owner / name
+                    try:
+                        rcp = launch_remote_control(
+                            repo=repo,
+                            base_dir=work_dir,
+                            log_file=log_dir / "remote-control.log",
+                            pid_file=log_dir / "remote-control.pid",
+                            conn_file=log_dir / "remote-control.json",
+                        )
+                        remote_controls[repo] = rcp
+                    except Exception:
+                        logger.exception("Failed to launch remote-control for %s", repo)
 
                 # Stop workers for repos no longer in the active set
                 for repo in current_set - active_set:
@@ -485,7 +839,11 @@ def run_supervisor() -> None:
                         "worker stopped and checkout deleted. Logs preserved at %s",
                         repo, wp.log_file.parent,
                     )
-                    _terminate_worker(wp)
+                    _terminate_process(wp.process, wp.pid_file, f"Worker for {repo}")
+                    rcp = remote_controls.pop(repo, None)
+                    if rcp is not None:
+                        _terminate_process(rcp.process, rcp.pid_file, f"Remote-control for {repo}")
+                        _remove_connection_file(rcp.conn_file)
                     remove_repo(repo, config.settings.base_dir)
 
         if shutdown_requested:
@@ -494,6 +852,8 @@ def run_supervisor() -> None:
         # ------------------------------------------------------------------ #
         # Health-check phase
         # ------------------------------------------------------------------ #
+        should_stop = lambda: shutdown_requested  # noqa: E731
+
         for repo, wp in list(workers.items()):
             rc = wp.process.exitcode
             if rc is None:
@@ -512,31 +872,61 @@ def run_supervisor() -> None:
             )
             _remove_pid_file(wp.pid_file)
 
-            delay = min(
-                config.settings.min_restart_delay * (2 ** wp.restart_count),
-                config.settings.max_restart_delay,
-            )
-            logger.info("Restarting worker for %s in %.1fs…", repo, delay)
-
-            # Interruptible delay
-            deadline = time.monotonic() + delay
-            while not shutdown_requested and time.monotonic() < deadline:
-                time.sleep(min(1.0, deadline - time.monotonic()))
-
-            if shutdown_requested:
-                break
-
-            try:
-                new_wp = launch_worker(
+            new_wp = _restart_after_backoff(
+                wp,
+                "worker",
+                lambda repo=repo, wp=wp: launch_worker(
                     repo=repo,
                     work_dir=wp.work_dir,
                     log_file=wp.log_file,
                     pid_file=wp.pid_file,
-                )
-                new_wp.restart_count = wp.restart_count + 1
+                ),
+                should_stop,
+            )
+            if shutdown_requested:
+                break
+            if new_wp is not None:
                 workers[repo] = new_wp
-            except Exception:
-                logger.exception("Failed to restart worker for %s", repo)
+
+        if shutdown_requested:
+            break
+
+        # Remote-control sessions restart with the same backoff as workers.
+        for repo, rcp in list(remote_controls.items()):
+            rc = rcp.process.exitcode
+            if rc is None:
+                continue  # Still running
+
+            if graceful_shutdown:
+                # Nothing to drain for an interactive session; drop it.
+                logger.info("Remote-control for %s has exited during graceful shutdown.", repo)
+                remote_controls.pop(repo)
+                _remove_pid_file(rcp.pid_file)
+                _remove_connection_file(rcp.conn_file)
+                continue
+
+            logger.warning(
+                "Remote-control for %s exited with code %d (restart #%d).",
+                repo, rc, rcp.restart_count + 1,
+            )
+            _remove_pid_file(rcp.pid_file)
+
+            new_rcp = _restart_after_backoff(
+                rcp,
+                "remote-control",
+                lambda repo=repo, rcp=rcp: launch_remote_control(
+                    repo=repo,
+                    base_dir=rcp.base_dir,
+                    log_file=rcp.log_file,
+                    pid_file=rcp.pid_file,
+                    conn_file=rcp.conn_file,
+                ),
+                should_stop,
+            )
+            if shutdown_requested:
+                break
+            if new_rcp is not None:
+                remote_controls[repo] = new_rcp
 
         if shutdown_requested:
             break
@@ -549,6 +939,13 @@ def run_supervisor() -> None:
     # ---------------------------------------------------------------------- #
     # Shutdown
     # ---------------------------------------------------------------------- #
+    # Remote-control sessions are interactive/idle with nothing to drain, so they
+    # are terminated on both graceful (SIGQUIT) and immediate shutdown.
+    for repo, rcp in remote_controls.items():
+        logger.info("Stopping remote-control for %s", repo)
+        _terminate_process(rcp.process, rcp.pid_file, f"Remote-control for {repo}")
+        _remove_connection_file(rcp.conn_file)
+
     logger.info("Stopping all workers…")
     for repo, wp in workers.items():
         logger.info("Stopping worker for %s", repo)
@@ -559,7 +956,7 @@ def run_supervisor() -> None:
             except OSError:
                 pass
         else:
-            _terminate_worker(wp)
+            _terminate_process(wp.process, wp.pid_file, f"Worker for {repo}")
 
     if graceful_shutdown:
         logger.info("Waiting for all workers to finish current tasks…")

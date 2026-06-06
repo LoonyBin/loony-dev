@@ -23,12 +23,11 @@ from loony_dev.git import GitRepo
 WORKER_LOG_NAME = "loony-worker.log"
 WORKER_PID_NAME = "loony-worker.pid"
 
-# Expected location for #129's remote-control "connection JSON files".
-# NOTE: #129 is not merged yet — there are no session/connection files in the
-# repo. This path and the parsing in ``list_sessions`` are a best-effort guess
-# and MUST be reconciled with #129's actual output once it lands. Until then the
-# directory simply does not exist and ``list_sessions`` returns ``[]``.
-SESSIONS_DIR_NAME = ".sessions"
+# Per-repo remote-control "connection file". The canonical schema and writer live
+# in ``loony_dev.supervisor`` (see ``_write_connection_file``); this reader only
+# consumes the first three keys ``{session_id, repo, key}``. Parsing is defensive:
+# unknown keys are ignored and malformed/missing files are skipped.
+REMOTE_CONTROL_CONN_NAME = "remote-control.json"
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +110,7 @@ def _discover_repos(base_dir: Path) -> list[tuple[str, str, Path]]:
 
     Mirrors the discovery in ``tui.SupervisorApp`` / ``_discover_entries`` so the
     web dashboard surfaces exactly the same set of workers. Hidden directories
-    (e.g. ``.sessions``) are skipped.
+    (those whose name starts with ``.``) are skipped.
     """
     logs_dir = base_dir / ".logs"
     found: list[tuple[str, str, Path]] = []
@@ -192,34 +191,33 @@ def list_worktrees(base_dir: Path) -> list[WorktreeView]:
 
 
 def list_sessions(base_dir: Path) -> list[SessionView]:
-    """Parse remote-control connection JSON files from ``.logs/.sessions/``.
+    """Read each repo's ``remote-control.json`` connection file.
 
-    DEPENDENCY: #129 (remote-control connection files) is not merged yet, so the
-    directory does not exist and this returns ``[]``. The parser is intentionally
-    defensive — unknown/extra keys are ignored and malformed files are skipped —
-    so the dashboard works today and lights up automatically once #129 lands.
-    The path/schema below MUST be reconciled with #129's actual output.
+    Discovers repos via the same ``.logs/<owner>/<repo>/`` scan as the workers
+    and reads ``<repo_log_dir>/remote-control.json`` (written by the supervisor;
+    canonical schema in :mod:`loony_dev.supervisor`). Parsing is defensive:
+    malformed/missing files are skipped, unknown keys are ignored, and
+    ``session_id`` falls back to ``owner/repo`` when absent.
     """
     import json
 
-    sessions_dir = base_dir / ".logs" / SESSIONS_DIR_NAME
-    if not sessions_dir.exists():
-        return []
-
     sessions: list[SessionView] = []
-    for path in sorted(sessions_dir.glob("*.json")):
+    for owner, name, repo_dir in _discover_repos(base_dir):
+        conn_path = repo_dir / REMOTE_CONTROL_CONN_NAME
         try:
-            data = json.loads(path.read_text())
+            data = json.loads(conn_path.read_text())
         except (OSError, ValueError):
             continue
         if not isinstance(data, dict):
             continue
-        session_id = data.get("session_id") or path.stem
+        repo = data.get("repo") or f"{owner}/{name}"
+        session_id = data.get("session_id") or repo
+        key = data.get("key")
         sessions.append(
             SessionView(
                 session_id=str(session_id),
-                repo=data.get("repo"),
-                key=data.get("key"),
+                repo=str(repo) if repo is not None else None,
+                key=str(key) if key is not None else None,
             )
         )
     return sessions
