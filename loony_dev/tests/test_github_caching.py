@@ -202,6 +202,25 @@ class TestGhRetry(unittest.TestCase):
         mock_run.assert_called_once()
         mock_sleep.assert_not_called()
 
+    @patch("loony_dev.github.client.time.sleep")
+    @patch("loony_dev.github.client.subprocess.run")
+    def test_retries_on_transient_server_error(self, mock_run: MagicMock, mock_sleep: MagicMock) -> None:
+        # A 5xx / connection blip — the class of failure that used to swallow
+        # comments into [] and trigger duplicate plans — should now be retried.
+        ok = MagicMock(stdout="ok\n", stderr="")
+        mock_run.side_effect = [
+            _rate_limit_error("HTTP 502: Bad Gateway"),
+            _rate_limit_error("dial tcp: connection reset by peer"),
+            ok,
+        ]
+
+        client = GitHubClient("owner/repo")
+        result = client.gh("api", "graphql")
+
+        assert result == "ok"
+        assert mock_run.call_count == 3
+        assert mock_sleep.call_count == 2
+
     def test_is_retryable_detects_rate_limit_patterns(self) -> None:
         for msg in ["API rate limit exceeded", "abuse detection mechanism", "secondary rate limit", "HTTP 403", "HTTP 429"]:
             exc = _rate_limit_error(msg)

@@ -25,6 +25,19 @@ _DEFAULTS: dict[str, int | float] = {
 
 _GH_RATE_LIMIT_PATTERNS = ("rate limit", "abuse detection", "secondary rate", "403", "429")
 
+# Transient server/network failures worth retrying. These are the blips that
+# previously fell straight through to a swallowed empty comment list (see
+# CommentFetchError) — 5xx responses and connection-level errors that clear on
+# their own within a retry or two. Kept specific (e.g. "http 502" not bare
+# "502") so error text mentioning a number can't accidentally match.
+_GH_TRANSIENT_PATTERNS = (
+    "http 500", "http 502", "http 503", "http 504",
+    "internal server error", "bad gateway", "service unavailable", "gateway timeout",
+    "timeout", "timed out", "i/o timeout", "tls handshake",
+    "connection reset", "connection refused", "could not resolve host",
+    "no such host", "unexpected eof",
+)
+
 
 def gh_setting(key: str) -> int | float:
     """Read a ``[github]`` config value, falling back to ``_DEFAULTS``."""
@@ -39,7 +52,7 @@ def gh_setting(key: str) -> int | float:
 def is_retryable_gh_error(exc: subprocess.CalledProcessError) -> bool:
     """Return True if the gh CLI error looks like a rate-limit or transient server error."""
     combined = ((exc.stdout or "") + (exc.stderr or "")).lower()
-    return any(p in combined for p in _GH_RATE_LIMIT_PATTERNS)
+    return any(p in combined for p in _GH_RATE_LIMIT_PATTERNS + _GH_TRANSIENT_PATTERNS)
 
 
 def run_gh(*cmd: str, cwd: str | None = None) -> str:
