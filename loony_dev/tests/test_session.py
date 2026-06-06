@@ -94,7 +94,7 @@ class TestSessionIdForOnAgent(unittest.TestCase):
 
     def test_returns_id_when_repo_and_key_present(self) -> None:
         from loony_dev.agents.coding import CodingAgent
-        agent = CodingAgent(work_dir=Path("/tmp"), repo="LoonyBin/repo")
+        agent = CodingAgent(repo="LoonyBin/repo")
         task = MagicMock()
         task.session_key = "issue:42"
         sid = agent._session_id_for(task)
@@ -102,14 +102,14 @@ class TestSessionIdForOnAgent(unittest.TestCase):
 
     def test_returns_none_when_no_repo(self) -> None:
         from loony_dev.agents.coding import CodingAgent
-        agent = CodingAgent(work_dir=Path("/tmp"))  # repo defaults to ""
+        agent = CodingAgent()  # repo defaults to ""
         task = MagicMock()
         task.session_key = "issue:42"
         self.assertIsNone(agent._session_id_for(task))
 
     def test_returns_none_when_no_session_key(self) -> None:
         from loony_dev.agents.coding import CodingAgent
-        agent = CodingAgent(work_dir=Path("/tmp"), repo="LoonyBin/repo")
+        agent = CodingAgent(repo="LoonyBin/repo")
         task = MagicMock()
         task.session_key = None
         self.assertIsNone(agent._session_id_for(task))
@@ -128,7 +128,7 @@ class TestRunClaudeCli(unittest.TestCase):
 
     def test_no_session_id_runs_plain(self) -> None:
         from loony_dev.agents.coding import CodingAgent
-        agent = CodingAgent(work_dir=Path("/tmp"), repo="LoonyBin/repo")
+        agent = CodingAgent(repo="LoonyBin/repo")
         mock_proc = self._make_popen_mock("output", "", 0)
 
         with patch("loony_dev.agents.claude_quota.subprocess.Popen", return_value=mock_proc) as mock_popen:
@@ -142,7 +142,7 @@ class TestRunClaudeCli(unittest.TestCase):
 
     def test_session_id_tries_resume_first(self) -> None:
         from loony_dev.agents.coding import CodingAgent
-        agent = CodingAgent(work_dir=Path("/tmp"), repo="LoonyBin/repo")
+        agent = CodingAgent(repo="LoonyBin/repo")
         mock_proc = self._make_popen_mock("resumed output", "", 0)
 
         with patch("loony_dev.agents.claude_quota.subprocess.Popen", return_value=mock_proc) as mock_popen:
@@ -158,7 +158,7 @@ class TestRunClaudeCli(unittest.TestCase):
 
     def test_session_not_found_falls_back_to_session_id(self) -> None:
         from loony_dev.agents.coding import CodingAgent
-        agent = CodingAgent(work_dir=Path("/tmp"), repo="LoonyBin/repo")
+        agent = CodingAgent(repo="LoonyBin/repo")
 
         resume_proc = self._make_popen_mock("", "No session found for id", 1)
         create_proc = self._make_popen_mock("fresh output", "", 0)
@@ -178,7 +178,7 @@ class TestRunClaudeCli(unittest.TestCase):
 
     def test_real_error_does_not_fallback(self) -> None:
         from loony_dev.agents.coding import CodingAgent
-        agent = CodingAgent(work_dir=Path("/tmp"), repo="LoonyBin/repo")
+        agent = CodingAgent(repo="LoonyBin/repo")
         mock_proc = self._make_popen_mock("", "quota exceeded", 1)
 
         with patch("loony_dev.agents.claude_quota.subprocess.Popen", return_value=mock_proc) as mock_popen:

@@ -85,7 +85,7 @@ def worker(**_) -> None:
     default_branch = repo.detect_default_branch()
     click.echo(f"Default branch: {default_branch}")
     git = GitRepo(work_dir=work_path, default_branch=default_branch)
-    agents = [NullAgent(), CodingAgent(work_dir=work_path, repo=repo_name), PlanningAgent(work_dir=work_path, repo=repo_name)]
+    agents = [NullAgent(), CodingAgent(repo=repo_name), PlanningAgent(repo=repo_name)]
 
     orchestrator = Orchestrator(repo=repo, git=git, agents=agents)
 

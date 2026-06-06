@@ -6,6 +6,8 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from loony_dev.models import TaskResult
     from loony_dev.tasks.base import Task
 
@@ -29,8 +31,13 @@ class Agent(ABC):
         ...
 
     @abstractmethod
-    def execute(self, task: Task) -> TaskResult:
-        """Execute a task. Blocking. Returns result."""
+    def execute(self, task: Task, work_dir: Path) -> TaskResult:
+        """Execute a task in *work_dir*. Blocking. Returns result.
+
+        *work_dir* is the directory (a per-task git worktree, or the base
+        checkout for tasks without a worktree) in which the agent runs all
+        of its git and CLI operations.
+        """
         ...
 
     def terminate(self) -> None:

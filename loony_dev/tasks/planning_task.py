@@ -156,6 +156,10 @@ class PlanningTask(Task):
     def session_key(self) -> str:
         return f"issue:{self.issue.number}"
 
+    @property
+    def worktree_key(self) -> str:
+        return f"issue-{self.issue.number}-plan"
+
     def describe(self) -> str:
         if self.existing_plan is None:
             return (
