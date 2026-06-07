@@ -5,8 +5,6 @@ Run with: loony-dev ui [--base-dir PATH]
 
 from __future__ import annotations
 
-import ctypes
-import ctypes.util
 import os
 import select
 from dataclasses import dataclass
@@ -18,27 +16,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Header, RichLog, Static, Tab, Tabs
 
-from loony_dev import config
-
-
-# ---------------------------------------------------------------------------
-# inotify helpers (Linux only; graceful no-op on other platforms)
-# ---------------------------------------------------------------------------
-
-_IN_MODIFY = 0x00000002  # File was modified
-_IN_CLOSE_WRITE = 0x00000008  # Writable file was closed
-
-try:
-    _libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
-    _INOTIFY_AVAILABLE = (
-        hasattr(_libc, "inotify_init1")
-        and hasattr(_libc, "inotify_add_watch")
-        and hasattr(_libc, "inotify_rm_watch")
-    )
-except OSError:
-    _INOTIFY_AVAILABLE = False
-
-
+from loony_dev import config, inotify
 
 
 # ---------------------------------------------------------------------------
@@ -62,30 +40,16 @@ class LogWatcher:
         self._file = None
         self.buffer: list[str] = []
         # inotify state (-1 means not in use)
-        self._inotify_fd: int = -1
+        self._inotify_fd: int = inotify.init()
         self._inotify_wd: int = -1
-        if _INOTIFY_AVAILABLE:
-            try:
-                fd = _libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
-                if fd >= 0:
-                    self._inotify_fd = fd
-            except OSError:
-                pass
 
     def _inotify_add_watch(self) -> None:
         """Register an inotify watch on the log file (called once it exists)."""
         if self._inotify_fd < 0 or self._inotify_wd >= 0:
             return
-        try:
-            wd = _libc.inotify_add_watch(
-                self._inotify_fd,
-                str(self._path).encode(),
-                _IN_MODIFY | _IN_CLOSE_WRITE,
-            )
-            if wd >= 0:
-                self._inotify_wd = wd
-        except OSError:
-            pass
+        wd = inotify.add_watch(self._inotify_fd, str(self._path))
+        if wd >= 0:
+            self._inotify_wd = wd
 
     def _inotify_has_events(self) -> bool:
         """Return True if inotify reports the file was modified; drain the fd."""
