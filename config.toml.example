@@ -31,6 +31,10 @@
 # Polling interval in seconds.
 # interval = 60
 
+# Maximum number of tasks this worker runs at once.  Each task runs in its own
+# git worktree; GitHub label state prevents two workers from taking the same item.
+# max_concurrent_tasks = 3
+
 # Working directory for the agent (must exist).
 # work_dir = "."
 
@@ -141,22 +145,9 @@
 # Write supervisor DEBUG logs to this file.
 # log_file = "/var/log/loony-dev/supervisor.log"
 
-# --- Worker options forwarded from supervisor ---
-# These override the workers' own defaults/config for all workers this
-# supervisor launches.  Leave unset to let each worker resolve its own config.
-
-# Polling interval forwarded to each worker.
-# worker_interval = 60
-
-# Bot username forwarded to each worker.
-# worker_bot_name = "my-bot[bot]"
-
-# GitHub usernames forwarded to each worker as --allowed-users.
-# worker_allowed_users = ["trusted-external-user"]
-
-# Minimum collaborator role forwarded to each worker.
-# Choices: "triage", "write", "admin"
-# worker_min_role = "triage"
+# Do not launch a `claude --remote-control` session per repo.  Set to true in
+# environments without Anthropic relay access to avoid restart churn.
+# no_remote_control = false
 
 # GitHub usernames whose repository invitations are auto-accepted by the supervisor.
 # Repeatable list. Use ["*"] to accept from anyone (not recommended).
@@ -165,27 +156,8 @@
 
 
 # ---------------------------------------------------------------------------
-# [ui] — loony-dev ui (terminal monitor)
+# [web] — loony-dev web (read-only dashboard)
 # ---------------------------------------------------------------------------
-
-[ui]
-
-# Base directory to scan for worker logs and PID files (same default as supervisor).
-# base_dir = "."
-
-# Path to the supervisor log file.
-# Defaults to <base_dir>/.logs/supervisor.log when unset.
-# supervisor_log = "/var/log/loony-dev/supervisor.log"
-
-# How often (seconds) to re-scan for new or removed workers.
-# scan_interval = 5
-
-# Maximum number of log lines to keep in memory per worker.
-# max_buffer_lines = 5000
-
-# Number of log lines to render initially; the rest load lazily on scroll-up.
-# tail_lines = 100
-
 
 [web]
 
@@ -201,6 +173,10 @@
 
 # Default number of log lines returned by the log-tail endpoint.
 # tail_lines = 100
+
+# Global Claude config root for the dashboard's skills/commands editor.
+# Defaults to ~/.claude when unset.
+# claude_home = "~/.claude"
 
 # Seconds a blocked Claude descendant must be alive before it is reported as
 # stuck on the dashboard.
