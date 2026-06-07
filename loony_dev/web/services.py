@@ -13,7 +13,10 @@ around these pure functions, which keeps them directly unit-testable.
 from __future__ import annotations
 
 import os
+import signal
+import time
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,6 +63,16 @@ class SessionView:
     session_id: str
     repo: str | None
     key: str | None
+
+
+@dataclass(frozen=True)
+class StuckProcessView:
+    worker_repo: str
+    task_key: str | None
+    pid: int
+    cmdline: str
+    age_seconds: int
+    blocked_on: str
 
 
 # ---------------------------------------------------------------------------
@@ -264,3 +277,446 @@ def tail_log(base_dir: Path, owner: str, repo: str, lines: int) -> list[str]:
     except FileNotFoundError as exc:
         raise LogNotFoundError(f"no log for {owner}/{repo}") from exc
     return [line.rstrip("\n") for line in tail]
+
+
+# ---------------------------------------------------------------------------
+# Stuck-process detection (issue #132)
+#
+# A worker can wedge when Claude (a descendant of the worker PID) blocks
+# indefinitely — e.g. a runaway ``sleep 99999`` keeps the stdout pipe open so
+# ``communicate()`` never returns. We detect this by walking ``/proc`` down from
+# each running worker PID, flagging descendants that have been parked in a
+# non-returning syscall for a while AND whose Claude subtree is burning no CPU/IO.
+#
+# Worker-log mtime is deliberately NOT used as the activity signal: Claude's
+# output is drained into the *agent* process's pipe buffer by ``communicate()``,
+# not the worker log, so the log can sit idle during a legitimate long Claude
+# call. The activity signal is sourced from /proc CPU/IO counters instead.
+#
+# The OS-introspection helpers below are thin and side-effect-free so tests can
+# monkeypatch ``_proc_snapshot`` / ``_descendants`` / ``_subtree_activity`` with
+# synthetic process trees, with no dependency on a real ``/proc``.
+# ---------------------------------------------------------------------------
+
+PROC_ROOT = Path("/proc")
+
+# wchan substrings indicating a thread parked in a non-returning kernel wait.
+# ``*nanosleep*`` covers ``sleep``; ``pipe_read``/``pipe_wait`` cover a blocked
+# read on Claude's stdout/stderr pipe.
+_BLOCKING_WCHAN_TOKENS = ("nanosleep", "pipe_read", "pipe_wait")
+
+# A process is a candidate only if quiescently blocked (sleeping/uninterruptible),
+# never if it is actively running (``R``) or a zombie (``Z``).
+_QUIESCENT_STATES = frozenset({"S", "D"})
+
+
+def _sysconf_clk_tck() -> int:
+    try:
+        ticks = os.sysconf("SC_CLK_TCK")
+        return ticks if ticks and ticks > 0 else 100
+    except (ValueError, OSError, AttributeError):
+        return 100
+
+
+def _read_btime() -> float | None:
+    """Return system boot time (epoch seconds) from ``/proc/stat``'s ``btime``."""
+    try:
+        with open(PROC_ROOT / "stat", "r", encoding="ascii", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("btime "):
+                    return float(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+# Cached at import time — boot time and the clock tick rate do not change.
+_CLK_TCK = _sysconf_clk_tck()
+_BTIME = _read_btime()
+
+# Reading ``/proc/<pid>/io`` (and any /proc file) inflates the *reading*
+# process's own rchar/CPU counters. The dashboard runs as a separate process
+# from every worker, so it is never legitimately part of a worker's subtree;
+# excluding our own PID from activity aggregation keeps the act of measuring
+# from perturbing the measurement.
+_SELF_PID = os.getpid()
+
+
+@dataclass(frozen=True)
+class ProcInfo:
+    pid: int
+    ppid: int
+    state: str
+    starttime: int  # clock ticks since boot (stat field 22)
+    cpu_ticks: int  # utime + stime (stat fields 14 + 15)
+    cmdline: list[str]
+    cmdline_str: str
+    wchan: str
+    io_bytes: int | None  # rchar + wchar, or None if unreadable
+
+
+@dataclass(frozen=True)
+class ActivitySample:
+    cpu_ticks: int
+    io_bytes: int
+    io_available: bool
+    timestamp: float
+
+
+def _proc_snapshot(pid: int) -> ProcInfo | None:
+    """Read a point-in-time snapshot of ``/proc/<pid>``; ``None`` if it vanished.
+
+    Robust to the process disappearing mid-read (returns ``None`` on any
+    ``OSError``). The ``io`` counters are best-effort — readable for same-user
+    processes — and degrade to ``None`` when permission is denied or absent.
+    """
+    proc = PROC_ROOT / str(pid)
+    try:
+        stat_raw = (proc / "stat").read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return None
+
+    # stat field 2 (comm) is wrapped in parens and may itself contain spaces or
+    # parens, so split on the LAST ')' to locate the remaining space-delimited
+    # fields. After the split, rest[0] is field 3 (state), rest[k] is field 3+k.
+    try:
+        rparen = stat_raw.rindex(")")
+    except ValueError:
+        return None
+    rest = stat_raw[rparen + 1:].split()
+    try:
+        state = rest[0]              # field 3
+        ppid = int(rest[1])          # field 4
+        utime = int(rest[11])        # field 14
+        stime = int(rest[12])        # field 15
+        starttime = int(rest[19])    # field 22
+    except (IndexError, ValueError):
+        return None
+
+    try:
+        cmdline_raw = (proc / "cmdline").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        cmdline_raw = ""
+    cmdline = [part for part in cmdline_raw.split("\x00") if part]
+    cmdline_str = " ".join(cmdline)
+
+    try:
+        wchan = (proc / "wchan").read_text(encoding="ascii", errors="replace").strip()
+    except OSError:
+        wchan = ""
+
+    io_bytes: int | None = None
+    try:
+        rchar = wchar = 0
+        for line in (proc / "io").read_text(encoding="ascii", errors="replace").splitlines():
+            if line.startswith("rchar:"):
+                rchar = int(line.split()[1])
+            elif line.startswith("wchar:"):
+                wchar = int(line.split()[1])
+        io_bytes = rchar + wchar
+    except (OSError, ValueError, IndexError):
+        io_bytes = None
+
+    return ProcInfo(
+        pid=pid,
+        ppid=ppid,
+        state=state,
+        starttime=starttime,
+        cpu_ticks=utime + stime,
+        cmdline=cmdline,
+        cmdline_str=cmdline_str,
+        wchan=wchan,
+        io_bytes=io_bytes,
+    )
+
+
+def _read_children(pid: int) -> list[int]:
+    """Return immediate child PIDs of *pid* via ``/proc/<pid>/task/*/children``."""
+    children: list[int] = []
+    task_dir = PROC_ROOT / str(pid) / "task"
+    try:
+        tids = os.listdir(task_dir)
+    except OSError:
+        return children
+    for tid in tids:
+        try:
+            data = (task_dir / tid / "children").read_text(encoding="ascii", errors="replace")
+        except OSError:
+            continue
+        for token in data.split():
+            try:
+                children.append(int(token))
+            except ValueError:
+                continue
+    return children
+
+
+def _descendants(pid: int) -> Iterator[int]:
+    """Yield every descendant PID of *pid*, breadth-first.
+
+    Robust to processes appearing/disappearing mid-walk and to cycles (a PID is
+    never yielded twice). The root *pid* itself is not yielded.
+    """
+    seen: set[int] = set()
+    queue: deque[int] = deque(_read_children(pid))
+    while queue:
+        child = queue.popleft()
+        if child in seen or child == pid:
+            continue
+        seen.add(child)
+        yield child
+        queue.extend(_read_children(child))
+
+
+def _proc_age_seconds(starttime_ticks: int) -> float:
+    """Age (seconds) of a process whose stat ``starttime`` is *starttime_ticks*."""
+    if _BTIME is None:
+        return 0.0
+    start_epoch = _BTIME + (starttime_ticks / _CLK_TCK)
+    return max(0.0, time.time() - start_epoch)
+
+
+def _subtree_activity(root_pid: int) -> ActivitySample:
+    """Aggregate CPU ticks and I/O bytes across *root_pid* and all descendants.
+
+    ``io_available`` is ``False`` if any process in the subtree had unreadable
+    I/O counters, in which case the I/O signal must be ignored by the caller and
+    the decision falls back to CPU only.
+    """
+    cpu_total = 0
+    io_total = 0
+    io_available = True
+    for pid in (root_pid, *_descendants(root_pid)):
+        if pid == _SELF_PID:
+            continue  # never count the measuring process (see _SELF_PID note)
+        info = _proc_snapshot(pid)
+        if info is None:
+            continue
+        cpu_total += info.cpu_ticks
+        if info.io_bytes is None:
+            io_available = False
+        else:
+            io_total += info.io_bytes
+    return ActivitySample(
+        cpu_ticks=cpu_total,
+        io_bytes=io_total,
+        io_available=io_available,
+        timestamp=time.monotonic(),
+    )
+
+
+def _is_blocking_wchan(wchan: str) -> bool:
+    lowered = wchan.lower()
+    return any(token in lowered for token in _BLOCKING_WCHAN_TOKENS)
+
+
+def _cmd_basename(info: ProcInfo) -> str:
+    return os.path.basename(info.cmdline[0]) if info.cmdline else ""
+
+
+def _is_blocked_candidate(info: ProcInfo, threshold_seconds: float) -> bool:
+    """True if *info* is an old, quiescently-blocked stuck candidate.
+
+    The blocked-syscall requirement is what excludes the legitimate-long-op
+    false positive (e.g. a ``pytest`` descendant is ``R``/CPU-busy, not parked in
+    ``nanosleep``).
+    """
+    if info.state not in _QUIESCENT_STATES:
+        return False
+    if _proc_age_seconds(info.starttime) < threshold_seconds:
+        return False
+    return _is_blocking_wchan(info.wchan) or _cmd_basename(info) == "sleep"
+
+
+def _blocked_on_label(info: ProcInfo) -> str:
+    if info.wchan and info.wchan not in ("0", ""):
+        return info.wchan
+    if _cmd_basename(info) == "sleep":
+        return "sleep"
+    return info.wchan or "?"
+
+
+def _nearest_claude_root(
+    info: ProcInfo, by_pid: dict[int, ProcInfo], worker_pid: int
+) -> int:
+    """Walk parent links from *info* to the nearest ``claude`` ancestor.
+
+    Falls back to *worker_pid* when no ``claude`` ancestor is found within the
+    captured subtree snapshot.
+    """
+    current: ProcInfo | None = info
+    guard = 0
+    while current is not None and guard < 1000:
+        if _cmd_basename(current) == "claude":
+            return current.pid
+        if current.pid == worker_pid:
+            break
+        current = by_pid.get(current.ppid)
+        guard += 1
+    return worker_pid
+
+
+def _subtree_is_idle(root_pid: int, activity_sample_seconds: float) -> bool:
+    """True if *root_pid*'s subtree makes no CPU/IO progress across two samples.
+
+    Sampled twice ``activity_sample_seconds`` apart. A process parked in
+    ``sleep`` accrues zero CPU for its whole life, so a zero delta here combined
+    with "blocked in nanosleep ≥ threshold" (checked by the caller) is a strong,
+    correct equivalent of "no activity in the window".
+    """
+    first = _subtree_activity(root_pid)
+    if activity_sample_seconds > 0:
+        time.sleep(activity_sample_seconds)
+    second = _subtree_activity(root_pid)
+    cpu_advanced = second.cpu_ticks > first.cpu_ticks
+    io_advanced = (
+        first.io_available and second.io_available and second.io_bytes > first.io_bytes
+    )
+    return not (cpu_advanced or io_advanced)
+
+
+def list_stuck(
+    base_dir: Path,
+    *,
+    threshold_seconds: float = 300,
+    activity_sample_seconds: float = 0.3,
+) -> list[StuckProcessView]:
+    """Return stuck Claude descendants across all running workers.
+
+    For each running worker, descendants are flagged when they are (1) old and
+    parked in a non-returning syscall, AND (2) part of a Claude subtree doing no
+    CPU/IO work. The (potentially blocking) activity sample is taken only when at
+    least one old, blocked candidate exists, so the common case pays no latency.
+    """
+    sessions = list_sessions(base_dir)
+    repo_to_key = {s.repo: s.key for s in sessions if s.repo}
+
+    stuck: list[StuckProcessView] = []
+    for worker in list_workers(base_dir):
+        if worker.status != "running" or worker.pid is None:
+            continue
+        worker_pid = worker.pid
+
+        # Snapshot the whole subtree once for this worker (per-request, no TTL).
+        by_pid: dict[int, ProcInfo] = {}
+        for pid in _descendants(worker_pid):
+            info = _proc_snapshot(pid)
+            if info is not None:
+                by_pid[pid] = info
+        root_info = _proc_snapshot(worker_pid)
+        if root_info is not None:
+            by_pid[worker_pid] = root_info
+
+        candidates = [
+            info for pid, info in by_pid.items()
+            if pid != worker_pid and _is_blocked_candidate(info, threshold_seconds)
+        ]
+        if not candidates:
+            continue
+
+        # Evaluate the activity signal once per distinct Claude subtree root.
+        idle_cache: dict[int, bool] = {}
+        for info in candidates:
+            root = _nearest_claude_root(info, by_pid, worker_pid)
+            if root not in idle_cache:
+                idle_cache[root] = _subtree_is_idle(root, activity_sample_seconds)
+            if not idle_cache[root]:
+                continue  # Claude is actively progressing — not stuck.
+            stuck.append(
+                StuckProcessView(
+                    worker_repo=worker.repo,
+                    task_key=repo_to_key.get(worker.repo),
+                    pid=info.pid,
+                    cmdline=info.cmdline_str,
+                    age_seconds=int(_proc_age_seconds(info.starttime)),
+                    blocked_on=_blocked_on_label(info),
+                )
+            )
+    return stuck
+
+
+# ---------------------------------------------------------------------------
+# Descendant validation + kill (issue #132)
+# ---------------------------------------------------------------------------
+
+class NotADescendantError(Exception):
+    """Raised when a kill target is not a live descendant of any worker PID."""
+
+
+def is_worker_descendant(base_dir: Path, pid: int) -> bool:
+    """True if *pid* is a descendant of some running worker PID.
+
+    Security gate: the kill endpoint must never signal an arbitrary host
+    process. PID ``<= 1`` is rejected outright (1 is init; ``0``/negative target
+    process groups).
+    """
+    if pid <= 1:
+        return False
+    for worker in list_workers(base_dir):
+        if worker.status == "running" and worker.pid:
+            if pid in set(_descendants(worker.pid)):
+                return True
+    return False
+
+
+def kill_descendant(base_dir: Path, pid: int, *, grace_seconds: float = 5.0) -> dict:
+    """Send ``SIGTERM`` to *pid* after validating it is a worker descendant.
+
+    Returns a status dict ``{pid, signal_sent, escalated, alive, starttime}``.
+    Does NOT block for the SIGKILL escalation — the caller schedules
+    :func:`escalate_kill` as a background task when ``alive`` is true. Always
+    signals a single positive PID, never a process group.
+
+    Raises :class:`NotADescendantError` when *pid* is not a current descendant.
+    """
+    if not is_worker_descendant(base_dir, pid):
+        raise NotADescendantError(f"PID {pid} is not a known worker descendant")
+
+    snapshot = _proc_snapshot(pid)
+    starttime = snapshot.starttime if snapshot is not None else None
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return {"pid": pid, "signal_sent": "SIGTERM", "escalated": False,
+                "alive": False, "starttime": starttime}
+    return {"pid": pid, "signal_sent": "SIGTERM", "escalated": False,
+            "alive": True, "starttime": starttime}
+
+
+def escalate_kill(
+    base_dir: Path,
+    pid: int,
+    grace_seconds: float,
+    starttime: int | None = None,
+) -> bool:
+    """Background step: ``SIGKILL`` *pid* if still alive after *grace_seconds*.
+
+    Re-validates descendant membership and (if known) the original ``starttime``
+    immediately before signalling, guarding against TOCTOU / PID reuse. Returns
+    ``True`` iff a ``SIGKILL`` was actually delivered.
+    """
+    deadline = time.monotonic() + max(grace_seconds, 0.0)
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False  # exited cleanly within the grace period
+        time.sleep(0.1)
+
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False  # exited right at the deadline
+
+    if not is_worker_descendant(base_dir, pid):
+        return False  # no longer ours — refuse to signal
+    snapshot = _proc_snapshot(pid)
+    if starttime is not None and (snapshot is None or snapshot.starttime != starttime):
+        return False  # PID was reused for a different process
+
+    try:
+        os.kill(pid, signal.SIGKILL)
+        return True
+    except OSError:
+        return False
