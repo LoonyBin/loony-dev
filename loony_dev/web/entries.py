@@ -178,17 +178,28 @@ def list_entries(kind_name: str, *, global_root: Path, base_dir: Path,
     if not container.is_dir():
         return []
 
+    root = claude_dir.resolve()
     views: list[EntryView] = []
     if kind.is_dir:
         for child in sorted(container.iterdir()):
             content_path = child / kind.content_name  # type: ignore[operator]
-            if child.is_dir() and content_path.is_file():
+            if child.is_dir() and content_path.is_file() and _contained(root, content_path):
                 views.append(_view(child.name, content_path))
     else:
         for content_path in sorted(container.glob("*.md")):
-            if content_path.is_file():
+            if content_path.is_file() and _contained(root, content_path):
                 views.append(_view(content_path.stem, content_path))
     return views
+
+
+def _contained(root: Path, content_path: Path) -> bool:
+    """True if *content_path*'s resolved target stays within *root*.
+
+    Mirrors the containment check in :func:`_resolve_paths` so a symlinked entry
+    whose target escapes the ``.claude`` root is never surfaced via listing.
+    """
+    resolved = content_path.resolve()
+    return root == resolved or root in resolved.parents
 
 
 def _view(name: str, content_path: Path) -> EntryView:
@@ -244,7 +255,9 @@ def delete_entry(kind_name: str, name: str, *, global_root: Path, base_dir: Path
         scope=scope, owner=owner, repo=repo,
     )
     if kind.is_dir:
-        if not entry_dir.is_dir():
+        # Only delete a *canonical* skill dir (one containing SKILL.md); never
+        # rmtree an unrelated directory that merely shares the entry name.
+        if entry_dir.is_symlink() or not entry_dir.is_dir() or not content_path.is_file():
             raise EntryNotFoundError(f"no {kind_name} entry: {name}")
         shutil.rmtree(entry_dir)
     else:

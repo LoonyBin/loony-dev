@@ -207,7 +207,7 @@ def web_cmd(**_) -> None:
     port = int(config.settings.get("port", 8765))
     tail_lines = int(config.settings.get("tail_lines", 100))
     claude_home_raw = config.settings.get("claude_home")
-    claude_home = Path(claude_home_raw) if claude_home_raw else None
+    claude_home = Path(claude_home_raw).expanduser() if claude_home_raw else None
 
     app = create_app(
         base_dir=base_dir, supervisor_log=supervisor_log,

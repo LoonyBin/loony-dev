@@ -281,6 +281,27 @@ class EntriesTestCase(unittest.TestCase):
         with self.assertRaises(entries.EntryError):
             entries.write_entry("skills", "evil", "x", **self._kw())
 
+    def test_list_omits_symlinked_entry_escaping_root(self) -> None:
+        # A per-entry symlink whose SKILL.md resolves outside <claude-dir> must
+        # not leak its off-root path/metadata via listing.
+        entries.write_entry("skills", "real", "x\n", **self._kw())
+        outside = self.base / "off_root"
+        (outside / "SKILL.md").parent.mkdir(parents=True)
+        (outside / "SKILL.md").write_text("secret\n")
+        (self.home / "skills" / "evil").symlink_to(outside, target_is_directory=True)
+        listed = entries.list_entries("skills", **self._kw())
+        self.assertEqual([e.name for e in listed], ["real"])
+
+    def test_delete_skill_without_skill_md_is_not_found(self) -> None:
+        # A directory under skills/ that lacks SKILL.md is not a canonical skill;
+        # deleting it must 404 rather than rmtree unrelated data.
+        stray = self.home / "skills" / "stray"
+        stray.mkdir(parents=True)
+        (stray / "keepme.txt").write_text("important\n")
+        with self.assertRaises(entries.EntryNotFoundError):
+            entries.delete_entry("skills", "stray", **self._kw())
+        self.assertTrue((stray / "keepme.txt").is_file())
+
 
 class EntriesApiTestCase(unittest.TestCase):
     """Integration tests for the skills/commands endpoints via TestClient."""
@@ -293,6 +314,7 @@ class EntriesApiTestCase(unittest.TestCase):
         self.addCleanup(self._home_tmp.cleanup)
         self.addCleanup(self._base_tmp.cleanup)
         self.client = TestClient(create_app(base_dir=self.base, claude_home=self.home))
+        self.addCleanup(self.client.close)
 
     def test_put_then_list_and_on_disk(self) -> None:
         resp = self.client.put("/api/skills/deploy", content="# Deploy\n")
@@ -327,7 +349,8 @@ class EntriesApiTestCase(unittest.TestCase):
         self.assertNotEqual(bad.status_code, 200)
         # Embedded separators never escape: routing splits the path so no foreign
         # file is created (segment-level rejection is unit-tested via _validate_name).
-        self.client.put("/api/commands/a%2Fb", content="x")
+        bad_sep = self.client.put("/api/commands/a%2Fb", content="x")
+        self.assertNotEqual(bad_sep.status_code, 200)
         self.assertEqual(self.client.get("/api/commands").json(), [])
 
     def test_per_repo_scope_lands_under_checkout(self) -> None:

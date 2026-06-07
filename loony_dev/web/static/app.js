@@ -129,20 +129,27 @@ async function apiText(url, opts) {
   return resp;
 }
 
+// Returns true if the selected repo changed (e.g. the previous one vanished),
+// so callers can avoid silently retargeting Save/Delete to a different repo.
 function updateRepoPicker() {
   const { scope, repoLabel, repo } = entryEls();
   const isRepo = scope.value === "repo";
   repoLabel.style.display = isRepo ? "" : "none";
-  if (!isRepo) return;
+  if (!isRepo) return false;
   const prev = repo.value;
   repo.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = knownRepos.length ? "Select a repo…" : "No repos discovered";
+  repo.appendChild(placeholder);
   for (const r of knownRepos) {
     const opt = document.createElement("option");
     opt.value = r;
     opt.textContent = r;
     repo.appendChild(opt);
   }
-  if (knownRepos.includes(prev)) repo.value = prev;
+  repo.value = knownRepos.includes(prev) ? prev : "";
+  return repo.value !== prev;
 }
 
 async function refreshEntries() {
@@ -262,7 +269,9 @@ async function refresh() {
     const next = [...repos].sort();
     if (next.join("\n") !== knownRepos.join("\n")) {
       knownRepos = next;
-      updateRepoPicker();
+      // If the picker had to drop the previously-selected repo, reset the editor
+      // rather than silently letting Save/Delete act on a different repo.
+      if (updateRepoPicker()) newEntry();
     }
   } catch (err) {
     console.error("dashboard refresh failed", err);
