@@ -143,12 +143,23 @@ async function loadLog(repo) {
 
 async function refresh() {
   try {
-    const [workers, worktrees, sessions, stuck] = await Promise.all([
+    const [workersR, worktreesR, sessionsR, stuckR] = await Promise.allSettled([
       getJSON("/api/workers"),
       getJSON("/api/worktrees"),
       getJSON("/api/sessions"),
       getJSON("/api/stuck"),
     ]);
+    if (
+      workersR.status !== "fulfilled" ||
+      worktreesR.status !== "fulfilled" ||
+      sessionsR.status !== "fulfilled"
+    ) {
+      throw new Error("core dashboard endpoints failed");
+    }
+    const workers = workersR.value;
+    const worktrees = worktreesR.value;
+    const sessions = sessionsR.value;
+    const stuck = stuckR.status === "fulfilled" ? stuckR.value : [];
     renderStuckSection(stuck);
     setRows("workers", workers, renderWorker, "No workers discovered.");
     setRows("worktrees", worktrees, renderWorktree, "No worktrees found.");
