@@ -44,8 +44,12 @@
 # Write DEBUG logs to this file in addition to stderr.
 # log_file = "/var/log/loony-dev/worker.log"
 
-# GitHub usernames always allowed to trigger runs regardless of collaborator role.
-# allowed_users = ["trusted-external-user"]
+# GitHub usernames always allowed to trigger runs regardless of collaborator
+# role. Use the REST-API login form, including the "[bot]" suffix for bot
+# accounts. List "coderabbitai[bot]" here to let the worker act on CodeRabbit's
+# review comments (CodeRabbit is not a repo collaborator, so it is otherwise
+# unauthorized to trigger runs).
+# allowed_users = ["coderabbitai[bot]"]
 
 # Minimum GitHub collaborator role required to trigger agent runs.
 # Choices: "triage", "write", "admin"
