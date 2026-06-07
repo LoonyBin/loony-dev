@@ -47,7 +47,7 @@ class _SleepAgent(Agent):
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
-        self._active_process = proc
+        self._register_process(proc)
         return proc
 
 
@@ -70,7 +70,7 @@ class _SleepAgentNoIsolation(Agent):
             stderr=subprocess.PIPE,
             # start_new_session intentionally omitted
         )
-        self._active_process = proc
+        self._register_process(proc)
         return proc
 
 
@@ -113,7 +113,7 @@ class TestAgentSignalIsolation(unittest.TestCase):
             signal.signal(signal.SIGQUIT, old_handler)
             proc.terminate()
             proc.wait(timeout=5)
-            agent._active_process = None
+            agent._unregister_process(proc)
 
     def test_terminate_still_kills_isolated_subprocess(self) -> None:
         """After start_new_session=True, agent.terminate() must still kill the child.
@@ -142,7 +142,7 @@ class TestAgentSignalIsolation(unittest.TestCase):
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
-            agent._active_process = None
+            agent._unregister_process(proc)
 
 
 if __name__ == "__main__":

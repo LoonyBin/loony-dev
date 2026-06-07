@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -64,6 +65,11 @@ class ClaudeQuotaMixin:
     """
 
     _disabled_until: datetime | None = None
+    # Class-level lock guarding _disabled_until. A single agent instance is
+    # shared across all concurrent tasks, so a quota disable in one worker is
+    # visible to the others; the lock makes the check-then-clear / set sequences
+    # race-free across threads.
+    _quota_lock = threading.Lock()
     repo: str = ""  # Set by subclass __init__; used for session ID generation.
 
     def can_handle(self, task: Task) -> bool:
@@ -79,14 +85,15 @@ class ClaudeQuotaMixin:
 
     def is_disabled(self) -> bool:
         """True while the Claude quota cooldown is active."""
-        if self._disabled_until is None:
+        with self._quota_lock:
+            if self._disabled_until is None:
+                return False
+            now = datetime.now(timezone.utc)
+            if now < self._disabled_until:
+                return True
+            # Cooldown expired — re-enable.
+            self._disabled_until = None
             return False
-        now = datetime.now(timezone.utc)
-        if now < self._disabled_until:
-            return True
-        # Cooldown expired — re-enable.
-        self._disabled_until = None
-        return False
 
     @staticmethod
     def _is_quota_error(output: str) -> bool:
@@ -149,16 +156,18 @@ class ClaudeQuotaMixin:
         reset_at = self._parse_reset_time(output)
         if reset_at:
             # Add a 30-second buffer so we don't race the provider clock.
-            self._disabled_until = reset_at.astimezone(timezone.utc) + timedelta(seconds=30)
+            with self._quota_lock:
+                self._disabled_until = reset_at.astimezone(timezone.utc) + timedelta(seconds=30)
             logger.warning(
                 "Agent '%s' rate-limited. Disabled until %s.",
                 self.name, self._disabled_until,
             )
         else:
             fallback = int(config.settings.get("quota_fallback_seconds", 30 * 60))
-            self._disabled_until = (
-                datetime.now(timezone.utc) + timedelta(seconds=fallback)
-            )
+            with self._quota_lock:
+                self._disabled_until = (
+                    datetime.now(timezone.utc) + timedelta(seconds=fallback)
+                )
             logger.warning(
                 "Agent '%s' rate-limited (couldn't parse reset time). "
                 "Disabled for %ds. Raw output (truncated): %.500s",
@@ -228,11 +237,11 @@ class ClaudeQuotaMixin:
             text=True,
             start_new_session=True,
         ) as proc:
-            self._active_process = proc
+            self._register_process(proc)
             try:
                 stdout, stderr = proc.communicate(input=prompt)
             finally:
-                self._active_process = None
+                self._unregister_process(proc)
         return stdout, stderr, proc.returncode
 
     @staticmethod

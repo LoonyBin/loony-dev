@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import subprocess
-import time
+import threading
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
@@ -16,7 +16,29 @@ class Agent(ABC):
     """Base class for all agents. Different agents use different tools."""
 
     name: str
-    _active_process: subprocess.Popen | None = None
+
+    def _ensure_registry(self) -> None:
+        """Lazily create the per-instance subprocess registry.
+
+        A single agent instance may run several tasks concurrently (one per
+        thread-pool worker), so the set of live subprocesses is shared across
+        threads and guarded by a lock. ``setdefault`` is atomic under the GIL,
+        so this is safe even if two workers race on first use.
+        """
+        self.__dict__.setdefault("_proc_lock", threading.Lock())
+        self.__dict__.setdefault("_active_processes", set())
+
+    def _register_process(self, proc: subprocess.Popen) -> None:
+        """Record a freshly spawned subprocess so terminate() can reach it."""
+        self._ensure_registry()
+        with self._proc_lock:
+            self._active_processes.add(proc)
+
+    def _unregister_process(self, proc: subprocess.Popen) -> None:
+        """Drop a finished subprocess from the registry."""
+        self._ensure_registry()
+        with self._proc_lock:
+            self._active_processes.discard(proc)
 
     @abstractmethod
     def can_handle(self, task: Task) -> bool:
@@ -41,15 +63,21 @@ class Agent(ABC):
         ...
 
     def terminate(self) -> None:
-        """Terminate the currently active subprocess, if any."""
-        proc = self._active_process
-        if proc is None:
-            return
-        try:
-            proc.terminate()
+        """Terminate every currently active subprocess, if any.
+
+        With concurrent dispatch a single agent instance may have several
+        Claude subprocesses in flight at once, so this terminates all of them
+        (SIGTERM, then SIGKILL after a grace period).
+        """
+        self._ensure_registry()
+        with self._proc_lock:
+            procs = list(self._active_processes)
+        for proc in procs:
             try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-        except OSError:
-            pass
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            except OSError:
+                pass

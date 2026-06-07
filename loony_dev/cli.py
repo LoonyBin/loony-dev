@@ -22,6 +22,11 @@ def cli() -> None:
 @cli.command("worker")
 @click.option("--repo", default=None, help="owner/repo (default: detected from git remote)")
 @click.option("--interval", default=60, help="Polling interval in seconds", show_default=True)
+@click.option(
+    "--max-concurrent-tasks", "max_concurrent_tasks", type=int, default=3, show_default=True,
+    help="Maximum number of tasks this worker runs at once. Each runs in its own "
+         "git worktree; GitHub label state prevents two workers from taking the same item.",
+)
 @click.option("--work-dir", default=".", type=click.Path(exists=True), help="Working directory for the agent")
 @click.option("--bot-name", default=None, help="Bot username for watermark detection (default: detected from gh auth)")
 @click.option(
@@ -89,7 +94,10 @@ def worker(**_) -> None:
 
     orchestrator = Orchestrator(repo=repo, git=git, agents=agents)
 
-    click.echo(f"Starting orchestrator for {repo_name} (polling every {config.settings.interval}s)")
+    click.echo(
+        f"Starting orchestrator for {repo_name} (polling every {config.settings.interval}s, "
+        f"up to {orchestrator.max_concurrent} concurrent task(s))"
+    )
     orchestrator.run()
 
 
