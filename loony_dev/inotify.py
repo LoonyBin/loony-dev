@@ -1,8 +1,7 @@
 """Shared ctypes-based inotify plumbing (Linux only).
 
-Both the synchronous TUI :class:`loony_dev.tui.LogWatcher` and the async web log
-tailer in :mod:`loony_dev.web.streaming` watch log files for appends. To avoid
-duplicating the ctypes glue, the low-level bits live here:
+The async web log tailer in :mod:`loony_dev.web.streaming` watches log files for
+appends. To avoid duplicating the ctypes glue, the low-level bits live here:
 
 - :data:`IN_MODIFY` / :data:`IN_CLOSE_WRITE` event-mask constants,
 - :data:`INOTIFY_AVAILABLE` — whether ``libc`` exposes the inotify syscalls,

@@ -54,9 +54,9 @@ loony-dev --work-dir /path/to/repo
 
 ## Web Dashboard
 
-A read-only web dashboard mirrors the Textual TUI in the browser. It runs as a
-separate process from the supervisor and derives all state from the on-disk
-layout under `<base-dir>/.logs`.
+A read-only web dashboard for monitoring the supervisor and workers in the
+browser. It runs as a separate process from the supervisor and derives all state
+from the on-disk layout under `<base-dir>/.logs`.
 
 ```bash
 loony-dev web --base-dir ./workspace --port 8765

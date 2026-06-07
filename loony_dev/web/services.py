@@ -121,9 +121,7 @@ def _iso_mtime(path: Path) -> str | None:
 def _discover_repos(base_dir: Path) -> list[tuple[str, str, Path]]:
     """Scan ``.logs/<owner>/<repo>/`` and return ``(owner, name, repo_log_dir)``.
 
-    Mirrors the discovery in ``tui.SupervisorApp`` / ``_discover_entries`` so the
-    web dashboard surfaces exactly the same set of workers. Hidden directories
-    (those whose name starts with ``.``) are skipped.
+    Hidden directories (those whose name starts with ``.``) are skipped.
     """
     logs_dir = base_dir / ".logs"
     found: list[tuple[str, str, Path]] = []

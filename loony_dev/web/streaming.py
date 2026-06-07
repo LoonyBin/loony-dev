@@ -1,11 +1,10 @@
 """Async log tailing for the web dashboard's live-stream endpoint.
 
-The synchronous TUI uses :class:`loony_dev.tui.LogWatcher`; the web process needs
-an ``asyncio``-native equivalent that never blocks the event loop. On Linux this
-registers the non-blocking inotify fd with the running loop via
-``loop.add_reader`` so new lines are delivered as soon as the file is appended,
-with no sleep-polling. On platforms where inotify is unavailable it falls back to
-an ``asyncio.sleep`` poll loop, mirroring :class:`LogWatcher`'s fallback.
+The web process needs an ``asyncio``-native log tailer that never blocks the
+event loop. On Linux this registers the non-blocking inotify fd with the running
+loop via ``loop.add_reader`` so new lines are delivered as soon as the file is
+appended, with no sleep-polling. On platforms where inotify is unavailable it
+falls back to an ``asyncio.sleep`` poll loop.
 
 The public entry point is :func:`tail_lines`, an async generator that first emits
 a bounded backlog (the last N lines) and then streams new lines forever until the
