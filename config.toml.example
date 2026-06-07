@@ -196,8 +196,14 @@
 # Defaults to <base_dir>/.logs/supervisor.log when unset.
 # supervisor_log = "/var/log/loony-dev/supervisor.log"
 
-# Port for the web dashboard (bound to 127.0.0.1 only).
-# port = 8765
+# Address to bind the dashboard to. Defaults to loopback.
+# WARNING: the dashboard exposes unauthenticated mutating endpoints (write
+# skills/commands, kill processes) — only bind a non-loopback/0.0.0.0 address
+# on a trusted network.
+# host = "127.0.0.1"
+
+# Port for the web dashboard.
+# port = 5338
 
 # Default number of log lines returned by the log-tail endpoint.
 # tail_lines = 100
