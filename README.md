@@ -59,7 +59,7 @@ browser. It runs as a separate process from the supervisor and derives all state
 from the on-disk layout under `<base-dir>/.logs`.
 
 ```bash
-loony-dev web --base-dir ./workspace --port 8765
+loony-dev web --base-dir ./workspace --port 5338
 ```
 
 It binds to `127.0.0.1` only; tunnel in (e.g. SSH port-forward) to reach it
