@@ -128,17 +128,52 @@ function renderStuckSection(stuck) {
   }
 }
 
-async function loadLog(repo) {
+// Cap retained DOM lines so a long-lived stream can't grow unbounded.
+// Matches the supervisor's default max_buffer_lines.
+const MAX_LOG_LINES = 5000;
+
+let activeStream = null; // the single live EventSource (closed when switching repos)
+
+function isPinnedToBottom(pre) {
+  // Treat "within 4px of the bottom" as pinned to tolerate sub-pixel scrolling.
+  return pre.scrollHeight - pre.clientHeight - pre.scrollTop < 4;
+}
+
+function loadLog(repo) {
   const title = document.getElementById("log-title");
   const pre = document.getElementById("log");
-  title.textContent = `— ${repo}`;
-  pre.textContent = "Loading…";
-  try {
-    const data = await getJSON(`/api/logs/${repo}/tail`);
-    pre.textContent = data.lines.length ? data.lines.join("\n") : "(empty log)";
-  } catch (err) {
-    pre.textContent = `Failed to load log: ${err.message}`;
+
+  // Close any previous stream so the browser doesn't leak connections.
+  if (activeStream) {
+    activeStream.close();
+    activeStream = null;
   }
+
+  title.textContent = `— ${repo} (live)`;
+  pre.textContent = "";
+
+  const es = new EventSource(`/api/logs/${repo}/stream`);
+  activeStream = es;
+
+  es.onmessage = (event) => {
+    // Ignore late messages from a stream we've already switched away from.
+    if (activeStream !== es) return;
+    const pinned = isPinnedToBottom(pre);
+    pre.textContent += (pre.textContent ? "\n" : "") + event.data;
+    // Trim to the last MAX_LOG_LINES to bound memory.
+    const lines = pre.textContent.split("\n");
+    if (lines.length > MAX_LOG_LINES) {
+      pre.textContent = lines.slice(lines.length - MAX_LOG_LINES).join("\n");
+    }
+    if (pinned) pre.scrollTop = pre.scrollHeight;
+  };
+
+  es.onerror = () => {
+    // EventSource auto-reconnects; only surface an error if nothing arrived yet.
+    if (activeStream === es && !pre.textContent) {
+      pre.textContent = "(log stream unavailable)";
+    }
+  };
 }
 
 // --- Skills & Commands editor -------------------------------------------

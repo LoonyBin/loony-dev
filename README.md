@@ -52,6 +52,23 @@ loony-dev --repo myorg/myrepo --interval 30 -v
 loony-dev --work-dir /path/to/repo
 ```
 
+## Web Dashboard
+
+A read-only web dashboard mirrors the Textual TUI in the browser. It runs as a
+separate process from the supervisor and derives all state from the on-disk
+layout under `<base-dir>/.logs`.
+
+```bash
+loony-dev web --base-dir ./workspace --port 8765
+```
+
+It binds to `127.0.0.1` only; tunnel in (e.g. SSH port-forward) to reach it
+remotely. Worker, worktree, and session tables refresh on an interval. Clicking
+a worker repo opens a **live log stream**: the dashboard connects to a
+Server-Sent Events endpoint (`/api/logs/{owner}/{repo}/stream`) that emits the
+recent backlog and then pushes new lines as they are written — no manual reload
+needed. The one-shot `/api/logs/{owner}/{repo}/tail` endpoint remains available.
+
 ## How It Works
 
 ### Polling Loop
