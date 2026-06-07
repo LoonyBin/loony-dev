@@ -22,6 +22,7 @@ def create_app(
     base_dir: Path,
     supervisor_log: Path | None = None,
     tail_lines: int = 100,
+    claude_home: Path | None = None,
     *,
     stuck_after_seconds: float = 300,
     activity_sample_seconds: float = 0.3,
@@ -35,6 +36,8 @@ def create_app(
             reserved for a future supervisor-log endpoint).
         tail_lines: Default number of log lines returned by the log-tail endpoint
             when a request does not specify ``?lines=``.
+        claude_home: Global ``~/.claude`` root used by the skills/commands
+            endpoints (injectable for tests); defaults to ``~/.claude``.
         stuck_after_seconds: Age a blocked Claude descendant must reach before it
             is considered stuck.
         activity_sample_seconds: Gap between the two CPU/IO samples used to decide
@@ -42,11 +45,13 @@ def create_app(
         kill_grace_seconds: Grace period after SIGTERM before SIGKILL escalation.
     """
     base_dir = Path(base_dir)
+    claude_home = Path(claude_home) if claude_home is not None else Path.home() / ".claude"
 
     app = FastAPI(title="loony-dev dashboard", docs_url="/api/docs", openapi_url="/api/openapi.json")
     app.state.base_dir = base_dir
     app.state.supervisor_log = supervisor_log
     app.state.tail_lines = tail_lines
+    app.state.claude_home = claude_home
     app.state.stuck_after_seconds = stuck_after_seconds
     app.state.activity_sample_seconds = activity_sample_seconds
     app.state.kill_grace_seconds = kill_grace_seconds
@@ -55,6 +60,7 @@ def create_app(
         create_api_router(
             base_dir,
             tail_lines=tail_lines,
+            claude_home=claude_home,
             stuck_after_seconds=stuck_after_seconds,
             activity_sample_seconds=activity_sample_seconds,
             kill_grace_seconds=kill_grace_seconds,

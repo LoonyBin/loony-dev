@@ -191,6 +191,10 @@ def ui_cmd(**_) -> None:
     help="Default number of log lines returned by the log-tail endpoint.",
 )
 @click.option(
+    "--claude-home", "claude_home", default=None, type=click.Path(), metavar="PATH",
+    help="Global Claude config root for the skills/commands editor (default: ~/.claude).",
+)
+@click.option(
     "--stuck-after", "stuck_after", default=300, show_default=True,
     help="Seconds a blocked Claude descendant must be alive before it is "
          "reported as stuck.",
@@ -219,6 +223,8 @@ def web_cmd(**_) -> None:
     supervisor_log = config.settings.supervisor_log
     port = int(config.settings.get("port", 8765))
     tail_lines = int(config.settings.get("tail_lines", 100))
+    claude_home_raw = config.settings.get("claude_home")
+    claude_home = Path(claude_home_raw).expanduser() if claude_home_raw else None
     stuck_after = int(config.settings.get("stuck_after", 300))
     activity_sample = float(config.settings.get("activity_sample", 0.3))
     kill_grace = float(config.settings.get("kill_grace", 5.0))
@@ -227,6 +233,7 @@ def web_cmd(**_) -> None:
         base_dir=base_dir,
         supervisor_log=supervisor_log,
         tail_lines=tail_lines,
+        claude_home=claude_home,
         stuck_after_seconds=stuck_after,
         activity_sample_seconds=activity_sample,
         kill_grace_seconds=kill_grace,
