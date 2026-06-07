@@ -64,6 +64,7 @@ class LaunchRemoteControlTestCase(unittest.TestCase):
         self.base = Path(self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
         self.repo = "acme/widgets"
+        self.session_id = supervisor._remote_control_session_id(self.repo)
         self.checkout = self.base / "acme" / "widgets"
         self.checkout.mkdir(parents=True)
         self.log_dir = self.base / ".logs" / "acme" / "widgets"
@@ -88,22 +89,22 @@ class LaunchRemoteControlTestCase(unittest.TestCase):
         # The spawned process targets the child entrypoint with the right args.
         proc = ctx.created[0]
         self.assertIs(proc.target, supervisor._run_remote_control_process)
-        log_file, conn_file, repo, base_dir, session_id, key, _started = proc.args
+        _log_file, _conn_file, repo, base_dir, session_id, key, _started = proc.args
         self.assertEqual(repo, self.repo)
         self.assertEqual(base_dir, self.checkout)
-        self.assertEqual(session_id, "loony-acme-widgets")
+        self.assertEqual(session_id, self.session_id)
         self.assertEqual(key, "base")
         self.assertEqual(proc.name, "remote-control-acme-widgets")
-        self.assertEqual(rcp.session_id, "loony-acme-widgets")
+        self.assertEqual(rcp.session_id, self.session_id)
         self.assertEqual(rcp.key, "base")
 
     def test_writes_pid_and_connection_files(self) -> None:
-        rcp, _ctx = self._launch()
+        _rcp, _ctx = self._launch()
         self.assertEqual(self.pid_file.read_text(), "4321")
         data = json.loads(self.conn_file.read_text())
         self.assertEqual(data["repo"], self.repo)
         self.assertEqual(data["mode"], "remote-control")
-        self.assertEqual(data["session_id"], "loony-acme-widgets")
+        self.assertEqual(data["session_id"], self.session_id)
         self.assertEqual(data["key"], "base")
         self.assertEqual(data["cwd"], str(self.checkout))
         self.assertEqual(data["pid"], 4321)
@@ -111,7 +112,7 @@ class LaunchRemoteControlTestCase(unittest.TestCase):
         self.assertIsNone(data["join_url"])
         self.assertEqual(
             data["command"],
-            ["claude", "--remote-control", "loony-acme-widgets", "--dangerously-skip-permissions"],
+            ["claude", "--remote-control", self.session_id, "--dangerously-skip-permissions"],
         )
         self.assertIsNotNone(data["started_at"])
 
@@ -130,15 +131,33 @@ class LaunchRemoteControlTestCase(unittest.TestCase):
 
 class SessionIdSanitizationTestCase(unittest.TestCase):
     def test_sanitizes_special_characters(self) -> None:
+        # The id keeps a readable ``loony-<sanitized>`` prefix and appends a
+        # 10-char hex digest of the original repo string.
         cases = {
-            "acme/widgets": "loony-acme-widgets",
-            "My.Org/Repo_X": "loony-My-Org-Repo-X",
-            "a--b/c.d": "loony-a-b-c-d",
-            "owner/repo.git": "loony-owner-repo-git",
+            "acme/widgets": "loony-acme-widgets-",
+            "My.Org/Repo_X": "loony-My-Org-Repo-X-",
+            "a--b/c.d": "loony-a-b-c-d-",
+            "owner/repo.git": "loony-owner-repo-git-",
         }
-        for repo, expected in cases.items():
+        for repo, prefix in cases.items():
             with self.subTest(repo=repo):
-                self.assertEqual(supervisor._remote_control_session_id(repo), expected)
+                session_id = supervisor._remote_control_session_id(repo)
+                self.assertTrue(session_id.startswith(prefix), session_id)
+                digest = session_id[len(prefix):]
+                self.assertEqual(len(digest), 10)
+                self.assertTrue(all(c in "0123456789abcdef" for c in digest), digest)
+
+    def test_is_deterministic(self) -> None:
+        self.assertEqual(
+            supervisor._remote_control_session_id("acme/widgets"),
+            supervisor._remote_control_session_id("acme/widgets"),
+        )
+
+    def test_collision_resistant(self) -> None:
+        # These all sanitize to ``loony-acme-foo-bar`` but must stay distinct.
+        repos = ["acme/foo-bar", "acme/foo_bar", "acme-foo/bar"]
+        ids = {supervisor._remote_control_session_id(r) for r in repos}
+        self.assertEqual(len(ids), len(repos))
 
 
 class RestartBackoffTestCase(unittest.TestCase):
@@ -163,7 +182,6 @@ class RestartBackoffTestCase(unittest.TestCase):
 
     def test_backoff_delay_sequence_capped(self) -> None:
         delays: list[float] = []
-        relaunched = _FakeProcess()
         new_record = self._record(0)
 
         def fake_sleep(seconds, should_stop):

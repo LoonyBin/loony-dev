@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import logging
 import multiprocessing
@@ -393,12 +394,21 @@ class RemoteControlProcess:
 def _remote_control_session_id(repo: str) -> str:
     """Return the deterministic, stable relay session name for *repo*.
 
-    ``loony-<owner>-<repo>`` with any non-alphanumeric run collapsed to a single
-    ``-``. The id is reused on every (re)launch so it survives restarts unchanged
-    and is predictable for the dashboard.
+    ``loony-<owner>-<repo>-<hash>`` with any non-alphanumeric run collapsed to a
+    single ``-``. The id is reused on every (re)launch so it survives restarts
+    unchanged and is predictable for the dashboard.
+
+    The sanitizer alone is collision-prone — ``acme/foo-bar``, ``acme/foo_bar``
+    and ``acme-foo/bar`` all sanitize to ``loony-acme-foo-bar``. Since the
+    session id is both the relay attach handle and part of the on-disk
+    connection contract, a collision would let one repo overwrite or attach to
+    another's session. A short SHA-256 digest of the original repo string keeps
+    the id deterministic while making it unique (hex is alphanumeric, so it
+    preserves the sanitizer contract).
     """
     safe = re.sub(r"[^A-Za-z0-9]+", "-", repo).strip("-")
-    return f"loony-{safe}"
+    digest = hashlib.sha256(repo.encode("utf-8")).hexdigest()[:10]
+    return f"loony-{safe}-{digest}"
 
 
 def _remote_control_command(session_id: str) -> list[str]:
@@ -910,6 +920,10 @@ def run_supervisor() -> None:
                 repo, rc, rcp.restart_count + 1,
             )
             _remove_pid_file(rcp.pid_file)
+            # The session is dead; clear the connection file so the web layer
+            # stops advertising a stale ``status: "running"`` session while we
+            # back off and relaunch (the relaunch rewrites it).
+            _remove_connection_file(rcp.conn_file)
 
             new_rcp = _restart_after_backoff(
                 rcp,
