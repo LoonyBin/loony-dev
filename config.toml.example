@@ -185,3 +185,31 @@
 
 # Number of log lines to render initially; the rest load lazily on scroll-up.
 # tail_lines = 100
+
+
+[web]
+
+# Base directory to scan for worker logs and PID files (same default as supervisor).
+# base_dir = "."
+
+# Path to the supervisor log file.
+# Defaults to <base_dir>/.logs/supervisor.log when unset.
+# supervisor_log = "/var/log/loony-dev/supervisor.log"
+
+# Port for the web dashboard (bound to 127.0.0.1 only).
+# port = 8765
+
+# Default number of log lines returned by the log-tail endpoint.
+# tail_lines = 100
+
+# Seconds a blocked Claude descendant must be alive before it is reported as
+# stuck on the dashboard.
+# stuck_after = 300
+
+# Seconds between the two CPU/IO samples used to decide a Claude subtree is idle.
+# Only sampled when a blocked candidate process exists, so it is paid rarely.
+# activity_sample = 0.3
+
+# Seconds to wait after SIGTERM before escalating to SIGKILL when killing a
+# stuck process from the dashboard.
+# kill_grace = 5.0
