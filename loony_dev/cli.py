@@ -161,7 +161,7 @@ def supervisor_cmd(**_) -> None:
     help="Path to supervisor log file (default: <base-dir>/.logs/supervisor.log)",
 )
 @click.option(
-    "--port", default=8765, show_default=True,
+    "--port", default=5338, show_default=True,
     help="Port for the web dashboard (bound to 127.0.0.1 only).",
 )
 @click.option(
@@ -199,7 +199,7 @@ def web_cmd(**_) -> None:
 
     base_dir = config.settings.base_dir
     supervisor_log = config.settings.supervisor_log
-    port = int(config.settings.get("port", 8765))
+    port = int(config.settings.get("port", 5338))
     tail_lines = int(config.settings.get("tail_lines", 100))
     claude_home_raw = config.settings.get("claude_home")
     claude_home = Path(claude_home_raw).expanduser() if claude_home_raw else None
