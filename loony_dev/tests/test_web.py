@@ -91,7 +91,7 @@ class ServicesTestCase(unittest.TestCase):
 
     def test_list_workers_skips_hidden_dirs(self) -> None:
         _make_worker(self.base, "acme", "widgets", os.getpid(), ["x"])
-        (self.base / ".logs" / services.SESSIONS_DIR_NAME).mkdir(parents=True)
+        (self.base / ".logs" / ".hidden").mkdir(parents=True)
         repos = [w.repo for w in services.list_workers(self.base)]
         self.assertEqual(repos, ["acme/widgets"])
 
@@ -114,19 +114,39 @@ class ServicesTestCase(unittest.TestCase):
             with self.assertRaises(services.LogNotFoundError):
                 services.tail_log(self.base, owner, repo, 10)
 
-    def test_list_sessions_empty_without_dir(self) -> None:
+    def test_list_sessions_empty_without_files(self) -> None:
         self.assertEqual(services.list_sessions(self.base), [])
 
-    def test_list_sessions_parses_json_defensively(self) -> None:
-        sdir = self.base / ".logs" / services.SESSIONS_DIR_NAME
-        sdir.mkdir(parents=True)
-        (sdir / "a.json").write_text('{"session_id": "uuid-1", "repo": "acme/x", "key": "issue:1", "extra": 9}')
-        (sdir / "bad.json").write_text("{not json")
+    def _write_conn(self, owner: str, repo: str, body: str) -> None:
+        repo_dir = self.base / ".logs" / owner / repo
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        (repo_dir / services.REMOTE_CONTROL_CONN_NAME).write_text(body)
+
+    def test_list_sessions_reads_remote_control_json(self) -> None:
+        self._write_conn(
+            "acme", "x",
+            '{"session_id": "loony-acme-x", "repo": "acme/x", "key": "base", "extra": 9}',
+        )
         sessions = services.list_sessions(self.base)
         self.assertEqual(len(sessions), 1)
-        self.assertEqual(sessions[0].session_id, "uuid-1")
+        self.assertEqual(sessions[0].session_id, "loony-acme-x")
         self.assertEqual(sessions[0].repo, "acme/x")
-        self.assertEqual(sessions[0].key, "issue:1")
+        self.assertEqual(sessions[0].key, "base")
+
+    def test_list_sessions_skips_malformed_and_missing(self) -> None:
+        # Good file for one repo, malformed JSON for another, and a third repo
+        # with a worker but no connection file at all.
+        self._write_conn("acme", "good", '{"session_id": "loony-acme-good", "repo": "acme/good", "key": "base"}')
+        self._write_conn("acme", "bad", "{not json")
+        _make_worker(self.base, "acme", "noconn", os.getpid(), ["x"])
+        sessions = services.list_sessions(self.base)
+        self.assertEqual([s.session_id for s in sessions], ["loony-acme-good"])
+
+    def test_list_sessions_falls_back_to_repo_when_id_absent(self) -> None:
+        self._write_conn("acme", "x", '{"repo": "acme/x", "key": "base"}')
+        sessions = services.list_sessions(self.base)
+        self.assertEqual(sessions[0].session_id, "acme/x")
+        self.assertEqual(sessions[0].repo, "acme/x")
 
 
 class WebAppTestCase(unittest.TestCase):

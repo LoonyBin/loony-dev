@@ -109,6 +109,9 @@ def worker(**_) -> None:
               help="Minimum seconds before restarting a crashed worker")
 @click.option("--max-restart-delay", default=300.0, show_default=True,
               help="Maximum backoff delay (seconds) for restarting a crashed worker")
+@click.option("--no-remote-control", "no_remote_control", is_flag=True,
+              help="Do not launch a 'claude --remote-control' session per repo "
+                   "(use in environments without Anthropic relay access to avoid restart churn).")
 @click.option("--verbose", "-v", is_flag=True,
               help="Enable DEBUG logging in supervisor (workers log to their own files)")
 @click.option("--log-file", default=None,
