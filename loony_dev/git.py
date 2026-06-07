@@ -102,12 +102,19 @@ class GitRepo:
             self._run("reset", "--hard", f"origin/{self.default_branch}")
 
     def reset_branch_to_upstream(self, branch: str) -> None:
-        """Fetch and hard-reset a branch to match its upstream state, then clean untracked files."""
+        """Refresh a local branch ref to match its upstream state.
+
+        Fetches ``origin/<branch>`` and force-moves the local ``<branch>`` ref
+        onto it WITHOUT checking it out. The base checkout must stay pinned to
+        the default branch — tasks operate only in worktrees, which fork fresh
+        from the now-current ref. ``git branch -f`` refuses to move a branch
+        that is currently checked out anywhere; since the base is on the default
+        branch and the task's worktree is not yet created, that holds here.
+        """
         if not branch.strip():
             raise ValueError("branch must be non-empty")
         self._run("fetch", "origin", branch)
-        self._run("checkout", "-B", branch, f"origin/{branch}")
-        self._run("clean", "-fd")
+        self._run("branch", "-f", branch, f"origin/{branch}")
 
     def has_uncommitted_changes(self) -> bool:
         result = self._run("status", "--porcelain")
