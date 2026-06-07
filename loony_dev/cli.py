@@ -109,6 +109,9 @@ def worker(**_) -> None:
               help="Minimum seconds before restarting a crashed worker")
 @click.option("--max-restart-delay", default=300.0, show_default=True,
               help="Maximum backoff delay (seconds) for restarting a crashed worker")
+@click.option("--no-remote-control", "no_remote_control", is_flag=True,
+              help="Do not launch a 'claude --remote-control' session per repo "
+                   "(use in environments without Anthropic relay access to avoid restart churn).")
 @click.option("--verbose", "-v", is_flag=True,
               help="Enable DEBUG logging in supervisor (workers log to their own files)")
 @click.option("--log-file", default=None,
@@ -191,6 +194,20 @@ def ui_cmd(**_) -> None:
     "--claude-home", "claude_home", default=None, type=click.Path(), metavar="PATH",
     help="Global Claude config root for the skills/commands editor (default: ~/.claude).",
 )
+@click.option(
+    "--stuck-after", "stuck_after", default=300, show_default=True,
+    help="Seconds a blocked Claude descendant must be alive before it is "
+         "reported as stuck.",
+)
+@click.option(
+    "--activity-sample", "activity_sample", default=0.3, show_default=True,
+    help="Seconds between the two CPU/IO samples used to decide a Claude "
+         "subtree is idle (only taken when a blocked candidate exists).",
+)
+@click.option(
+    "--kill-grace", "kill_grace", default=5.0, show_default=True,
+    help="Seconds to wait after SIGTERM before escalating to SIGKILL.",
+)
 def web_cmd(**_) -> None:
     """Launch the read-only web dashboard to monitor the supervisor and workers.
 
@@ -208,10 +225,18 @@ def web_cmd(**_) -> None:
     tail_lines = int(config.settings.get("tail_lines", 100))
     claude_home_raw = config.settings.get("claude_home")
     claude_home = Path(claude_home_raw).expanduser() if claude_home_raw else None
+    stuck_after = int(config.settings.get("stuck_after", 300))
+    activity_sample = float(config.settings.get("activity_sample", 0.3))
+    kill_grace = float(config.settings.get("kill_grace", 5.0))
 
     app = create_app(
-        base_dir=base_dir, supervisor_log=supervisor_log,
-        tail_lines=tail_lines, claude_home=claude_home,
+        base_dir=base_dir,
+        supervisor_log=supervisor_log,
+        tail_lines=tail_lines,
+        claude_home=claude_home,
+        stuck_after_seconds=stuck_after,
+        activity_sample_seconds=activity_sample,
+        kill_grace_seconds=kill_grace,
     )
     click.echo(f"Serving loony-dev dashboard at http://127.0.0.1:{port} (base-dir: {base_dir})")
     uvicorn.run(app, host="127.0.0.1", port=port)

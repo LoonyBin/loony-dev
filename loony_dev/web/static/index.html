@@ -35,10 +35,30 @@
     #entry-error { color: #c62828; font-size: 0.85rem; min-height: 1.1em; }
     button.action { font: inherit; padding: 0.25rem 0.75rem; cursor: pointer; }
     @media (max-width: 720px) { .editor-grid { grid-template-columns: 1fr; } }
+    #stuck-banner { background: #b71c1c; color: #fff; padding: 0.6rem 0.9rem;
+                    border-radius: 4px; margin: 0 0 1rem; font-weight: 600; }
+    #stuck td.cmdline { font-family: ui-monospace, monospace; font-size: 0.8rem;
+                        word-break: break-all; }
+    .kill-btn { cursor: pointer; font: inherit; color: #fff; background: #b71c1c;
+                border: none; border-radius: 3px; padding: 0.15rem 0.6rem; }
+    .kill-btn:hover { background: #d32f2f; }
   </style>
 </head>
 <body>
   <h1>loony-dev dashboard</h1>
+
+  <div id="stuck-banner" hidden></div>
+
+  <section id="stuck-section" hidden>
+    <h2>Stuck processes</h2>
+    <table id="stuck">
+      <thead><tr>
+        <th>Repo</th><th>Task</th><th>PID</th><th>Cmdline</th>
+        <th>Age</th><th>Blocked on</th><th>Action</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
 
   <section>
     <h2>Workers</h2>
