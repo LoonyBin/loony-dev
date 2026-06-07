@@ -1,8 +1,8 @@
 """FastAPI application factory for the read-only web dashboard.
 
-The dashboard is the first step toward replacing the Textual TUI. It runs as a
-separate process from the supervisor and derives all state from the supervisor's
-on-disk file layout (see :mod:`loony_dev.web.services`).
+The dashboard runs as a separate process from the supervisor and derives all
+state from the supervisor's on-disk file layout (see
+:mod:`loony_dev.web.services`).
 """
 
 from __future__ import annotations

@@ -143,36 +143,6 @@ def supervisor_cmd(**_) -> None:
     run_supervisor()
 
 
-@cli.command("ui")
-@click.option(
-    "--base-dir", default=".", show_default=True,
-    help="Base directory for log/PID discovery (same default as supervisor)",
-)
-@click.option(
-    "--supervisor-log", default=None, type=click.Path(), metavar="PATH",
-    help="Path to supervisor log file (default: <base-dir>/.logs/supervisor.log)",
-)
-@click.option(
-    "--scan-interval", default=5, show_default=True,
-    help="How often (seconds) to re-scan for new/removed workers",
-)
-@click.option(
-    "--max-buffer-lines", "max_buffer_lines", default=5000, show_default=True,
-    help="Maximum log lines to keep in memory per worker log.",
-)
-@click.option(
-    "--tail-lines", "tail_lines", default=100, show_default=True,
-    help="Log lines to render initially; the rest are loaded lazily on scroll-up.",
-)
-def ui_cmd(**_) -> None:
-    """Launch the terminal UI to monitor the supervisor and workers."""
-    click.echo("Note: 'loony-dev ui' (Textual TUI) will be superseded by 'loony-dev web'.")
-    from loony_dev.tui import SupervisorApp
-
-    app = SupervisorApp()
-    app.run()
-
-
 @cli.command("web")
 @click.option(
     "--base-dir", default=".", show_default=True,
