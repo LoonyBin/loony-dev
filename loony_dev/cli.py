@@ -161,8 +161,16 @@ def supervisor_cmd(**_) -> None:
     help="Path to supervisor log file (default: <base-dir>/.logs/supervisor.log)",
 )
 @click.option(
+    "--host", default="127.0.0.1", show_default=True,
+    help="Address to bind the dashboard to. Defaults to loopback. WARNING: the "
+         "dashboard exposes mutating endpoints (write skills/commands, kill "
+         "processes) and has no auth — only bind to a non-loopback/0.0.0.0 "
+         "address on a trusted network.",
+)
+@click.option(
     "--port", default=5338, show_default=True,
-    help="Port for the web dashboard (bound to 127.0.0.1 only).",
+    help="Port for the web dashboard. Defaults to loopback (127.0.0.1); make it "
+         "reachable remotely via --host or an SSH port-forward.",
 )
 @click.option(
     "--tail-lines", "tail_lines", default=100, show_default=True,
@@ -191,7 +199,8 @@ def web_cmd(**_) -> None:
 
     The dashboard runs as a separate process from the supervisor and reads all
     state from the on-disk file layout under <base-dir>/.logs. It binds to
-    127.0.0.1 only; tunnel in (e.g. SSH port-forward) to reach it remotely.
+    127.0.0.1 by default; tunnel in (e.g. SSH port-forward) to reach it
+    remotely, or use --host to bind another address (see the --host warning).
     """
     import uvicorn
 
@@ -199,6 +208,7 @@ def web_cmd(**_) -> None:
 
     base_dir = config.settings.base_dir
     supervisor_log = config.settings.supervisor_log
+    host = config.settings.get("host", "127.0.0.1")
     port = int(config.settings.get("port", 5338))
     tail_lines = int(config.settings.get("tail_lines", 100))
     claude_home_raw = config.settings.get("claude_home")
@@ -216,8 +226,8 @@ def web_cmd(**_) -> None:
         activity_sample_seconds=activity_sample,
         kill_grace_seconds=kill_grace,
     )
-    click.echo(f"Serving loony-dev dashboard at http://127.0.0.1:{port} (base-dir: {base_dir})")
-    uvicorn.run(app, host="127.0.0.1", port=port)
+    click.echo(f"Serving loony-dev dashboard at http://{host}:{port} (base-dir: {base_dir})")
+    uvicorn.run(app, host=host, port=port)
 
 
 # Keep 'main' as an alias so existing scripts that imported it continue to work.
