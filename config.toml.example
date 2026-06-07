@@ -44,6 +44,9 @@
 # Write DEBUG logs to this file in addition to stderr.
 # log_file = "/var/log/loony-dev/worker.log"
 
+# Enable DEBUG-level logging (default is INFO).
+# verbose = true
+
 # GitHub usernames always allowed to trigger runs regardless of collaborator
 # role. Use the REST-API login form, including the "[bot]" suffix for bot
 # accounts. List "coderabbitai[bot]" here to let the worker act on CodeRabbit's
@@ -148,6 +151,9 @@
 
 # Write supervisor DEBUG logs to this file.
 # log_file = "/var/log/loony-dev/supervisor.log"
+
+# Enable DEBUG-level logging (default is INFO).
+# verbose = true
 
 # Do not launch a `claude --remote-control` session per repo.  Set to true in
 # environments without Anthropic relay access to avoid restart churn.
