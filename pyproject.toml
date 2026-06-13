@@ -15,7 +15,7 @@ loony-dev = "loony_dev.cli:cli"
 include = ["loony_dev*"]
 
 [tool.setuptools.package-data]
-"loony_dev.web" = ["static/*"]
+"loony_dev.web" = ["static/*", "static/js/*"]
 "loony_dev.commands" = ["*.md"]
 
 [dependency-groups]

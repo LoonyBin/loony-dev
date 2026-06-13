@@ -165,6 +165,12 @@ class WebAppTestCase(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("loony-dev dashboard", resp.text)
 
+    def test_static_assets_reachable(self) -> None:
+        # The app shell loads its stylesheet and ES modules from /static.
+        for path in ("/static/app.css", "/static/js/app.js"):
+            resp = self.client.get(path)
+            self.assertEqual(resp.status_code, 200, path)
+
     def test_workers_endpoint(self) -> None:
         resp = self.client.get("/api/workers")
         self.assertEqual(resp.status_code, 200)
