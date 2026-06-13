@@ -105,15 +105,17 @@ class ClaudeQuotaMixin:
         persistent ``ClaudeSession`` processes, not just the one-shot ``-p``
         subprocesses.
         """
-        super().terminate()
-        self._ensure_session_registry()
-        with self._session_lock:
-            sessions = list(self._active_sessions)
-        for session in sessions:
-            try:
-                session.close()
-            except Exception:  # pragma: no cover - best-effort shutdown
-                logger.debug("Error closing session on terminate", exc_info=True)
+        try:
+            super().terminate()
+        finally:
+            self._ensure_session_registry()
+            with self._session_lock:
+                sessions = list(self._active_sessions)
+            for session in sessions:
+                try:
+                    session.close()
+                except Exception:  # pragma: no cover - best-effort shutdown
+                    logger.debug("Error closing session on terminate", exc_info=True)
 
     def can_handle(self, task: Task) -> bool:
         """Check availability then delegate to subclass task-type check.

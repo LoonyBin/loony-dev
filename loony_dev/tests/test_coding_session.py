@@ -93,6 +93,41 @@ class TestExecuteUsesSession(unittest.TestCase):
         self.assertIn("Failed to start Claude session", result.summary)
 
 
+class TestExecuteIssueQuota(unittest.TestCase):
+    """A quota error during an execute_issue phase pauses the agent."""
+
+    def test_implement_phase_quota_error_pauses_agent(self) -> None:
+        agent = CodingAgent(repo="LoonyBin/repo")
+        task = MagicMock()
+        task.issue.number = 7
+        task.issue.title = "My feature"
+        task.branch_name = "feature/7"
+        task.session_key = "issue:7"
+        task.implement_prompt.return_value = "implement it"
+
+        session = MagicMock()
+        session.send_turn.side_effect = QuotaExceededError(
+            "usage limit reached. Your limit will reset at 2pm (America/New_York)",
+        )
+        fake_git = MagicMock()
+        fake_git.count_commits_ahead.return_value = 0
+
+        with patch("loony_dev.git.GitRepo") as GitRepoCls, \
+                patch("loony_dev.coderabbit.is_available", return_value=False), \
+                patch.object(agent, "_open_session", return_value=session), \
+                patch.object(agent, "_close_session") as close_mock:
+            GitRepoCls.detect_default_branch.return_value = "main"
+            GitRepoCls.return_value = fake_git
+            result = agent.execute_issue(task, Path("/fake/worktree"))
+
+        self.assertFalse(result.success)
+        self.assertTrue(result.rate_limited)
+        self.assertTrue(agent.is_disabled())
+        # The single session is still closed even when the implement turn raises.
+        close_mock.assert_called_once()
+        session.send_turn.assert_called_once()
+
+
 class TestSessionRegistry(unittest.TestCase):
     """_register_session / terminate close live sessions on shutdown."""
 

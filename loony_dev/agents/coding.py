@@ -11,6 +11,7 @@ from loony_dev.agents.claude_session import (
     ClaudeSession,
     ClaudeSessionError,
     QuotaExceededError,
+    TurnResult,
 )
 from loony_dev.models import GitError, HookFailureError, TaskResult, truncate_for_log
 
@@ -300,7 +301,10 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             session.open()
         except Exception:
             self._unregister_session(session)
-            session.close()
+            try:
+                session.close()
+            except Exception:  # pragma: no cover - best-effort teardown
+                logger.debug("Error closing ClaudeSession after open failure", exc_info=True)
             raise
         return session
 
@@ -319,7 +323,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         *,
         timeout: float,
         phase: str,
-    ) -> tuple[object | None, TaskResult | None]:
+    ) -> tuple[TurnResult | None, TaskResult | None]:
         """Send one turn; translate quota/session errors into a TaskResult.
 
         Returns ``(turn_result, None)`` on success, or ``(None, failure)``
