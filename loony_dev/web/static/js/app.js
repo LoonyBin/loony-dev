@@ -11,6 +11,7 @@ import * as sessions from "./sessions.js";
 import * as repos from "./repos.js";
 import * as logs from "./logs.js";
 import * as entries from "./entries.js";
+import * as attach from "./attach.js";
 
 const POLL_INTERVAL_MS = 5000;
 
@@ -21,11 +22,12 @@ async function poll() {
   if (isPolling) return;
   isPolling = true;
   try {
-    const [workersR, worktreesR, sessionsR, stuckR] = await Promise.allSettled([
+    const [workersR, worktreesR, sessionsR, stuckR, taskSessionsR] = await Promise.allSettled([
       getJSON("/api/workers"),
       getJSON("/api/worktrees"),
       getJSON("/api/sessions"),
       getJSON("/api/stuck"),
+      getJSON("/api/task-sessions"),
     ]);
     if (
       workersR.status !== "fulfilled" ||
@@ -38,6 +40,7 @@ async function poll() {
     const worktrees = worktreesR.value;
     const sess = sessionsR.value;
     const stuck = stuckR.status === "fulfilled" ? stuckR.value : [];
+    const taskSessions = taskSessionsR.status === "fulfilled" ? taskSessionsR.value : [];
 
     const stuckCount = overview.renderStuck(stuck);
     const store = window.Alpine && window.Alpine.store("app");
@@ -46,6 +49,7 @@ async function poll() {
     overview.renderWorkers(workers);
     overview.renderWorktrees(worktrees);
     sessions.render(sess);
+    attach.render(taskSessions);
     repos.render(workers, worktrees);
 
     // Keep the per-repo pickers in sync with discovered repos.
@@ -68,6 +72,7 @@ async function poll() {
 function start() {
   entries.init();
   logs.init();
+  attach.init();
 
   // Allow modules (e.g. the kill button) to force an immediate refresh.
   window.addEventListener("dashboard:refresh", poll);

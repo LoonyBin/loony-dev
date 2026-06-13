@@ -167,7 +167,7 @@ class WebAppTestCase(unittest.TestCase):
 
     def test_static_assets_reachable(self) -> None:
         # The app shell loads its stylesheet and ES modules from /static.
-        for path in ("/static/app.css", "/static/js/app.js"):
+        for path in ("/static/app.css", "/static/js/app.js", "/static/js/attach.js"):
             resp = self.client.get(path)
             self.assertEqual(resp.status_code, 200, path)
 

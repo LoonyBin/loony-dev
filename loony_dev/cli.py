@@ -174,8 +174,8 @@ def supervisor_cmd(**_) -> None:
     "--host", default="127.0.0.1", show_default=True,
     help="Address to bind the dashboard to. Defaults to loopback. WARNING: the "
          "dashboard exposes mutating endpoints (write skills/commands, kill "
-         "processes) and has no auth — only bind to a non-loopback/0.0.0.0 "
-         "address on a trusted network.",
+         "processes, attach to / steer a task's Claude session) and has no auth "
+         "— only bind to a non-loopback/0.0.0.0 address on a trusted network.",
 )
 @click.option(
     "--port", default=5338, show_default=True,

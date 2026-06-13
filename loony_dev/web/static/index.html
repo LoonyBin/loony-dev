@@ -28,6 +28,18 @@
           integrity="sha384-X9kJyAubVxnP0hcA+AMMs21U445qsnqhnUF8EBlEpP3a42Kh/JwWjlv2ZcvGfphb"
           crossorigin="anonymous" defer></script>
 
+  <!-- xterm.js (CDN, no build) backs the per-task Attach terminal (#164). The
+       fit addon keeps the PTY sized to the viewport on desktop and mobile. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css"
+        integrity="sha384-9ftsg11+LSxVUaknegCfeKvlkO9EdIPI2op725RqY87IvhyGjElmpjZlP3LhTQjn"
+        crossorigin="anonymous" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"
+          integrity="sha384-xjfWUeCWdMtvpAb/SmM6lMzS6pQGcQa0loOl1d97j6Odw0vjK9nW3+dTb/bn/mwH"
+          crossorigin="anonymous" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"
+          integrity="sha384-dpjGwSSISUTz2taP54Bor7qkyMR20sSO9oe11UVYnGs2/YdUBf7HW30XKQx9PCzn"
+          crossorigin="anonymous" defer></script>
+
   <!-- Register the shell store from a parse-time inline script so the listener
        is in place before Alpine's deferred build auto-starts (the documented
        Alpine pattern). The deferred ES module below owns the data polling. -->
@@ -181,9 +193,20 @@
         <div id="repos-list" class="repo-grid"></div>
       </section>
 
-      <!-- Sessions: remote-control sessions (join URL + QR land in #157) -->
+      <!-- Sessions: remote-control sessions (join URL + QR land in #157) plus
+           per-task PTY sessions you can attach to / steer (#164). -->
       <section class="view" x-show="$store.app.view === 'sessions'">
-        <h2>Sessions</h2>
+        <h2>Task sessions</h2>
+        <p class="muted">In-flight worker-driven Claude sessions. Attach for a live
+          terminal, or send one-shot guidance the bot runs next.</p>
+        <div class="table-wrap">
+          <table id="task-sessions" class="data-table">
+            <thead><tr><th>Task</th><th>Repo</th><th>Status</th><th>Action</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <h2>Remote-control sessions</h2>
         <div class="table-wrap">
           <table id="sessions" class="data-table">
             <thead><tr><th>Session ID</th><th>Repo</th><th>Key</th></tr></thead>
@@ -227,7 +250,7 @@
               <button id="entry-delete" class="action" type="button">Delete</button>
               <button id="entry-new" class="action" type="button">New</button>
             </div>
-            <div id="entry-error"></div>
+            <div id="entry-error" class="entry-error"></div>
           </div>
         </div>
       </section>
@@ -243,6 +266,39 @@
         <pre id="log" class="log-pane">Select a worker repo to live-tail its log.</pre>
       </section>
     </main>
+  </div>
+
+  <!-- Attach terminal overlay (#164). Hidden until a task's Attach is clicked. -->
+  <div id="attach-modal" class="modal" role="dialog" aria-modal="true"
+       aria-labelledby="attach-title" hidden>
+    <div class="modal-card modal-term">
+      <div class="modal-head">
+        <span id="attach-title" class="modal-title">Attached</span>
+        <span class="spacer"></span>
+        <button id="attach-close" class="icon-btn" aria-label="Detach">✕</button>
+      </div>
+      <div id="attach-mic" class="attach-mic"></div>
+      <div id="attach-term" class="attach-term"></div>
+    </div>
+  </div>
+
+  <!-- One-shot "send guidance" overlay (the simpler inject path). -->
+  <div id="steer-modal" class="modal" role="dialog" aria-modal="true"
+       aria-labelledby="steer-title" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <span id="steer-title" class="modal-title">Send guidance</span>
+        <span class="spacer"></span>
+        <button id="steer-cancel" class="icon-btn" aria-label="Cancel">✕</button>
+      </div>
+      <textarea id="steer-text" rows="5"
+        aria-describedby="steer-error"
+        placeholder="Guidance for the bot's next turn (runs as an operator turn)…"></textarea>
+      <div class="editor-actions">
+        <button id="steer-send" class="action btn-primary" type="button">Send</button>
+      </div>
+      <div id="steer-error" class="entry-error" role="alert" aria-live="assertive"></div>
+    </div>
   </div>
 </body>
 </html>
