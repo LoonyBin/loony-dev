@@ -72,6 +72,51 @@ class ClaudeQuotaMixin:
     _quota_lock = threading.Lock()
     repo: str = ""  # Set by subclass __init__; used for session ID generation.
 
+    # ------------------------------------------------------------------
+    # Persistent session registry
+    # ------------------------------------------------------------------
+    # Agents that drive a long-lived ``ClaudeSession`` (see
+    # :mod:`loony_dev.agents.claude_session`) register it here so that
+    # ``terminate()`` — invoked from the orchestrator's signal handler — can
+    # close the underlying ``claude`` process on shutdown, just as it does for
+    # the throwaway ``-p`` subprocesses tracked by :class:`Agent`.
+
+    def _ensure_session_registry(self) -> None:
+        """Lazily create the per-instance session registry (thread-safe)."""
+        self.__dict__.setdefault("_session_lock", threading.Lock())
+        self.__dict__.setdefault("_active_sessions", set())
+
+    def _register_session(self, session: object) -> None:
+        """Record a freshly opened session so terminate() can reach it."""
+        self._ensure_session_registry()
+        with self._session_lock:
+            self._active_sessions.add(session)
+
+    def _unregister_session(self, session: object) -> None:
+        """Drop a closed session from the registry."""
+        self._ensure_session_registry()
+        with self._session_lock:
+            self._active_sessions.discard(session)
+
+    def terminate(self) -> None:
+        """Terminate active subprocesses *and* close any open sessions.
+
+        Extends :meth:`Agent.terminate` so a shutdown signal also tears down the
+        persistent ``ClaudeSession`` processes, not just the one-shot ``-p``
+        subprocesses.
+        """
+        try:
+            super().terminate()
+        finally:
+            self._ensure_session_registry()
+            with self._session_lock:
+                sessions = list(self._active_sessions)
+            for session in sessions:
+                try:
+                    session.close()
+                except Exception:  # pragma: no cover - best-effort shutdown
+                    logger.debug("Error closing session on terminate", exc_info=True)
+
     def can_handle(self, task: Task) -> bool:
         """Check availability then delegate to subclass task-type check.
 
