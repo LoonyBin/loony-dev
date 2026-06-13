@@ -323,10 +323,16 @@ def interrupt_session(
     reply = _send_control_command(
         Path(session.control_socket), "interrupt", timeout=timeout
     )
+    if reply not in {"interrupted", "idle"}:
+        # A stale/mismatched control server (e.g. "error: ..." or an empty
+        # reply) is a control failure, not a successful idle interrupt.
+        raise SessionControlError(
+            f"control socket {session.control_socket} returned invalid reply: {reply!r}"
+        )
     return {
         "session_id": session_id,
         "repo": session.repo,
-        "interrupted": reply.startswith("interrupted"),
+        "interrupted": reply == "interrupted",
         "detail": reply,
     }
 

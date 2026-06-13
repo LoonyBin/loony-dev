@@ -50,10 +50,14 @@ async def _auto_interrupt_loop(
     while True:
         try:
             await asyncio.sleep(AUTO_INTERRUPT_POLL_INTERVAL)
+            # Build the candidate set at the auto-interrupt age so turns younger
+            # than ``stuck_after_seconds`` still qualify (e.g. --stuck-after 300
+            # --auto-interrupt-after 60 must catch a 2-minute blocked turn).
+            effective_threshold = min(stuck_after_seconds, auto_interrupt_after_seconds)
             stuck = await asyncio.to_thread(
                 services.list_stuck,
                 base_dir,
-                threshold_seconds=stuck_after_seconds,
+                threshold_seconds=effective_threshold,
                 activity_sample_seconds=activity_sample_seconds,
             )
             candidates = services.auto_interrupt_candidates(

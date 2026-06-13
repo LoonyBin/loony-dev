@@ -1155,6 +1155,9 @@ class SessionInterruptReproducerTestCase(unittest.TestCase):
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and b"LONGTURN" not in session.recent_output():
             time.sleep(0.05)
+        # Hard barrier: fail at setup if the turn never started, rather than
+        # intermittently at the interrupt assertions below.
+        self.assertIn(b"LONGTURN", session.recent_output())
 
         client = TestClient(create_app(base_dir=self.base, supervisor_log=None))
         resp = client.post("/api/sessions/repro-163/interrupt")

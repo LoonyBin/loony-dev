@@ -258,6 +258,12 @@ class ClaudeSession:
         # One bot turn at a time per session; a future human-attach channel will
         # respect the same lock.
         self._turn_lock = threading.Lock()
+        # Turn-in-progress handshake for interrupt(). A separate small lock (not
+        # ``_turn_lock``, which is held for the whole turn) makes the "is a turn
+        # running?" check atomic with the ESC write, so an ESC cannot be queued
+        # between turns.
+        self._turn_state_lock = threading.Lock()
+        self._turn_in_progress = False
 
         self._drain_thread: threading.Thread | None = None
         self._closed = threading.Event()
@@ -366,49 +372,60 @@ class ClaudeSession:
             raise ClaudeSessionError("session not open")
 
         with self._turn_lock:
-            # Consume any entries already on disk so they are not mistaken for
-            # this turn's output.
-            self._tailer.read_new()
+            # Mark the turn live so interrupt() may send ESC; the state lock
+            # makes the flag flip atomic with interrupt()'s check + ESC write.
+            with self._turn_state_lock:
+                self._turn_in_progress = True
+            try:
+                return self._run_turn(prompt, timeout=timeout)
+            finally:
+                with self._turn_state_lock:
+                    self._turn_in_progress = False
 
-            self._inject_prompt(prompt)
+    def _run_turn(self, prompt: str, *, timeout: float) -> TurnResult:
+        # Consume any entries already on disk so they are not mistaken for
+        # this turn's output.
+        self._tailer.read_new()
 
-            added: list[dict] = []
-            terminal: dict | None = None
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                for entry in self._tailer.read_new():
-                    added.append(entry)
-                    self._check_quota(entry)
-                    if terminal is None and (
-                        _is_terminal_assistant(entry) or _is_interrupt(entry)
-                    ):
-                        terminal = entry
-                if terminal is not None:
-                    break
-                if self._closed.is_set():
-                    raise ClaudeSessionError("session process exited mid-turn")
-                time.sleep(_POLL_INTERVAL)
-            else:
-                raise TurnTimeout(
-                    f"No terminal entry within {timeout:.0f}s for session {self.session_id}",
-                )
+        self._inject_prompt(prompt)
 
-            # Debounce: let trailing tool/system/snapshot entries flush, then
-            # fold them into the result.
-            time.sleep(self._debounce)
+        added: list[dict] = []
+        terminal: dict | None = None
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
             for entry in self._tailer.read_new():
                 added.append(entry)
                 self._check_quota(entry)
-
-            was_interrupted = _is_interrupt(terminal)
-            stop_reason = self._stop_reason(terminal, was_interrupted)
-            text = self._assistant_text(added)
-            return TurnResult(
-                text=text,
-                stop_reason=stop_reason,
-                was_interrupted=was_interrupted,
-                entries_added=len(added),
+                if terminal is None and (
+                    _is_terminal_assistant(entry) or _is_interrupt(entry)
+                ):
+                    terminal = entry
+            if terminal is not None:
+                break
+            if self._closed.is_set():
+                raise ClaudeSessionError("session process exited mid-turn")
+            time.sleep(_POLL_INTERVAL)
+        else:
+            raise TurnTimeout(
+                f"No terminal entry within {timeout:.0f}s for session {self.session_id}",
             )
+
+        # Debounce: let trailing tool/system/snapshot entries flush, then
+        # fold them into the result.
+        time.sleep(self._debounce)
+        for entry in self._tailer.read_new():
+            added.append(entry)
+            self._check_quota(entry)
+
+        was_interrupted = _is_interrupt(terminal)
+        stop_reason = self._stop_reason(terminal, was_interrupted)
+        text = self._assistant_text(added)
+        return TurnResult(
+            text=text,
+            stop_reason=stop_reason,
+            was_interrupted=was_interrupted,
+            entries_added=len(added),
+        )
 
     def interrupt(self) -> bool:
         """Send ESC to abort an in-flight turn (process survives).
@@ -416,14 +433,17 @@ class ClaudeSession:
         Returns ``True`` if ESC was written (a turn was running), ``False``
         otherwise. No-op when no turn is running: a stray ESC written between
         turns would sit in the PTY buffer and corrupt the next bracketed-paste
-        prompt, so we only send it while ``send_turn`` holds ``_turn_lock``.
+        prompt. The check and the ESC write happen under ``_turn_state_lock``,
+        which ``send_turn`` also holds when it flips ``_turn_in_progress``, so
+        a turn cannot end between the check and the write.
         """
         if self._master_fd is None:
             raise ClaudeSessionError("session not open")
-        if self._turn_lock.locked():
+        with self._turn_state_lock:
+            if not self._turn_in_progress:
+                return False
             self._write_all(_ESC)
             return True
-        return False
 
     def close(self) -> None:
         """Terminate the process and release the PTY / log handles."""
@@ -479,9 +499,18 @@ class ClaudeSession:
             return
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            # A stale socket file from a crashed predecessor blocks bind().
-            if path.exists() or path.is_socket():
+            # A stale socket file from a crashed predecessor blocks bind(); only
+            # remove an actual socket node, never an unrelated regular file (a
+            # typo/bad config must not destroy data — leave interrupt disabled).
+            if path.is_socket():
                 path.unlink()
+            elif path.exists():
+                logger.warning(
+                    "Control socket path %s exists and is not a socket; "
+                    "interrupt disabled", path,
+                )
+                self._control_sock = None
+                return
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.bind(str(path))
             sock.listen(_CONTROL_BACKLOG)
