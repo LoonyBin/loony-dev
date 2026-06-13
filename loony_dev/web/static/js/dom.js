@@ -46,8 +46,3 @@ export function goView(view) {
   if (store) store.go(view);
   else location.hash = view;
 }
-
-// Ask the orchestrator to re-poll the API now (e.g. after a kill action).
-export function requestRefresh() {
-  window.dispatchEvent(new Event("dashboard:refresh"));
-}
