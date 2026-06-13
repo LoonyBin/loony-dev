@@ -8,11 +8,11 @@
 // Matches the supervisor's default max_buffer_lines.
 const MAX_LOG_LINES = 5000;
 
-let activeStream = null; // the single live EventSource (closed when switching repos)
+let activeStream = null; // stop fn for the single live stream (closed when switching repos)
 
 function closeActiveStream() {
   if (activeStream) {
-    activeStream.close();
+    activeStream();
     activeStream = null;
   }
 }
@@ -30,24 +30,16 @@ function isPinnedToBottom(pre) {
   return pre.scrollHeight - pre.clientHeight - pre.scrollTop < 4;
 }
 
-export function loadLog(repo) {
-  const title = document.getElementById("log-title");
-  const pre = document.getElementById("log");
-  const select = document.getElementById("log-repo");
-  if (select && select.value !== repo) select.value = repo;
-
-  // Close any previous stream so the browser doesn't leak connections.
-  closeActiveStream();
-
-  title.textContent = `— ${repo} (live)`;
+// Live-tail `repo`'s worker log into the `pre` element. Returns a stop function
+// that closes the stream. Shared by the global Logs view and the per-repo
+// drill-down (#158) so both get the same bounded-DOM / auto-scroll behaviour.
+export function streamLog(repo, pre) {
   pre.textContent = "";
-
   const es = new EventSource(`/api/logs/${repo}/stream`);
-  activeStream = es;
+  let closed = false;
 
   es.onmessage = (event) => {
-    // Ignore late messages from a stream we've already switched away from.
-    if (activeStream !== es) return;
+    if (closed) return;
     const pinned = isPinnedToBottom(pre);
     pre.textContent += (pre.textContent ? "\n" : "") + event.data;
     // Trim to the last MAX_LOG_LINES to bound memory.
@@ -60,10 +52,25 @@ export function loadLog(repo) {
 
   es.onerror = () => {
     // EventSource auto-reconnects; only surface an error if nothing arrived yet.
-    if (activeStream === es && !pre.textContent) {
+    if (!closed && !pre.textContent) {
       pre.textContent = "(log stream unavailable)";
     }
   };
+
+  return () => { closed = true; es.close(); };
+}
+
+export function loadLog(repo) {
+  const title = document.getElementById("log-title");
+  const pre = document.getElementById("log");
+  const select = document.getElementById("log-repo");
+  if (select && select.value !== repo) select.value = repo;
+
+  // Close any previous stream so the browser doesn't leak connections.
+  closeActiveStream();
+
+  title.textContent = `— ${repo} (live)`;
+  activeStream = streamLog(repo, pre);
 }
 
 // Keep the repo picker in sync with discovered repos, preserving any selection.

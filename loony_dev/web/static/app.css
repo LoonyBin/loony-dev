@@ -377,7 +377,7 @@ button.action:hover,
 }
 .muted { color: var(--text-muted); font-size: var(--fs-1); }
 
-/* ---- Repos view ------------------------------------------------------ */
+/* ---- Repos roll-up (Overview) ---------------------------------------- */
 .repo-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
@@ -392,9 +392,66 @@ button.action:hover,
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
+  /* The whole card is a button: reset the native chrome, keep it tappable. */
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
 }
+.repo-card:hover { border-color: var(--primary); }
+.repo-card:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .repo-card .repo-name { font-weight: 600; word-break: break-all; }
-.repo-card .repo-meta { display: flex; gap: var(--sp-4); flex-wrap: wrap; font-size: var(--fs-1); color: var(--text-muted); }
+.repo-card .repo-meta {
+  display: flex;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  align-items: baseline;
+  font-size: var(--fs-1);
+  color: var(--text-muted);
+}
+.stuck-badge { color: #fff; background: var(--danger-strong); border-radius: 999px; padding: 0 var(--sp-2); font-weight: 600; }
+
+/* ---- Repo detail (#158) ---------------------------------------------- */
+.repo-detail h2 { word-break: break-all; }
+.repo-detail h3 { font-size: var(--fs-3); margin: var(--sp-5) 0 var(--sp-3); }
+.back-link {
+  font: inherit;
+  font-size: var(--fs-2);
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0 0 var(--sp-2);
+  color: var(--primary);
+  cursor: pointer;
+}
+.back-link:hover { text-decoration: underline; }
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: var(--sp-4);
+}
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--sp-4);
+}
+.card h3 { margin: 0 0 var(--sp-3); font-size: var(--fs-3); }
+
+/* Key/value lists inside the worker & session cards. */
+.kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--sp-1) var(--sp-4);
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-2);
+}
+.kv dt { color: var(--text-muted); }
+.kv dd { margin: 0; word-break: break-word; }
+.join-link { display: inline-block; margin-top: var(--sp-2); text-decoration: none; }
 
 /* ---- Skills & Commands editor --------------------------------------- */
 .editor-grid {

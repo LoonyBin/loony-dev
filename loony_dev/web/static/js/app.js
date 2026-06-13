@@ -7,15 +7,16 @@
 //
 // Real-time push (issue #159): a single resilient EventSource consumes the
 // consolidated /api/events stream (#155) and re-renders the views on every
-// snapshot. There is no polling timer — the stuck banner and the worker /
-// worktree / session tables update the instant the server state changes. The
-// browser's EventSource auto-reconnects when the stream drops; we surface a
-// subtle "reconnecting…" indicator while it is down and recreate the source
-// ourselves if the browser gives up entirely.
+// snapshot. There is no polling timer — the stuck banner, the per-repo roll-up
+// cards, the session table, and the per-repo drill-down (#158) update the
+// instant the server state changes. The browser's EventSource auto-reconnects
+// when the stream drops; we surface a subtle "reconnecting…" indicator while it
+// is down and recreate the source ourselves if the browser gives up entirely.
 
 import * as overview from "./overview.js";
 import * as sessions from "./sessions.js";
 import * as repos from "./repos.js";
+import * as repoDetail from "./repoDetail.js";
 import * as logs from "./logs.js";
 import * as entries from "./entries.js";
 import * as attach from "./attach.js";
@@ -57,11 +58,12 @@ function applySnapshot(snapshot) {
   const store = appStore();
   if (store) store.stuckCount = stuckCount;
 
-  overview.renderWorkers(workers);
-  overview.renderWorktrees(worktrees);
   sessions.render(sess);
   attach.render(taskSessions);
-  repos.render(workers, worktrees);
+  // Overview is now a roll-up of per-repo cards (#158); worker / worktree detail
+  // lives in the per-repo drill-down rather than dedicated Overview tables.
+  repos.render(workers, worktrees, stuck);
+  repoDetail.update(snapshot);
 
   // Keep the per-repo pickers in sync with discovered repos (cheap, no clobber).
   const next = [...new Set([
@@ -120,6 +122,7 @@ function start() {
   entries.init();
   logs.init();
   attach.init();
+  repoDetail.init();
   connect();
 }
 
