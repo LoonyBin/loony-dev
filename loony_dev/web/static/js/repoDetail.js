@@ -148,14 +148,14 @@ function show(repo) {
 
 // Fed the consolidated snapshot by the orchestrator; re-render only while a
 // repo detail page is open. Never touches the log stream.
-function update(state) {
+export function update(state) {
   lastState = state;
   if (current) renderAll();
 }
 
 export function init() {
   // Exposed on window so the Alpine `x-effect` in index.html can drive show().
-  window.repoDetail = { show, update };
+  window.repoDetail = { show };
   // Honour a deep link (#repo/owner/name) if Alpine has already booted.
   const store = window.Alpine && window.Alpine.store("app");
   if (store && store.view === "repo" && store.repo) show(store.repo);
