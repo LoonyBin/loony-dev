@@ -42,6 +42,10 @@ function setStreamConnected(connected) {
 // the textarea while the user is typing, so the editor only reacts to an actual
 // change in the discovered-repo set (which just repopulates its picker).
 function applySnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    console.error("Malformed snapshot (expected object):", snapshot);
+    return;
+  }
   const workers = snapshot.workers || [];
   const worktrees = snapshot.worktrees || [];
   const sess = snapshot.sessions || [];

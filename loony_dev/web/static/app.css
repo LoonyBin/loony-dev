@@ -161,7 +161,7 @@ section.view > h2:first-child { margin-top: 0; }
   width: 0.5rem;
   height: 0.5rem;
   border-radius: 50%;
-  background: var(--warning, var(--danger-strong));
+  background: var(--danger-strong);
   animation: stream-pulse 1.2s ease-in-out infinite;
 }
 @keyframes stream-pulse {
