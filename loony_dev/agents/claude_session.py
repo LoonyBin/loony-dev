@@ -21,6 +21,7 @@ import os
 import pty
 import re
 import signal
+import socket
 import struct
 import termios
 import threading
@@ -62,6 +63,15 @@ _DEFAULT_READINESS_TIMEOUT = 30.0
 _SUBMIT_DELAY = 0.1
 # Bytes of recent PTY output retained for a dashboard relay to read back.
 _DEFAULT_RING_BYTES = 256 * 1024
+
+# Control-channel (Unix-socket) tunables. The optional control socket lets a
+# *separate* process (the web dashboard, which does not own this session's PTY)
+# ask the session to interrupt its in-flight turn — see ``control_socket``.
+_CONTROL_BACKLOG = 8
+_CONTROL_ACCEPT_TIMEOUT = 0.5  # accept() wake-up period so the loop sees _closed
+_CONTROL_RECV_BYTES = 256
+# One-line command the control socket understands.
+_CONTROL_INTERRUPT = "interrupt"
 
 
 class ClaudeSessionError(Exception):
@@ -219,6 +229,7 @@ class ClaudeSession:
         extra_args: list[str] | None = None,
         env: dict[str, str] | None = None,
         log_file: Path | None = None,
+        control_socket: Path | None = None,
         cols: int = _DEFAULT_COLS,
         rows: int = _DEFAULT_ROWS,
         debounce: float = _DEFAULT_DEBOUNCE,
@@ -238,6 +249,7 @@ class ClaudeSession:
 
         self._jsonl_path = jsonl_path_for(self.cwd, self.session_id)
         self._log_path = log_file if log_file is not None else self._default_log_path()
+        self._control_socket_path = Path(control_socket) if control_socket is not None else None
 
         self._pid: int | None = None
         self._master_fd: int | None = None
@@ -252,6 +264,8 @@ class ClaudeSession:
         self._ring = bytearray()
         self._ring_lock = threading.Lock()
         self._log_fh = None
+        self._control_sock: socket.socket | None = None
+        self._control_thread: threading.Thread | None = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -318,6 +332,9 @@ class ClaudeSession:
             target=self._drain_loop, name=f"claude-drain-{self.session_id[:8]}", daemon=True,
         )
         self._drain_thread.start()
+
+        if self._control_socket_path is not None:
+            self._start_control_listener()
 
         self._await_readiness()
         logger.info(
@@ -393,17 +410,20 @@ class ClaudeSession:
                 entries_added=len(added),
             )
 
-    def interrupt(self) -> None:
+    def interrupt(self) -> bool:
         """Send ESC to abort an in-flight turn (process survives).
 
-        No-op when no turn is running: a stray ESC written between turns would
-        sit in the PTY buffer and corrupt the next bracketed-paste prompt, so we
-        only send it while ``send_turn`` holds ``_turn_lock``.
+        Returns ``True`` if ESC was written (a turn was running), ``False``
+        otherwise. No-op when no turn is running: a stray ESC written between
+        turns would sit in the PTY buffer and corrupt the next bracketed-paste
+        prompt, so we only send it while ``send_turn`` holds ``_turn_lock``.
         """
         if self._master_fd is None:
             raise ClaudeSessionError("session not open")
         if self._turn_lock.locked():
             self._write_all(_ESC)
+            return True
+        return False
 
     def close(self) -> None:
         """Terminate the process and release the PTY / log handles."""
@@ -417,6 +437,7 @@ class ClaudeSession:
                 pass
             self._reap(grace=5.0)
         self._closed.set()
+        self._stop_control_listener()
         if self._master_fd is not None:
             try:
                 os.close(self._master_fd)
@@ -441,6 +462,85 @@ class ClaudeSession:
         """Return the tail of raw PTY output retained for a dashboard relay."""
         with self._ring_lock:
             return bytes(self._ring)
+
+    # ------------------------------------------------------------------
+    # Control channel (out-of-process interrupt)
+    # ------------------------------------------------------------------
+    #
+    # The dashboard runs in a different process and cannot write to this
+    # session's PTY master directly. When ``control_socket`` is set, ``open``
+    # binds a Unix-domain socket the dashboard connects to; a one-line command
+    # (``interrupt``) is dispatched to :meth:`interrupt`, so ESC reaches the PTY
+    # from the process that actually owns it.
+
+    def _start_control_listener(self) -> None:
+        path = self._control_socket_path
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # A stale socket file from a crashed predecessor blocks bind().
+            if path.exists() or path.is_socket():
+                path.unlink()
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.bind(str(path))
+            sock.listen(_CONTROL_BACKLOG)
+            sock.settimeout(_CONTROL_ACCEPT_TIMEOUT)
+        except OSError as exc:
+            # The control channel is best-effort: a bind failure must not stop
+            # the session from running — interrupt simply stays unavailable.
+            logger.warning("Could not start control socket %s: %s", path, exc)
+            self._control_sock = None
+            return
+        self._control_sock = sock
+        self._control_thread = threading.Thread(
+            target=self._control_loop, name=f"claude-ctl-{self.session_id[:8]}", daemon=True,
+        )
+        self._control_thread.start()
+
+    def _control_loop(self) -> None:
+        sock = self._control_sock
+        if sock is None:
+            return
+        while not self._closed.is_set():
+            try:
+                conn, _ = sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break  # listener closed during shutdown
+            with conn:
+                try:
+                    conn.settimeout(_CONTROL_ACCEPT_TIMEOUT)
+                    data = conn.recv(_CONTROL_RECV_BYTES)
+                except OSError:
+                    continue
+                try:
+                    conn.sendall(self._handle_control(data))
+                except OSError:
+                    pass
+
+    def _handle_control(self, data: bytes) -> bytes:
+        command = data.decode("utf-8", "replace").strip()
+        if command == _CONTROL_INTERRUPT:
+            return b"interrupted\n" if self.interrupt() else b"idle\n"
+        return b"error: unknown command\n"
+
+    def _stop_control_listener(self) -> None:
+        if self._control_sock is not None:
+            try:
+                self._control_sock.close()
+            except OSError:
+                pass
+            self._control_sock = None
+        if self._control_thread is not None:
+            self._control_thread.join(timeout=2.0)
+            self._control_thread = None
+        if self._control_socket_path is not None:
+            try:
+                self._control_socket_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     # ------------------------------------------------------------------
     # Internals

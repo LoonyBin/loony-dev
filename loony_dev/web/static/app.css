@@ -307,16 +307,28 @@ button.action:hover,
 .btn:hover { background: var(--border); }
 .btn-primary { background: var(--primary); color: var(--primary-contrast); border-color: var(--primary); }
 
+.interrupt-btn,
 .kill-btn {
   cursor: pointer;
   font: inherit;
   color: #fff;
-  background: var(--danger-strong);
   border: none;
   border-radius: var(--radius-sm);
   padding: var(--sp-1) var(--sp-3);
   min-height: 2rem;
 }
+
+/* Interrupt (ESC) is the primary, reversible action — nudge toward it. */
+.interrupt-btn {
+  background: var(--primary);
+  color: var(--primary-contrast);
+  margin-right: var(--sp-2);
+}
+.interrupt-btn:hover { filter: brightness(1.08); }
+.interrupt-btn:disabled { opacity: 0.5; cursor: not-allowed; filter: none; }
+
+/* Kill is the danger escalation. */
+.kill-btn { background: var(--danger-strong); }
 .kill-btn:hover { background: var(--danger); }
 
 /* ---- Controls -------------------------------------------------------- */
