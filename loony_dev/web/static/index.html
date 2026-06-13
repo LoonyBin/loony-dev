@@ -72,6 +72,36 @@
       const store = window.Alpine && window.Alpine.store("app");
       if (store) store.syncFromHash();
     });
+
+    // While no manual choice is pinned the CSS follows the OS theme via a media
+    // query, but the Alpine store snapshots it once — so the toggle icon/label
+    // drift after an OS theme change. Re-sync the store (unless pinned) so they
+    // stay in lockstep without a reload.
+    if (window.matchMedia) {
+      const mq = window.matchMedia("(prefers-color-scheme: dark)");
+      mq.addEventListener("change", (e) => {
+        let pinned = false;
+        try {
+          const t = localStorage.getItem("loony-theme");
+          pinned = t === "dark" || t === "light";
+        } catch (err) { /* localStorage unavailable */ }
+        if (pinned) return;
+        const store = window.Alpine && window.Alpine.store("app");
+        if (store) store.theme = e.matches ? "dark" : "light";
+      });
+    }
+
+    // Backstop: Alpine removes [x-cloak] itself once it boots. If it never
+    // loads (CDN/SRI/ad-block), uncloak after a grace period so the page
+    // degrades to visible content instead of staying permanently blank.
+    window.addEventListener("load", () => {
+      setTimeout(() => {
+        if (!window.Alpine) {
+          document.querySelectorAll("[x-cloak]")
+            .forEach((el) => el.removeAttribute("x-cloak"));
+        }
+      }, 3000);
+    });
   </script>
 
   <script type="module" src="/static/js/app.js"></script>

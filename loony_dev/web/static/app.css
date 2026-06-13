@@ -137,7 +137,9 @@ section.view > h2:first-child { margin-top: 0; }
   font: inherit;
   font-size: var(--fs-1);
   font-weight: 600;
-  color: var(--primary-contrast);
+  /* Fixed white: the background is always danger-red, so reusing the
+     theme-aware --primary-contrast would render dark text in dark mode. */
+  color: #fff;
   background: var(--danger-strong);
   border: none;
   border-radius: 999px;
@@ -251,7 +253,8 @@ td.cmdline { font-family: var(--font-mono); font-size: var(--fs-1); word-break: 
     width: 1px;
     height: 1px;
     overflow: hidden;
-    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
   .data-table tr {
     display: block;

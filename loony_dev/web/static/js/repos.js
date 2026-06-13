@@ -12,10 +12,14 @@ export function render(workers, worktrees) {
 
   const byRepo = new Map();
   const ensure = (repo) => {
-    if (!byRepo.has(repo)) byRepo.set(repo, { repo, status: null, worktrees: 0 });
+    if (!byRepo.has(repo)) {
+      byRepo.set(repo, { repo, statuses: new Set(), worktrees: 0 });
+    }
     return byRepo.get(repo);
   };
-  for (const w of workers) ensure(w.repo).status = w.status;
+  // A repo can have several workers; collect every status so a repo with
+  // mixed worker states isn't reduced to whichever one happened to be last.
+  for (const w of workers) ensure(w.repo).statuses.add(w.status);
   for (const w of worktrees) ensure(w.repo).worktrees += 1;
 
   const repos = [...byRepo.values()].sort((a, b) => a.repo.localeCompare(b.repo));
@@ -41,9 +45,13 @@ export function render(workers, worktrees) {
     const meta = document.createElement("div");
     meta.className = "repo-meta";
     const status = document.createElement("span");
-    if (r.status) {
-      status.className = `status status-${r.status}`;
-      status.textContent = r.status;
+    if (r.statuses.size === 1) {
+      const [only] = r.statuses;
+      status.className = `status status-${only}`;
+      status.textContent = only;
+    } else if (r.statuses.size > 1) {
+      status.className = "muted";
+      status.textContent = "mixed";
     } else {
       status.className = "muted";
       status.textContent = "no worker";

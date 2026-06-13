@@ -10,6 +10,21 @@ const MAX_LOG_LINES = 5000;
 
 let activeStream = null; // the single live EventSource (closed when switching repos)
 
+function closeActiveStream() {
+  if (activeStream) {
+    activeStream.close();
+    activeStream = null;
+  }
+}
+
+// Reset the log pane to its idle state when no repo is selected.
+function clearLogPane() {
+  const title = document.getElementById("log-title");
+  const pre = document.getElementById("log");
+  if (title) title.textContent = "";
+  if (pre) pre.textContent = "Select a worker repo to live-tail its log.";
+}
+
 function isPinnedToBottom(pre) {
   // Treat "within 4px of the bottom" as pinned to tolerate sub-pixel scrolling.
   return pre.scrollHeight - pre.clientHeight - pre.scrollTop < 4;
@@ -22,10 +37,7 @@ export function loadLog(repo) {
   if (select && select.value !== repo) select.value = repo;
 
   // Close any previous stream so the browser doesn't leak connections.
-  if (activeStream) {
-    activeStream.close();
-    activeStream = null;
-  }
+  closeActiveStream();
 
   title.textContent = `— ${repo} (live)`;
   pre.textContent = "";
@@ -71,12 +83,22 @@ export function setRepos(repos) {
     select.appendChild(opt);
   }
   select.value = repos.includes(prev) ? prev : "";
+  // The selected repo dropped out: stop streaming its now-stale log.
+  if (!select.value) {
+    closeActiveStream();
+    clearLogPane();
+  }
 }
 
 export function init() {
   const select = document.getElementById("log-repo");
   if (!select) return;
   select.addEventListener("change", () => {
-    if (select.value) loadLog(select.value);
+    if (select.value) {
+      loadLog(select.value);
+    } else {
+      closeActiveStream();
+      clearLogPane();
+    }
   });
 }
