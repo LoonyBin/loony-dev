@@ -323,7 +323,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         *,
         timeout: float,
         phase: str,
-    ) -> tuple[TurnResult | None, TaskResult | None]:
+    ) -> tuple[TurnResult, None] | tuple[None, TaskResult]:
         """Send one turn; translate quota/session errors into a TaskResult.
 
         Returns ``(turn_result, None)`` on success, or ``(None, failure)``
