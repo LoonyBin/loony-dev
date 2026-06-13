@@ -119,10 +119,12 @@ class ServicesTestCase(unittest.TestCase):
     def test_list_sessions_empty_without_files(self) -> None:
         self.assertEqual(services.list_sessions(self.base), [])
 
-    def _write_conn(self, owner: str, repo: str, body: str) -> None:
+    def _write_conn(self, owner: str, repo: str, body: str, *, pid: int | None = None) -> None:
         repo_dir = self.base / ".logs" / owner / repo
         repo_dir.mkdir(parents=True, exist_ok=True)
         (repo_dir / services.REMOTE_CONTROL_CONN_NAME).write_text(body)
+        if pid is not None:
+            (repo_dir / services.REMOTE_CONTROL_PID_NAME).write_text(str(pid))
 
     def test_list_sessions_reads_remote_control_json(self) -> None:
         self._write_conn(
@@ -134,6 +136,38 @@ class ServicesTestCase(unittest.TestCase):
         self.assertEqual(sessions[0].session_id, "loony-acme-x")
         self.assertEqual(sessions[0].repo, "acme/x")
         self.assertEqual(sessions[0].key, "base")
+
+    def test_list_sessions_round_trips_join_url_and_mode(self) -> None:
+        # A connection file as written by the supervisor's _write_connection_file:
+        # the join_url and mode must round-trip through to the SessionView.
+        self._write_conn(
+            "acme", "x",
+            '{"session_id": "loony-acme-x", "repo": "acme/x", "key": "base", '
+            '"mode": "remote-control", "join_url": "https://claude.ai/c/abc123"}',
+            pid=os.getpid(),
+        )
+        s = services.list_sessions(self.base)[0]
+        self.assertEqual(s.join_url, "https://claude.ai/c/abc123")
+        self.assertEqual(s.mode, "remote-control")
+        self.assertIsNotNone(s.updated_at)
+        self.assertTrue(s.alive)  # our own PID is alive
+
+    def test_list_sessions_join_url_null_when_absent(self) -> None:
+        # No join_url yet (Claude hasn't emitted the deep-link) must yield null,
+        # not an error. With no PID file, alive falls back to null.
+        self._write_conn("acme", "x", '{"session_id": "loony-acme-x", "repo": "acme/x", "key": "base"}')
+        s = services.list_sessions(self.base)[0]
+        self.assertIsNone(s.join_url)
+        self.assertIsNone(s.mode)
+        self.assertIsNone(s.alive)
+
+    def test_list_sessions_alive_false_for_dead_pid(self) -> None:
+        self._write_conn(
+            "acme", "x",
+            '{"session_id": "loony-acme-x", "repo": "acme/x", "key": "base"}',
+            pid=0x7FFFFFFF,  # almost certainly not a live process
+        )
+        self.assertFalse(services.list_sessions(self.base)[0].alive)
 
     def test_list_sessions_skips_malformed_and_missing(self) -> None:
         # Good file for one repo, malformed JSON for another, and a third repo
@@ -182,6 +216,23 @@ class WebAppTestCase(unittest.TestCase):
         resp = self.client.get("/api/sessions")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), [])
+
+    def test_sessions_endpoint_surfaces_join_url_and_liveness(self) -> None:
+        repo_dir = self.base / ".logs" / "acme" / "widgets"
+        (repo_dir / services.REMOTE_CONTROL_CONN_NAME).write_text(
+            '{"session_id": "loony-acme-widgets", "repo": "acme/widgets", "key": "base", '
+            '"mode": "remote-control", "join_url": "https://claude.ai/c/xyz"}'
+        )
+        (repo_dir / services.REMOTE_CONTROL_PID_NAME).write_text(str(os.getpid()))
+        resp = self.client.get("/api/sessions")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(len(body), 1)
+        s = body[0]
+        self.assertEqual(s["join_url"], "https://claude.ai/c/xyz")
+        self.assertEqual(s["mode"], "remote-control")
+        self.assertTrue(s["alive"])
+        self.assertIsNotNone(s["updated_at"])
 
     def test_log_tail_endpoint(self) -> None:
         resp = self.client.get("/api/logs/acme/widgets/tail?lines=5")
