@@ -218,7 +218,7 @@ class WebAppTestCase(unittest.TestCase):
 
     def test_static_assets_reachable(self) -> None:
         # The app shell loads its stylesheet and ES modules from /static.
-        for path in ("/static/app.css", "/static/js/app.js"):
+        for path in ("/static/app.css", "/static/js/app.js", "/static/js/attach.js"):
             resp = self.client.get(path)
             self.assertEqual(resp.status_code, 200, path)
 
@@ -715,7 +715,10 @@ class StateEventsEndpointTestCase(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(drv.headers.get("cache-control"), "no-cache")
             self.assertEqual(drv.headers.get("x-accel-buffering"), "no")
             snapshot = json.loads(await _read_first_sse_event(drv))
-        self.assertEqual(set(snapshot), {"workers", "worktrees", "sessions", "stuck"})
+        self.assertEqual(
+            set(snapshot),
+            {"workers", "worktrees", "sessions", "task_sessions", "stuck"},
+        )
         # The snapshot mirrors the per-resource endpoints: the seeded worker shows.
         self.assertEqual([w["repo"] for w in snapshot["workers"]], ["acme/widgets"])
 

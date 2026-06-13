@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import pty
+import queue
 import re
 import signal
 import socket
@@ -63,6 +64,18 @@ _DEFAULT_READINESS_TIMEOUT = 30.0
 _SUBMIT_DELAY = 0.1
 # Bytes of recent PTY output retained for a dashboard relay to read back.
 _DEFAULT_RING_BYTES = 256 * 1024
+# Max chunks buffered per live attach subscriber before the oldest is dropped.
+# A slow/parked dashboard client must never back-pressure the drain thread (that
+# would wedge the bot's turn), so the queue is bounded and lossy by design — a
+# terminal repaints itself, so a dropped chunk at worst causes a transient gap.
+_SUBSCRIBER_QUEUE_MAX = 1024
+
+# Result of :meth:`ClaudeSession.operator_write` — distinguishes a write that
+# went to the PTY, an ESC routed to ``interrupt`` while the bot held the mic, and
+# input refused because the bot owns the channel mid-turn.
+OPERATOR_WRITTEN = "written"
+OPERATOR_INTERRUPTED = "interrupted"
+OPERATOR_REFUSED = "refused"
 
 # Control-channel (Unix-socket) tunables. The optional control socket lets a
 # *separate* process (the web dashboard, which does not own this session's PTY)
@@ -273,6 +286,13 @@ class ClaudeSession:
         self._control_sock: socket.socket | None = None
         self._control_thread: threading.Thread | None = None
 
+        # Live attach fan-out: each subscriber gets a bounded queue of raw PTY
+        # chunks. Registration is atomic with the ring snapshot (see
+        # :meth:`attach_stream`) so an attaching client never loses or duplicates
+        # a chunk across the backlog/live boundary.
+        self._subscribers: set[queue.Queue[bytes]] = set()
+        self._subscribers_lock = threading.Lock()
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -292,6 +312,20 @@ class ClaudeSession:
     @property
     def jsonl_path(self) -> Path:
         return self._jsonl_path
+
+    @property
+    def is_open(self) -> bool:
+        """True while the PTY process is live (open, not yet closed/exited)."""
+        return self._pid is not None and not self._closed.is_set()
+
+    @property
+    def turn_in_progress(self) -> bool:
+        """True while a bot ``send_turn`` holds the mic (the turn lock).
+
+        The dashboard attach channel is read-only whenever this is true: between
+        turns the human owns the input, mid-turn only ESC (interrupt) is honoured.
+        """
+        return self._turn_lock.locked()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -483,6 +517,56 @@ class ClaudeSession:
         with self._ring_lock:
             return bytes(self._ring)
 
+    def attach_stream(self) -> tuple[bytes, "queue.Queue[bytes]"]:
+        """Register a live subscriber, returning ``(backlog, queue)``.
+
+        *backlog* is the retained recent PTY output (so an attaching dashboard
+        opens to context); *queue* yields every raw chunk drained thereafter.
+        The snapshot and registration happen under both internal locks so the
+        boundary is exact — no chunk is lost or duplicated. The caller MUST call
+        :meth:`detach_stream` when done to release the subscriber.
+        """
+        sub: queue.Queue[bytes] = queue.Queue(maxsize=_SUBSCRIBER_QUEUE_MAX)
+        with self._ring_lock, self._subscribers_lock:
+            backlog = bytes(self._ring)
+            self._subscribers.add(sub)
+        return backlog, sub
+
+    def detach_stream(self, sub: "queue.Queue[bytes]") -> None:
+        """Release a subscriber registered via :meth:`attach_stream`."""
+        with self._subscribers_lock:
+            self._subscribers.discard(sub)
+
+    def operator_write(self, data: bytes) -> str:
+        """Route operator keystrokes from an attached dashboard to the PTY.
+
+        Write coordination mirrors the mic model: between turns the human owns
+        the input and *data* is written straight through (``OPERATOR_WRITTEN``).
+        While a bot turn is in flight the channel is read-only — a lone ESC is
+        routed to :meth:`interrupt` (``OPERATOR_INTERRUPTED``) so the operator can
+        still abort a wedged turn, and anything else is rejected
+        (``OPERATOR_REFUSED``) for the caller to surface as "bot has the mic".
+        """
+        if self._master_fd is None:
+            raise ClaudeSessionError("session not open")
+        if self._turn_lock.locked():
+            if data == _ESC:
+                self.interrupt()
+                return OPERATOR_INTERRUPTED
+            return OPERATOR_REFUSED
+        self._write_all(data)
+        return OPERATOR_WRITTEN
+
+    def resize(self, rows: int, cols: int) -> None:
+        """Apply a terminal resize (``TIOCSWINSZ``) from an attached client."""
+        if self._master_fd is None:
+            raise ClaudeSessionError("session not open")
+        rows = max(1, int(rows))
+        cols = max(1, int(cols))
+        self._rows = rows
+        self._cols = cols
+        self._set_winsize(self._master_fd, rows, cols)
+
     # ------------------------------------------------------------------
     # Control channel (out-of-process interrupt)
     # ------------------------------------------------------------------
@@ -609,10 +693,21 @@ class ClaudeSession:
                 break  # EIO on Linux when the slave side closes
             if not chunk:
                 break
-            with self._ring_lock:
+            # Append to the ring and fan out to live subscribers under both locks
+            # together so :meth:`attach_stream` sees a consistent backlog/live
+            # boundary (a chunk is either in the snapshot or delivered to the
+            # queue, never both and never neither).
+            with self._ring_lock, self._subscribers_lock:
                 self._ring += chunk
                 if len(self._ring) > self._ring_bytes:
                     del self._ring[: len(self._ring) - self._ring_bytes]
+                for sub in self._subscribers:
+                    try:
+                        sub.put_nowait(chunk)
+                    except queue.Full:
+                        # Lossy by design: a backed-up client must not stall the
+                        # drain (and thereby the bot). See _SUBSCRIBER_QUEUE_MAX.
+                        pass
             if self._log_fh is not None:
                 try:
                     self._log_fh.write(chunk)

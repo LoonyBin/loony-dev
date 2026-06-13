@@ -19,6 +19,7 @@ import * as repos from "./repos.js";
 import * as repoDetail from "./repoDetail.js";
 import * as logs from "./logs.js";
 import * as entries from "./entries.js";
+import * as attach from "./attach.js";
 
 // Backstop reconnect delay for the rare case where EventSource lands in the
 // terminal CLOSED state (the browser only auto-retries from CONNECTING).
@@ -38,7 +39,7 @@ function setStreamConnected(connected) {
 }
 
 // Apply one consolidated snapshot to every live view. The payload mirrors the
-// four per-resource endpoints the old poll fetched. The skills/commands editor
+// per-resource endpoints the old poll fetched. The skills/commands editor
 // is deliberately not driven from here: an incoming update must never clobber
 // the textarea while the user is typing, so the editor only reacts to an actual
 // change in the discovered-repo set (which just repopulates its picker).
@@ -51,12 +52,14 @@ function applySnapshot(snapshot) {
   const worktrees = snapshot.worktrees || [];
   const sess = snapshot.sessions || [];
   const stuck = snapshot.stuck || [];
+  const taskSessions = snapshot.task_sessions || [];
 
   const stuckCount = overview.renderStuck(stuck);
   const store = appStore();
   if (store) store.stuckCount = stuckCount;
 
   sessions.render(sess);
+  attach.render(taskSessions);
   // Overview is now a roll-up of per-repo cards (#158); worker / worktree detail
   // lives in the per-repo drill-down rather than dedicated Overview tables.
   repos.render(workers, worktrees, stuck);
@@ -118,6 +121,7 @@ function connect() {
 function start() {
   entries.init();
   logs.init();
+  attach.init();
   repoDetail.init();
   connect();
 }

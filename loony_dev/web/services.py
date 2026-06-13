@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from loony_dev import session_registry
 from loony_dev.git import GitRepo
 
 WORKER_LOG_NAME = "loony-worker.log"
@@ -74,6 +75,23 @@ class SessionView:
     updated_at: str | None = None  # ISO-8601 mtime of remote-control.json (staleness)
     alive: bool | None = None  # remote-control process running; null if no PID file
     control_socket: str | None = None
+
+
+@dataclass(frozen=True)
+class TaskSessionView:
+    """A per-task worker session the dashboard can attach to / steer (issue #164).
+
+    ``attachable`` reflects whether the PTY-bridge Unix socket is currently
+    present, so the frontend can disable the Attach button for a session whose
+    worker has gone away but left a stale ``session.json``.
+    """
+
+    task_key: str
+    repo: str | None
+    session_id: str | None
+    status: str | None
+    started_at: str | None
+    attachable: bool
 
 
 @dataclass(frozen=True)
@@ -272,6 +290,66 @@ def list_sessions(base_dir: Path) -> list[SessionView]:
 
 
 # ---------------------------------------------------------------------------
+# Per-task attach + steer sessions (issue #164)
+# ---------------------------------------------------------------------------
+
+class SessionNotFoundError(Exception):
+    """Raised when no live session matches a requested task key or session id."""
+
+
+def list_task_sessions(base_dir: Path) -> list[TaskSessionView]:
+    """Return one :class:`TaskSessionView` per discovered per-task session.
+
+    Reads the worker-published registry (see :mod:`loony_dev.session_registry`).
+    ``attachable`` is true only when the bridge socket file is present, so a
+    crashed worker's leftover ``session.json`` is surfaced but not joinable.
+    """
+    views: list[TaskSessionView] = []
+    for session in session_registry.iter_sessions(base_dir):
+        attachable = bool(session.socket) and Path(session.socket).exists()
+        views.append(
+            TaskSessionView(
+                task_key=session.task_key,
+                repo=session.repo,
+                session_id=session.session_id,
+                status=session.status,
+                started_at=session.started_at,
+                attachable=attachable,
+            )
+        )
+    return views
+
+
+def find_task_session(base_dir: Path, task_key: str) -> session_registry.TaskSession | None:
+    """Return the registry record for *task_key*, or ``None`` if absent.
+
+    Matches the canonical key stored in ``session.json`` (never builds a path
+    from *task_key*), so the value is safe to pass straight from a URL segment.
+    """
+    return session_registry.find_session(base_dir, task_key)
+
+
+def inject_turn(base_dir: Path, task_key: str, prompt: str) -> dict:
+    """Enqueue an operator-injected turn for *task_key*'s session.
+
+    Raises :class:`SessionNotFoundError` when no session matches. Returns a small
+    status dict naming the queued file and its provenance.
+    """
+    session = session_registry.find_session(base_dir, task_key)
+    if session is None:
+        raise SessionNotFoundError(f"no session for task {task_key!r}")
+    path = session_registry.enqueue_injection(
+        session.dir, prompt, source=session_registry.SOURCE_OPERATOR,
+    )
+    return {
+        "task_key": task_key,
+        "repo": session.repo,
+        "source": session_registry.SOURCE_OPERATOR,
+        "queued": path.name,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Session interrupt (issue #163)
 #
 # ESC is the *primary* intervention for a wedged Claude turn: it aborts the
@@ -285,10 +363,6 @@ def list_sessions(base_dir: Path) -> list[SessionView]:
 
 # Seconds to wait on a control-socket round trip before giving up.
 SESSION_CONTROL_TIMEOUT = 5.0
-
-
-class SessionNotFoundError(Exception):
-    """Raised when no advertised session matches a requested ``session_id``."""
 
 
 class SessionControlError(Exception):
