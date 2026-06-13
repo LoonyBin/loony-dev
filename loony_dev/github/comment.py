@@ -13,6 +13,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class CommentFetchError(Exception):
+    """Raised when an item's comments cannot be fetched from GitHub.
+
+    Callers MUST treat this as "comment state is unknown" — never as "the item
+    has no comments." A transient ``gh`` failure (5xx, network blip, timeout)
+    used to be swallowed into an empty list here, which downstream code read as
+    absence: ``PlanningTask`` saw no existing plan and posted a duplicate plan on
+    a dormant issue, and failure-comment dedup could double-post. Raising forces
+    the caller to skip the tick and retry, rather than act on phantom emptiness.
+    """
+
+
 def _author_login(author: dict | None) -> str:
     """Extract a login from a GraphQL author node, appending ``[bot]`` for Bots.
 
@@ -105,9 +117,12 @@ query($owner:String!, $repo:String!, $number:Int!) {
                 repo=name,
                 number=number,
             )
-        except subprocess.CalledProcessError:
-            logger.warning("Failed to fetch comments for #%d", number)
-            return []
+        except subprocess.CalledProcessError as exc:
+            detail = ((exc.stderr or "") + (exc.stdout or "")).strip()[:200]
+            logger.warning("Failed to fetch comments for #%d: %s", number, detail)
+            raise CommentFetchError(
+                f"Failed to fetch comments for #{number}"
+            ) from exc
 
         node = (
             response.get("data", {})
@@ -170,9 +185,14 @@ query($owner:String!, $repo:String!, $pr:Int!) {
                 repo=name,
                 pr=pr_number,
             )
-        except subprocess.CalledProcessError:
-            logger.warning("Failed to fetch inline review comments for PR #%d", pr_number)
-            return []
+        except subprocess.CalledProcessError as exc:
+            detail = ((exc.stderr or "") + (exc.stdout or "")).strip()[:200]
+            logger.warning(
+                "Failed to fetch inline review comments for PR #%d: %s", pr_number, detail
+            )
+            raise CommentFetchError(
+                f"Failed to fetch inline review comments for PR #{pr_number}"
+            ) from exc
 
         threads = (
             response.get("data", {})
