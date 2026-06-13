@@ -394,20 +394,29 @@ class ClaudeSession:
             )
 
     def interrupt(self) -> None:
-        """Send ESC to the PTY to abort an in-flight turn (process survives)."""
+        """Send ESC to abort an in-flight turn (process survives).
+
+        No-op when no turn is running: a stray ESC written between turns would
+        sit in the PTY buffer and corrupt the next bracketed-paste prompt, so we
+        only send it while ``send_turn`` holds ``_turn_lock``.
+        """
         if self._master_fd is None:
             raise ClaudeSessionError("session not open")
-        self._write_all(_ESC)
+        if self._turn_lock.locked():
+            self._write_all(_ESC)
 
     def close(self) -> None:
         """Terminate the process and release the PTY / log handles."""
-        self._closed.set()
+        # Signal the process first and let it flush shutdown output — the drain
+        # thread is blocked in ``os.read`` and keeps reading until the slave
+        # closes — then stop the drain loop only once the process has exited.
         if self._pid is not None:
             try:
                 os.kill(self._pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
             self._reap(grace=5.0)
+        self._closed.set()
         if self._master_fd is not None:
             try:
                 os.close(self._master_fd)
@@ -442,7 +451,10 @@ class ClaudeSession:
             from loony_dev import config
 
             log_file = config.settings.get("log_file")
-        except Exception:
+        except Exception as exc:
+            # The session log is optional, so config trouble must never block
+            # startup — but record why we fell back so it is not fully silent.
+            logger.debug("Could not determine default session log path: %s", exc)
             return None
         if not log_file:
             return None
@@ -459,7 +471,8 @@ class ClaudeSession:
     def _drain_loop(self) -> None:
         """Continuously read the PTY so ``claude`` never blocks on a full buffer."""
         fd = self._master_fd
-        assert fd is not None
+        if fd is None:  # guard, not assert: must hold under ``python -O`` too
+            raise ClaudeSessionError("session not open")
         while not self._closed.is_set():
             try:
                 chunk = os.read(fd, 65536)
@@ -488,7 +501,8 @@ class ClaudeSession:
 
     def _write_all(self, data: bytes) -> None:
         fd = self._master_fd
-        assert fd is not None
+        if fd is None:  # guard, not assert: must hold under ``python -O`` too
+            raise ClaudeSessionError("session not open")
         view = memoryview(data)
         while view:
             written = os.write(fd, view)

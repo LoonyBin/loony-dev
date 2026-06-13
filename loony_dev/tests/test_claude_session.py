@@ -170,8 +170,8 @@ class TestInterruptAndResume(_StubSessionTest):
 
         t = threading.Thread(target=run_long)
         t.start()
-        # Wait until the prompt has reached the (stub) process — its echo shows
-        # up in the PTY relay — then interrupt the in-flight turn.
+        # Wait until the prompt has reached the (stub) process — it emits a
+        # "LONGTURN running" marker on the PTY relay — then interrupt the turn.
         _wait_until(lambda: b"LONGTURN" in self.session.recent_output(), timeout=5.0)
         self.session.interrupt()
         t.join(timeout=10.0)
@@ -351,6 +351,7 @@ def _wait_until(predicate, *, timeout: float) -> None:
         if predicate():
             return
         time.sleep(0.05)
+    raise TimeoutError(f"predicate not satisfied within {timeout:.1f}s")
 
 
 if __name__ == "__main__":

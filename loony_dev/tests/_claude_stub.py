@@ -139,9 +139,15 @@ def main() -> int:
 
             turn_index += 1
             if "QUOTA" in prompt:
+                # Wording must stay matchable by ClaudeQuotaMixin._is_quota_error
+                # (see loony_dev/agents/claude_quota.py); keep them in sync.
                 _assistant(path, "You've hit your limit · resets 7:30pm (Asia/Calcutta)")
             elif "LONGTURN" in prompt:
                 pending_deadline = time.monotonic() + longturn_secs
+                # Announce (via the PTY) that the long turn is now running so a
+                # test can synchronise before interrupting.  The slave is in raw
+                # mode (no input echo), so an explicit marker is needed.
+                os.write(sys.stdout.fileno(), b"LONGTURN running\n")
             else:
                 _assistant(path, f"reply to: {prompt[:80]}")
 
