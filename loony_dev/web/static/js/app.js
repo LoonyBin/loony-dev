@@ -2,14 +2,17 @@
 
 // App-shell data orchestrator. The Alpine store that drives view switching /
 // theme / the stuck indicator is registered by the inline bootstrap in
-// index.html; this deferred module owns the state feed for the per-view
+// index.html; this deferred module owns the live data feed for the per-view
 // modules. The server stays the source of truth.
 //
-// State is consumed from the consolidated /api/events SSE stream (#155); the
-// per-resource poll is kept as a fallback for when SSE is unavailable, and for
-// the immediate refresh after a kill action.
+// Real-time push (issue #159): a single resilient EventSource consumes the
+// consolidated /api/events stream (#155) and re-renders the views on every
+// snapshot. There is no polling timer — the stuck banner, the per-repo roll-up
+// cards, the session table, and the per-repo drill-down (#158) update the
+// instant the server state changes. The browser's EventSource auto-reconnects
+// when the stream drops; we surface a subtle "reconnecting…" indicator while it
+// is down and recreate the source ourselves if the browser gives up entirely.
 
-import { getJSON } from "./api.js";
 import * as overview from "./overview.js";
 import * as sessions from "./sessions.js";
 import * as repos from "./repos.js";
@@ -17,30 +20,49 @@ import * as repoDetail from "./repoDetail.js";
 import * as logs from "./logs.js";
 import * as entries from "./entries.js";
 
-const POLL_INTERVAL_MS = 5000;
+// Backstop reconnect delay for the rare case where EventSource lands in the
+// terminal CLOSED state (the browser only auto-retries from CONNECTING).
+const RECONNECT_DELAY_MS = 3000;
 
 let knownRepos = [];
-let isPolling = false;
-let pollTimer = null;
+let stream = null; // the single live EventSource
+let reconnectTimer = null;
 
-// Fan a consolidated state snapshot out to every view module. The snapshot
-// shape matches the four per-resource endpoints so the SSE and poll paths feed
-// identical data.
-function applyState(state) {
-  const workers = state.workers || [];
-  const worktrees = state.worktrees || [];
-  const sess = state.sessions || [];
-  const stuck = state.stuck || [];
+function appStore() {
+  return window.Alpine && window.Alpine.store("app");
+}
+
+function setStreamConnected(connected) {
+  const store = appStore();
+  if (store) store.streamConnected = connected;
+}
+
+// Apply one consolidated snapshot to every live view. The payload mirrors the
+// four per-resource endpoints the old poll fetched. The skills/commands editor
+// is deliberately not driven from here: an incoming update must never clobber
+// the textarea while the user is typing, so the editor only reacts to an actual
+// change in the discovered-repo set (which just repopulates its picker).
+function applySnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    console.error("Malformed snapshot (expected object):", snapshot);
+    return;
+  }
+  const workers = snapshot.workers || [];
+  const worktrees = snapshot.worktrees || [];
+  const sess = snapshot.sessions || [];
+  const stuck = snapshot.stuck || [];
 
   const stuckCount = overview.renderStuck(stuck);
-  const store = window.Alpine && window.Alpine.store("app");
+  const store = appStore();
   if (store) store.stuckCount = stuckCount;
 
-  repos.render(workers, worktrees, stuck);
   sessions.render(sess);
-  repoDetail.update(state);
+  // Overview is now a roll-up of per-repo cards (#158); worker / worktree detail
+  // lives in the per-repo drill-down rather than dedicated Overview tables.
+  repos.render(workers, worktrees, stuck);
+  repoDetail.update(snapshot);
 
-  // Keep the per-repo pickers in sync with discovered repos.
+  // Keep the per-repo pickers in sync with discovered repos (cheap, no clobber).
   const next = [...new Set([
     ...workers.map((w) => w.repo).filter(Boolean),
     ...worktrees.map((w) => w.repo).filter(Boolean),
@@ -52,69 +74,44 @@ function applyState(state) {
   }
 }
 
-async function poll() {
-  if (isPolling) return;
-  isPolling = true;
-  try {
-    const [workersR, worktreesR, sessionsR, stuckR] = await Promise.allSettled([
-      getJSON("/api/workers"),
-      getJSON("/api/worktrees"),
-      getJSON("/api/sessions"),
-      getJSON("/api/stuck"),
-    ]);
-    if (
-      workersR.status !== "fulfilled" ||
-      worktreesR.status !== "fulfilled" ||
-      sessionsR.status !== "fulfilled"
-    ) {
-      throw new Error("core dashboard endpoints failed");
-    }
-    applyState({
-      workers: workersR.value,
-      worktrees: worktreesR.value,
-      sessions: sessionsR.value,
-      stuck: stuckR.status === "fulfilled" ? stuckR.value : [],
-    });
-  } catch (err) {
-    console.error("dashboard refresh failed", err);
-  } finally {
-    isPolling = false;
-  }
-}
-
-function startPolling() {
-  if (pollTimer) return;
-  poll();
-  pollTimer = setInterval(poll, POLL_INTERVAL_MS);
-}
-
-function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
-}
-
-// Subscribe to the consolidated state stream. While it delivers, the poll
-// fallback stays off; on error (EventSource auto-reconnects in the background)
-// we resume polling so the dashboard keeps updating until SSE recovers.
 function connect() {
-  if (!window.EventSource) {
-    startPolling();
-    return;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
   }
   const es = new EventSource("/api/events");
-  es.onmessage = (event) => {
-    stopPolling();
-    try {
-      applyState(JSON.parse(event.data));
-    } catch (err) {
-      console.error("bad /api/events payload", err);
-      startPolling();
-    }
+  stream = es;
+
+  es.onopen = () => {
+    if (stream === es) setStreamConnected(true);
   };
+
+  es.onmessage = (event) => {
+    // Ignore late messages from a source we've already replaced.
+    if (stream !== es) return;
+    setStreamConnected(true);
+    let snapshot;
+    try {
+      snapshot = JSON.parse(event.data);
+    } catch (err) {
+      console.error("malformed dashboard snapshot", err);
+      return;
+    }
+    applySnapshot(snapshot);
+  };
+
   es.onerror = () => {
-    startPolling();
+    if (stream !== es) return;
+    setStreamConnected(false);
+    // EventSource auto-reconnects while it can (readyState CONNECTING). If it
+    // has given up (CLOSED), recreate it ourselves after a short backoff.
+    if (es.readyState === EventSource.CLOSED && !reconnectTimer) {
+      es.close();
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, RECONNECT_DELAY_MS);
+    }
   };
 }
 
@@ -122,10 +119,6 @@ function start() {
   entries.init();
   logs.init();
   repoDetail.init();
-
-  // Allow modules (e.g. the kill button) to force an immediate refresh.
-  window.addEventListener("dashboard:refresh", poll);
-
   connect();
 }
 

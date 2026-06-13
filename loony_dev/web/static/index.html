@@ -30,7 +30,7 @@
 
   <!-- Register the shell store from a parse-time inline script so the listener
        is in place before Alpine's deferred build auto-starts (the documented
-       Alpine pattern). The deferred ES module below owns the data polling. -->
+       Alpine pattern). The deferred ES module below owns the live SSE feed. -->
   <script>
     document.addEventListener("alpine:init", () => {
       const NAV = [
@@ -60,6 +60,10 @@
         view: initial.view,
         repo: initial.repo,
         stuckCount: 0,
+        // Live SSE health. Starts true (optimistic) so the "reconnecting…"
+        // indicator only appears once the stream actually drops; app.js flips
+        // it on EventSource open/error.
+        streamConnected: true,
         theme: document.documentElement.getAttribute("data-theme")
           || (systemDark ? "dark" : "light"),
         go(view) {
@@ -137,6 +141,15 @@
       x-text="`⚠ ${$store.app.stuckCount} stuck`"
     ></button>
     <span class="spacer"></span>
+    <span
+      class="stream-status"
+      x-show="!$store.app.streamConnected"
+      x-cloak
+      role="status"
+      aria-live="polite"
+    >
+      <span class="stream-dot" aria-hidden="true"></span>reconnecting…
+    </span>
     <button
       class="icon-btn"
       @click="$store.app.toggleTheme()"

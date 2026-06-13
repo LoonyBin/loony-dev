@@ -4,7 +4,7 @@
 // detail moved into the per-repo drill-down (#158); the Overview is now a
 // roll-up of repo cards (see repos.js) plus this cross-repo stuck signal.
 
-import { cell, setRows, formatAge, requestRefresh } from "./dom.js";
+import { cell, setRows, formatAge } from "./dom.js";
 
 // Send SIGTERM to a wedged Claude descendant (escalated to SIGKILL server-side).
 // Shared with the per-repo drill-down's scoped stuck table.
@@ -18,10 +18,11 @@ export async function killProcess(pid) {
       const detail = await resp.text();
       throw new Error(`${resp.status}: ${detail}`);
     }
+    // No manual refresh needed: the /api/events stream re-emits the new state
+    // (the process gone from the stuck table) within a couple of seconds.
   } catch (err) {
     window.alert(`Failed to kill PID ${pid}: ${err.message}`);
   }
-  requestRefresh();
 }
 
 function renderStuckRow(s) {

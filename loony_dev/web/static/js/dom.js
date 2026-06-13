@@ -54,8 +54,3 @@ export function goRepo(repo) {
   if (store) store.goRepo(repo);
   else location.hash = `repo/${repo}`;
 }
-
-// Ask the orchestrator to re-poll the API now (e.g. after a kill action).
-export function requestRefresh() {
-  window.dispatchEvent(new Event("dashboard:refresh"));
-}
