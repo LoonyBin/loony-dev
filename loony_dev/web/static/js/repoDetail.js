@@ -11,7 +11,7 @@
 // existing /api/logs/{owner}/{repo}/stream endpoint via streamLog().
 
 import { cell, setRows, formatAge } from "./dom.js";
-import { killProcess } from "./overview.js";
+import { killProcess, interruptSession } from "./overview.js";
 import { streamLog } from "./logs.js";
 
 let current = null; // repo currently displayed ("owner/name"), or null
@@ -100,14 +100,34 @@ function renderStuckRow(s) {
   tr.appendChild(cmd);
   tr.appendChild(cell(formatAge(s.age_seconds), "Age"));
   tr.appendChild(cell(s.blocked_on, "Blocked on"));
+
   const actionTd = document.createElement("td");
   actionTd.dataset.label = "Action";
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "kill-btn";
-  btn.textContent = "Kill";
-  btn.addEventListener("click", () => killProcess(s.pid));
-  actionTd.appendChild(btn);
+
+  // Interrupt (ESC) is primary — the default nudge. Disabled when the owning
+  // session has no control channel advertised yet (nothing to ESC).
+  const interruptBtn = document.createElement("button");
+  interruptBtn.type = "button";
+  interruptBtn.className = "interrupt-btn";
+  interruptBtn.textContent = "Interrupt";
+  if (s.session_id) {
+    interruptBtn.title = "Send ESC to abort the in-flight turn (session stays alive)";
+    interruptBtn.addEventListener("click", () => interruptSession(s.session_id));
+  } else {
+    interruptBtn.disabled = true;
+    interruptBtn.title = "No control channel for this session yet";
+  }
+  actionTd.appendChild(interruptBtn);
+
+  // Kill stays as the secondary/danger escalation.
+  const killBtn = document.createElement("button");
+  killBtn.type = "button";
+  killBtn.className = "kill-btn";
+  killBtn.textContent = "Kill";
+  killBtn.title = "SIGTERM the wedged process, escalating to SIGKILL";
+  killBtn.addEventListener("click", () => killProcess(s.pid));
+  actionTd.appendChild(killBtn);
+
   tr.appendChild(actionTd);
   return tr;
 }

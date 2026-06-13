@@ -204,6 +204,12 @@ def supervisor_cmd(**_) -> None:
     "--kill-grace", "kill_grace", default=5.0, show_default=True,
     help="Seconds to wait after SIGTERM before escalating to SIGKILL.",
 )
+@click.option(
+    "--auto-interrupt-after", "auto_interrupt_after", default=0.0, show_default=True,
+    help="Seconds a Claude turn may stay stuck before the dashboard ESC-interrupts "
+         "it automatically. 0 disables auto-intervention (SIGKILL is never "
+         "auto-escalated).",
+)
 def web_cmd(**_) -> None:
     """Launch the read-only web dashboard to monitor the supervisor and workers.
 
@@ -226,6 +232,7 @@ def web_cmd(**_) -> None:
     stuck_after = int(config.settings.get("stuck_after", 300))
     activity_sample = float(config.settings.get("activity_sample", 0.3))
     kill_grace = float(config.settings.get("kill_grace", 5.0))
+    auto_interrupt_after = float(config.settings.get("auto_interrupt_after", 0.0))
 
     app = create_app(
         base_dir=base_dir,
@@ -235,6 +242,7 @@ def web_cmd(**_) -> None:
         stuck_after_seconds=stuck_after,
         activity_sample_seconds=activity_sample,
         kill_grace_seconds=kill_grace,
+        auto_interrupt_after_seconds=auto_interrupt_after,
     )
     click.echo(f"Serving loony-dev dashboard at http://{host}:{port} (base-dir: {base_dir})")
     uvicorn.run(app, host=host, port=port)
