@@ -42,8 +42,11 @@ function trapTab(modal, e) {
 }
 
 // Open a modal accessibly: remember the opener, install an ESC + focus-trap
-// keydown handler, and move focus inside. closeFn runs on ESC.
-function openModalA11y(modal, closeFn, focusTarget) {
+// keydown handler, and move focus inside. closeFn runs on ESC, unless
+// opts.closeOnEscape is false — the attach terminal reserves ESC to interrupt
+// the active bot turn, so it must not double as a modal-close key.
+function openModalA11y(modal, closeFn, focusTarget, opts = {}) {
+  const closeOnEscape = opts.closeOnEscape ?? true;
   // Drop any stale handler (e.g. a re-open without an intervening close) so we
   // never leave a dangling keydown listener bound.
   if (modal._a11y) {
@@ -52,7 +55,7 @@ function openModalA11y(modal, closeFn, focusTarget) {
   }
   const opener = document.activeElement;
   const keyHandler = (e) => {
-    if (e.key === "Escape") { e.preventDefault(); closeFn(); return; }
+    if (e.key === "Escape" && closeOnEscape) { e.preventDefault(); closeFn(); return; }
     trapTab(modal, e);
   };
   modal.addEventListener("keydown", keyHandler);
@@ -174,7 +177,7 @@ function openTerminal(taskKey) {
   window.addEventListener("resize", sendResize);
 
   const closeBtn = document.getElementById("attach-close");
-  openModalA11y(modal, closeAttachModal, closeBtn);
+  openModalA11y(modal, closeAttachModal, closeBtn, { closeOnEscape: false });
 }
 
 function renderTaskSession(s) {
@@ -234,6 +237,7 @@ function openSteer(taskKey) {
 async function submitSteer() {
   const text = document.getElementById("steer-text");
   const err = document.getElementById("steer-error");
+  const send = document.getElementById("steer-send");
   if (!text) return;
   const prompt = text.value.trim();
   const taskKey = text.dataset.taskKey;
@@ -246,6 +250,9 @@ async function submitSteer() {
   }
   text.removeAttribute("aria-invalid");
   text.removeAttribute("aria-errormessage");
+  // Disable the send button across the in-flight POST: injecting a turn is not
+  // idempotent, so a rapid double-click would enqueue duplicate operator turns.
+  if (send) send.disabled = true;
   try {
     await apiText(`/api/sessions/${encodeURIComponent(taskKey)}/inject`, {
       method: "POST",
@@ -259,6 +266,8 @@ async function submitSteer() {
       text.setAttribute("aria-invalid", "true");
       text.setAttribute("aria-errormessage", "steer-error");
     }
+  } finally {
+    if (send) send.disabled = false;
   }
 }
 
