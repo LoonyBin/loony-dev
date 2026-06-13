@@ -47,6 +47,14 @@ export function goView(view) {
   else location.hash = view;
 }
 
+// Open the per-repo drill-down for `repo` ("owner/name"). Falls back to the URL
+// hash if Alpine has not started yet.
+export function goRepo(repo) {
+  const store = window.Alpine && window.Alpine.store("app");
+  if (store) store.goRepo(repo);
+  else location.hash = `repo/${repo}`;
+}
+
 // Ask the orchestrator to re-poll the API now (e.g. after a kill action).
 export function requestRefresh() {
   window.dispatchEvent(new Event("dashboard:refresh"));

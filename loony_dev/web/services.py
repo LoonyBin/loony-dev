@@ -62,6 +62,10 @@ class SessionView:
     session_id: str
     repo: str | None
     key: str | None
+    # The claude.ai join link the child emits once the remote-control session is
+    # live (``null`` until it appears). Surfaced so the dashboard can render a
+    # join link + QR for the per-repo session card.
+    join_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -224,11 +228,13 @@ def list_sessions(base_dir: Path) -> list[SessionView]:
         repo = data.get("repo") or f"{owner}/{name}"
         session_id = data.get("session_id") or repo
         key = data.get("key")
+        join_url = data.get("join_url")
         sessions.append(
             SessionView(
                 session_id=str(session_id),
                 repo=str(repo) if repo is not None else None,
                 key=str(key) if key is not None else None,
+                join_url=str(join_url) if join_url is not None else None,
             )
         )
     return sessions

@@ -151,6 +151,21 @@ class ServicesTestCase(unittest.TestCase):
         self.assertEqual(sessions[0].session_id, "acme/x")
         self.assertEqual(sessions[0].repo, "acme/x")
 
+    def test_list_sessions_exposes_join_url(self) -> None:
+        # The per-repo session card (#158) renders the join link from this field.
+        self._write_conn(
+            "acme", "x",
+            '{"session_id": "loony-acme-x", "repo": "acme/x", "key": "base",'
+            ' "join_url": "https://claude.ai/remote/abc"}',
+        )
+        sessions = services.list_sessions(self.base)
+        self.assertEqual(sessions[0].join_url, "https://claude.ai/remote/abc")
+
+    def test_list_sessions_join_url_absent_is_none(self) -> None:
+        self._write_conn("acme", "x", '{"session_id": "loony-acme-x", "repo": "acme/x", "key": "base"}')
+        sessions = services.list_sessions(self.base)
+        self.assertIsNone(sessions[0].join_url)
+
 
 class WebAppTestCase(unittest.TestCase):
     def setUp(self) -> None:
