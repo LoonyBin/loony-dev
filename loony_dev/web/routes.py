@@ -9,14 +9,28 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import struct
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi import Path as PathParam
 from fastapi.responses import StreamingResponse
 
+from loony_dev.agents.session_bridge import FRAME_CONTROL, FRAME_DATA, encode_frame
 from loony_dev.web import entries, services, streaming
+
+# Frame header shared with the worker-side bridge: 1-byte type + 4-byte BE length.
+_FRAME_HEADER = struct.Struct(">BI")
 
 # Default and maximum tail sizes mirror the TUI defaults (tui.py / cli.py).
 DEFAULT_TAIL_LINES = 100
@@ -77,16 +91,54 @@ def create_api_router(
     def get_sessions() -> list[dict]:
         return [asdict(s) for s in services.list_sessions(base_dir)]
 
+    @router.get("/task-sessions")
+    def get_task_sessions() -> list[dict]:
+        """List per-task worker sessions the dashboard can attach to / steer."""
+        return [asdict(s) for s in services.list_task_sessions(base_dir)]
+
+    @router.post("/sessions/{task_key}/inject")
+    async def inject_turn(task_key: str, request: Request) -> dict:
+        """Enqueue a one-shot operator-steered turn (``source: "operator"``).
+
+        A simpler alternative to the live terminal: the orchestrator runs the
+        queued prompt as the session's next turn. Body is JSON ``{"prompt": ...}``.
+        """
+        try:
+            body = await request.json()
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=400, detail="body must be JSON") from exc
+        prompt = body.get("prompt") if isinstance(body, dict) else None
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise HTTPException(status_code=400, detail="'prompt' must be a non-empty string")
+        try:
+            return services.inject_turn(base_dir, task_key, prompt)
+        except services.SessionNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.websocket("/sessions/{task_key}/attach")
+    async def attach_session(websocket: WebSocket, task_key: str) -> None:
+        """Bridge a websocket to the worker-owned ``ClaudeSession`` PTY socket.
+
+        The dashboard speaks binary frames (raw keystrokes / PTY bytes) and text
+        frames (JSON control: ``resize`` outbound, ``mic`` status inbound). This
+        handler is a transparent proxy onto the per-task Unix-domain socket; the
+        worker side enforces the read-only-while-bot-has-the-mic contract.
+        """
+        await _attach_session(base_dir, websocket, task_key)
+
     def _state_snapshot() -> dict:
         """Gather the consolidated dashboard state in one shot.
 
-        Mirrors the four per-resource GET endpoints so the streamed payload and
-        the polling fallback never drift apart.
+        Mirrors the per-resource GET endpoints so the streamed payload and the
+        polling fallback never drift apart.
         """
         return {
             "workers": [asdict(w) for w in services.list_workers(base_dir)],
             "worktrees": [asdict(w) for w in services.list_worktrees(base_dir)],
             "sessions": [asdict(s) for s in services.list_sessions(base_dir)],
+            "task_sessions": [
+                asdict(s) for s in services.list_task_sessions(base_dir)
+            ],
             "stuck": [
                 asdict(s)
                 for s in services.list_stuck(
@@ -257,6 +309,84 @@ def create_api_router(
         return status
 
     return router
+
+
+async def _attach_session(base_dir: Path, websocket: WebSocket, task_key: str) -> None:
+    """Proxy *websocket* onto the per-task PTY bridge Unix socket.
+
+    Resolves *task_key* against the worker-published registry, dials the bridge
+    socket, then runs two pumps until either side closes — translating the
+    bridge's binary framing to/from websocket binary (PTY bytes) and text (JSON
+    control) messages. Both the socket and the websocket are released on exit, so
+    repeated attach/detach cycles leak neither fds nor PTY backlog handles.
+    """
+    session = services.find_task_session(base_dir, task_key)
+    if session is None or not session.socket:
+        # Reject the handshake (close before accept) with a distinct code the
+        # client can tell apart from a generic network failure.
+        await websocket.close(code=4404, reason="no such session")
+        return
+    try:
+        reader, writer = await asyncio.open_unix_connection(session.socket)
+    except OSError:
+        await websocket.close(code=4503, reason="session bridge unavailable")
+        return
+
+    await websocket.accept()
+
+    async def socket_to_ws() -> None:
+        while True:
+            try:
+                head = await reader.readexactly(_FRAME_HEADER.size)
+            except (asyncio.IncompleteReadError, OSError):
+                break
+            ftype, length = _FRAME_HEADER.unpack(head)
+            try:
+                payload = await reader.readexactly(length) if length else b""
+            except (asyncio.IncompleteReadError, OSError):
+                break
+            try:
+                if ftype == FRAME_CONTROL:
+                    await websocket.send_text(payload.decode("utf-8", "replace"))
+                else:
+                    await websocket.send_bytes(payload)
+            except (WebSocketDisconnect, RuntimeError):
+                break
+
+    async def ws_to_socket() -> None:
+        while True:
+            try:
+                message = await websocket.receive()
+            except (WebSocketDisconnect, RuntimeError):
+                break
+            if message.get("type") == "websocket.disconnect":
+                break
+            data = message.get("bytes")
+            text = message.get("text")
+            try:
+                if data is not None:
+                    writer.write(encode_frame(FRAME_DATA, data))
+                    await writer.drain()
+                elif text is not None:
+                    writer.write(encode_frame(FRAME_CONTROL, text.encode("utf-8")))
+                    await writer.drain()
+            except OSError:
+                break
+
+    s2w = asyncio.create_task(socket_to_ws())
+    w2s = asyncio.create_task(ws_to_socket())
+    try:
+        await asyncio.wait({s2w, w2s}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in (s2w, w2s):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        writer.close()
+        with contextlib.suppress(OSError, Exception):
+            await writer.wait_closed()
+        with contextlib.suppress(Exception):
+            await websocket.close()
 
 
 def _register_entry_routes(router: APIRouter, kind: str, *, base_dir: Path,

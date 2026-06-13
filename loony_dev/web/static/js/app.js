@@ -7,17 +7,19 @@
 //
 // Real-time push (issue #159): a single resilient EventSource consumes the
 // consolidated /api/events stream (#155) and re-renders the views on every
-// snapshot. There is no polling timer — the stuck banner and the worker /
-// worktree / session tables update the instant the server state changes. The
-// browser's EventSource auto-reconnects when the stream drops; we surface a
-// subtle "reconnecting…" indicator while it is down and recreate the source
-// ourselves if the browser gives up entirely.
+// snapshot. There is no polling timer — the stuck banner, the per-repo roll-up
+// cards, the session table, and the per-repo drill-down (#158) update the
+// instant the server state changes. The browser's EventSource auto-reconnects
+// when the stream drops; we surface a subtle "reconnecting…" indicator while it
+// is down and recreate the source ourselves if the browser gives up entirely.
 
 import * as overview from "./overview.js";
 import * as sessions from "./sessions.js";
 import * as repos from "./repos.js";
+import * as repoDetail from "./repoDetail.js";
 import * as logs from "./logs.js";
 import * as entries from "./entries.js";
+import * as attach from "./attach.js";
 
 // Backstop reconnect delay for the rare case where EventSource lands in the
 // terminal CLOSED state (the browser only auto-retries from CONNECTING).
@@ -37,7 +39,7 @@ function setStreamConnected(connected) {
 }
 
 // Apply one consolidated snapshot to every live view. The payload mirrors the
-// four per-resource endpoints the old poll fetched. The skills/commands editor
+// per-resource endpoints the old poll fetched. The skills/commands editor
 // is deliberately not driven from here: an incoming update must never clobber
 // the textarea while the user is typing, so the editor only reacts to an actual
 // change in the discovered-repo set (which just repopulates its picker).
@@ -50,15 +52,18 @@ function applySnapshot(snapshot) {
   const worktrees = snapshot.worktrees || [];
   const sess = snapshot.sessions || [];
   const stuck = snapshot.stuck || [];
+  const taskSessions = snapshot.task_sessions || [];
 
   const stuckCount = overview.renderStuck(stuck);
   const store = appStore();
   if (store) store.stuckCount = stuckCount;
 
-  overview.renderWorkers(workers);
-  overview.renderWorktrees(worktrees);
   sessions.render(sess);
-  repos.render(workers, worktrees);
+  attach.render(taskSessions);
+  // Overview is now a roll-up of per-repo cards (#158); worker / worktree detail
+  // lives in the per-repo drill-down rather than dedicated Overview tables.
+  repos.render(workers, worktrees, stuck);
+  repoDetail.update(snapshot);
 
   // Keep the per-repo pickers in sync with discovered repos (cheap, no clobber).
   const next = [...new Set([
@@ -116,6 +121,8 @@ function connect() {
 function start() {
   entries.init();
   logs.init();
+  attach.init();
+  repoDetail.init();
   connect();
 }
 

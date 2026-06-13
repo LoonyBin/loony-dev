@@ -377,7 +377,7 @@ button.action:hover,
 }
 .muted { color: var(--text-muted); font-size: var(--fs-1); }
 
-/* ---- Repos view ------------------------------------------------------ */
+/* ---- Repos roll-up (Overview) ---------------------------------------- */
 .repo-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
@@ -392,9 +392,66 @@ button.action:hover,
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
+  /* The whole card is a button: reset the native chrome, keep it tappable. */
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
 }
+.repo-card:hover { border-color: var(--primary); }
+.repo-card:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .repo-card .repo-name { font-weight: 600; word-break: break-all; }
-.repo-card .repo-meta { display: flex; gap: var(--sp-4); flex-wrap: wrap; font-size: var(--fs-1); color: var(--text-muted); }
+.repo-card .repo-meta {
+  display: flex;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  align-items: baseline;
+  font-size: var(--fs-1);
+  color: var(--text-muted);
+}
+.stuck-badge { color: #fff; background: var(--danger-strong); border-radius: 999px; padding: 0 var(--sp-2); font-weight: 600; }
+
+/* ---- Repo detail (#158) ---------------------------------------------- */
+.repo-detail h2 { word-break: break-all; }
+.repo-detail h3 { font-size: var(--fs-3); margin: var(--sp-5) 0 var(--sp-3); }
+.back-link {
+  font: inherit;
+  font-size: var(--fs-2);
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0 0 var(--sp-2);
+  color: var(--primary);
+  cursor: pointer;
+}
+.back-link:hover { text-decoration: underline; }
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: var(--sp-4);
+}
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--sp-4);
+}
+.card h3 { margin: 0 0 var(--sp-3); font-size: var(--fs-3); }
+
+/* Key/value lists inside the worker & session cards. */
+.kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--sp-1) var(--sp-4);
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-2);
+}
+.kv dt { color: var(--text-muted); }
+.kv dd { margin: 0; word-break: break-word; }
+.join-link { display: inline-block; margin-top: var(--sp-2); text-decoration: none; }
 
 /* ---- Sessions view --------------------------------------------------- */
 .session-grid {
@@ -504,7 +561,7 @@ button.action:hover,
 }
 .editor-actions { display: flex; gap: var(--sp-2); align-items: center; margin-top: var(--sp-2); flex-wrap: wrap; }
 .editor-actions input { flex: 1; min-width: 10rem; }
-#entry-error { color: var(--danger); font-size: var(--fs-2); min-height: 1.1em; margin-top: var(--sp-2); }
+.entry-error { color: var(--danger); font-size: var(--fs-2); min-height: 1.1em; margin-top: var(--sp-2); }
 
 @media (max-width: 720px) {
   .editor-grid { grid-template-columns: 1fr; }
@@ -521,4 +578,92 @@ button.action:hover,
   font-size: var(--fs-1);
   white-space: pre-wrap;
   margin: 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Attach + steer overlays (issue #164)                               */
+/* ------------------------------------------------------------------ */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-4);
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.modal[hidden] { display: none; }
+
+.modal-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--sp-4);
+  width: min(680px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.modal-term {
+  width: min(960px, 100%);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+
+.modal-title {
+  font-weight: 600;
+  font-size: var(--fs-3);
+}
+
+.attach-mic {
+  font-size: var(--fs-1);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--sp-2);
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+.attach-mic.mic-bot { color: var(--primary-contrast); background: var(--unknown); }
+.attach-mic.mic-human { color: var(--primary-contrast); background: var(--running); }
+
+.attach-term {
+  flex: 1 1 auto;
+  min-height: 360px;
+  height: 60vh;
+  background: #000;
+  border-radius: var(--radius-sm);
+  padding: var(--sp-1);
+}
+
+#steer-text {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2);
+  resize: vertical;
+}
+
+/* Keyboard-visible focus for modal controls (mouse clicks stay quiet via
+   :focus-visible). High-contrast outline so focus is obvious on either theme. */
+.modal a:focus-visible,
+.modal button:focus-visible,
+.modal .icon-btn:focus-visible,
+.modal button.action:focus-visible,
+.modal textarea:focus-visible,
+#steer-text:focus-visible,
+.attach-mic:focus-visible,
+.attach-term:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }

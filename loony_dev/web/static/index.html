@@ -36,6 +36,18 @@
           integrity="sha384-8FWZA6BGMXhsfO+BLtrJK0We6gg5o1JyO8xQm6peWDEUs17ACA5ziE/NIAkl9z2k"
           crossorigin="anonymous" defer></script>
 
+  <!-- xterm.js (CDN, no build) backs the per-task Attach terminal (#164). The
+       fit addon keeps the PTY sized to the viewport on desktop and mobile. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css"
+        integrity="sha384-9ftsg11+LSxVUaknegCfeKvlkO9EdIPI2op725RqY87IvhyGjElmpjZlP3LhTQjn"
+        crossorigin="anonymous" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"
+          integrity="sha384-xjfWUeCWdMtvpAb/SmM6lMzS6pQGcQa0loOl1d97j6Odw0vjK9nW3+dTb/bn/mwH"
+          crossorigin="anonymous" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"
+          integrity="sha384-dpjGwSSISUTz2taP54Bor7qkyMR20sSO9oe11UVYnGs2/YdUBf7HW30XKQx9PCzn"
+          crossorigin="anonymous" defer></script>
+
   <!-- Register the shell store from a parse-time inline script so the listener
        is in place before Alpine's deferred build auto-starts (the documented
        Alpine pattern). The deferred ES module below owns the live SSE feed. -->
@@ -43,22 +55,30 @@
     document.addEventListener("alpine:init", () => {
       const NAV = [
         { id: "overview", label: "Overview", icon: "📊" },
-        { id: "repos", label: "Repos", icon: "📁" },
         { id: "sessions", label: "Sessions", icon: "🔗" },
         { id: "skills", label: "Skills & Commands", icon: "🧩" },
         { id: "logs", label: "Logs", icon: "📜" },
       ];
       const VALID = new Set(NAV.map((n) => n.id));
-      const hashView = () => {
+      // The per-repo drill-down (#158) is not a nav item — it is reached by
+      // tapping a repo and lives at `#repo/<owner>/<name>`. Parse the hash into
+      // a {view, repo} pair so the detail route round-trips through the URL.
+      const parseHash = () => {
         const h = location.hash.replace(/^#/, "");
-        return VALID.has(h) ? h : "overview";
+        if (h.startsWith("repo/")) {
+          const repo = h.slice("repo/".length);
+          return { view: repo ? "repo" : "overview", repo: repo || null };
+        }
+        return { view: VALID.has(h) ? h : "overview", repo: null };
       };
       const systemDark = window.matchMedia
         && window.matchMedia("(prefers-color-scheme: dark)").matches;
+      const initial = parseHash();
 
       window.Alpine.store("app", {
         nav: NAV,
-        view: hashView(),
+        view: initial.view,
+        repo: initial.repo,
         stuckCount: 0,
         // Live SSE health. Starts true (optimistic) so the "reconnecting…"
         // indicator only appears once the stream actually drops; app.js flips
@@ -69,9 +89,21 @@
         go(view) {
           if (!VALID.has(view)) view = "overview";
           this.view = view;
+          this.repo = null;
           if (location.hash.replace(/^#/, "") !== view) location.hash = view;
         },
-        syncFromHash() { this.view = hashView(); },
+        goRepo(repo) {
+          if (!repo) { this.go("overview"); return; }
+          this.view = "repo";
+          this.repo = repo;
+          const target = "repo/" + repo;
+          if (location.hash.replace(/^#/, "") !== target) location.hash = target;
+        },
+        syncFromHash() {
+          const s = parseHash();
+          this.view = s.view;
+          this.repo = s.repo;
+        },
         toggleTheme() {
           this.theme = this.theme === "dark" ? "light" : "dark";
           document.documentElement.setAttribute("data-theme", this.theme);
@@ -161,7 +193,9 @@
     </nav>
 
     <main>
-      <!-- Overview: stuck processes + workers + worktrees -->
+      <!-- Overview: a roll-up of every repo. Each card drills into a per-repo
+           detail page (#158). A global stuck banner/table stays here because a
+           wedged process is an urgent, cross-repo signal. -->
       <section class="view" x-show="$store.app.view === 'overview'">
         <div id="stuck-banner" class="banner banner-danger" hidden></div>
 
@@ -178,36 +212,72 @@
           </div>
         </div>
 
-        <h2>Workers</h2>
-        <div class="table-wrap">
-          <table id="workers" class="data-table">
-            <thead><tr><th>Repo</th><th>PID</th><th>Status</th><th>Started (approx)</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-
-        <h2>Worktrees</h2>
-        <div class="table-wrap">
-          <table id="worktrees" class="data-table">
-            <thead><tr><th>Repo</th><th>Branch</th><th>HEAD</th><th>Path</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </section>
-
-      <!-- Repos: discovered repos (drill-down lands in #158) -->
-      <section class="view" x-show="$store.app.view === 'repos'">
         <h2>Repos</h2>
-        <p class="muted">Per-repo drill-down pages arrive in a later change; for now this lists discovered repos.</p>
         <div id="repos-list" class="repo-grid"></div>
       </section>
 
-      <!-- Sessions: remote-control relay sessions. Each card surfaces the
-           claude.ai join URL as a tappable button plus a scannable QR code so a
-           phone can drop straight into the same session. No PTY bridge — the
-           interactive surface is Claude's own hosted relay (see #157). -->
+      <!-- Repo detail: everything for one repo in one place (#158). Reached by
+           tapping a repo card; not a primary nav item. The view module renders
+           into these slots and live-tails this repo's worker log. -->
+      <section class="view repo-detail" x-show="$store.app.view === 'repo'"
+               x-effect="window.repoDetail && window.repoDetail.show($store.app.view === 'repo' ? $store.app.repo : null)">
+        <button class="back-link" type="button" @click="$store.app.go('overview')">← All repos</button>
+        <h2 id="repo-detail-title" x-text="$store.app.repo || 'Repo'"></h2>
+
+        <div class="detail-grid">
+          <div class="card" id="repo-worker-card">
+            <h3>Worker</h3>
+            <div id="repo-worker-body"></div>
+          </div>
+          <div class="card" id="repo-session-card">
+            <h3>Remote-control session</h3>
+            <div id="repo-session-body"></div>
+          </div>
+        </div>
+
+        <h3>Worktrees</h3>
+        <div class="table-wrap">
+          <table id="repo-worktrees" class="data-table">
+            <thead><tr><th>Branch</th><th>HEAD</th><th>Path</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <div id="repo-stuck-section" hidden>
+          <h3>Stuck processes</h3>
+          <div class="table-wrap">
+            <table id="repo-stuck" class="data-table">
+              <thead><tr>
+                <th>Task</th><th>PID</th><th>Cmdline</th>
+                <th>Age</th><th>Blocked on</th><th>Action</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <h3>Log <span id="repo-log-title" class="muted"></span></h3>
+        <pre id="repo-log" class="log-pane">Loading…</pre>
+      </section>
+
+      <!-- Sessions: remote-control sessions (join URL + QR land in #157) plus
+           per-task PTY sessions you can attach to / steer (#164). -->
       <section class="view" x-show="$store.app.view === 'sessions'">
-        <h2>Sessions</h2>
+        <h2>Task sessions</h2>
+        <p class="muted">In-flight worker-driven Claude sessions. Attach for a live
+          terminal, or send one-shot guidance the bot runs next.</p>
+        <div class="table-wrap">
+          <table id="task-sessions" class="data-table">
+            <thead><tr><th>Task</th><th>Repo</th><th>Status</th><th>Action</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <!-- Remote-control relay sessions (#157). Each card surfaces the
+             claude.ai join URL as a tappable button plus a scannable QR code so a
+             phone can drop straight into the same session. No PTY bridge — the
+             interactive surface is Claude's own hosted relay. -->
+        <h2>Remote-control sessions</h2>
         <p class="muted">Open a remote-control session in a new tab, or scan its QR code to drive it from your phone.</p>
         <div id="sessions" class="session-grid"></div>
       </section>
@@ -247,7 +317,7 @@
               <button id="entry-delete" class="action" type="button">Delete</button>
               <button id="entry-new" class="action" type="button">New</button>
             </div>
-            <div id="entry-error"></div>
+            <div id="entry-error" class="entry-error"></div>
           </div>
         </div>
       </section>
@@ -263,6 +333,39 @@
         <pre id="log" class="log-pane">Select a worker repo to live-tail its log.</pre>
       </section>
     </main>
+  </div>
+
+  <!-- Attach terminal overlay (#164). Hidden until a task's Attach is clicked. -->
+  <div id="attach-modal" class="modal" role="dialog" aria-modal="true"
+       aria-labelledby="attach-title" hidden>
+    <div class="modal-card modal-term">
+      <div class="modal-head">
+        <span id="attach-title" class="modal-title">Attached</span>
+        <span class="spacer"></span>
+        <button id="attach-close" class="icon-btn" aria-label="Detach">✕</button>
+      </div>
+      <div id="attach-mic" class="attach-mic"></div>
+      <div id="attach-term" class="attach-term"></div>
+    </div>
+  </div>
+
+  <!-- One-shot "send guidance" overlay (the simpler inject path). -->
+  <div id="steer-modal" class="modal" role="dialog" aria-modal="true"
+       aria-labelledby="steer-title" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <span id="steer-title" class="modal-title">Send guidance</span>
+        <span class="spacer"></span>
+        <button id="steer-cancel" class="icon-btn" aria-label="Cancel">✕</button>
+      </div>
+      <textarea id="steer-text" rows="5"
+        aria-describedby="steer-error"
+        placeholder="Guidance for the bot's next turn (runs as an operator turn)…"></textarea>
+      <div class="editor-actions">
+        <button id="steer-send" class="action btn-primary" type="button">Send</button>
+      </div>
+      <div id="steer-error" class="entry-error" role="alert" aria-live="assertive"></div>
+    </div>
   </div>
 </body>
 </html>

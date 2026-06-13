@@ -1,19 +1,19 @@
 "use strict";
 
-// Repos view: a card per discovered repo (worker status + worktree count).
-// Full per-repo drill-down pages land in #158; this is the shell placeholder.
+// Repos roll-up (Overview): one card per discovered repo summarising worker
+// status, worktree count, and any stuck processes. Tapping a card opens the
+// per-repo drill-down page (#158).
 
-import { goView } from "./dom.js";
-import { loadLog } from "./logs.js";
+import { goRepo } from "./dom.js";
 
-export function render(workers, worktrees) {
+export function render(workers, worktrees, stuck = []) {
   const container = document.getElementById("repos-list");
   if (!container) return;
 
   const byRepo = new Map();
   const ensure = (repo) => {
     if (!byRepo.has(repo)) {
-      byRepo.set(repo, { repo, statuses: new Set(), worktrees: 0 });
+      byRepo.set(repo, { repo, statuses: new Set(), worktrees: 0, stuck: 0 });
     }
     return byRepo.get(repo);
   };
@@ -21,6 +21,7 @@ export function render(workers, worktrees) {
   // mixed worker states isn't reduced to whichever one happened to be last.
   for (const w of workers) ensure(w.repo).statuses.add(w.status);
   for (const w of worktrees) ensure(w.repo).worktrees += 1;
+  for (const s of stuck) if (s.worker_repo) ensure(s.worker_repo).stuck += 1;
 
   const repos = [...byRepo.values()].sort((a, b) => a.repo.localeCompare(b.repo));
 
@@ -34,8 +35,11 @@ export function render(workers, worktrees) {
   }
 
   for (const r of repos) {
-    const card = document.createElement("div");
+    // A <button> so the whole card is keyboard-focusable and tappable.
+    const card = document.createElement("button");
+    card.type = "button";
     card.className = "repo-card";
+    card.addEventListener("click", () => goRepo(r.repo));
 
     const name = document.createElement("div");
     name.className = "repo-name";
@@ -60,14 +64,13 @@ export function render(workers, worktrees) {
     const wt = document.createElement("span");
     wt.textContent = `${r.worktrees} worktree${r.worktrees === 1 ? "" : "s"}`;
     meta.appendChild(wt);
+    if (r.stuck > 0) {
+      const stuckBadge = document.createElement("span");
+      stuckBadge.className = "stuck-badge";
+      stuckBadge.textContent = `⚠ ${r.stuck} stuck`;
+      meta.appendChild(stuckBadge);
+    }
     card.appendChild(meta);
-
-    const action = document.createElement("button");
-    action.type = "button";
-    action.className = "action";
-    action.textContent = "View logs";
-    action.addEventListener("click", () => { goView("logs"); loadLog(r.repo); });
-    card.appendChild(action);
 
     container.appendChild(card);
   }

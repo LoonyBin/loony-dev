@@ -187,6 +187,21 @@ class ServicesTestCase(unittest.TestCase):
         self.assertEqual(sessions[0].session_id, "acme/x")
         self.assertEqual(sessions[0].repo, "acme/x")
 
+    def test_list_sessions_exposes_join_url(self) -> None:
+        # The per-repo session card (#158) renders the join link from this field.
+        self._write_conn(
+            "acme", "x",
+            '{"session_id": "loony-acme-x", "repo": "acme/x", "key": "base",'
+            ' "join_url": "https://claude.ai/remote/abc"}',
+        )
+        sessions = services.list_sessions(self.base)
+        self.assertEqual(sessions[0].join_url, "https://claude.ai/remote/abc")
+
+    def test_list_sessions_join_url_absent_is_none(self) -> None:
+        self._write_conn("acme", "x", '{"session_id": "loony-acme-x", "repo": "acme/x", "key": "base"}')
+        sessions = services.list_sessions(self.base)
+        self.assertIsNone(sessions[0].join_url)
+
 
 class WebAppTestCase(unittest.TestCase):
     def setUp(self) -> None:
@@ -203,7 +218,12 @@ class WebAppTestCase(unittest.TestCase):
 
     def test_static_assets_reachable(self) -> None:
         # The app shell loads its stylesheet and ES modules from /static.
-        for path in ("/static/app.css", "/static/js/app.js", "/static/js/sessions.js"):
+        for path in (
+            "/static/app.css",
+            "/static/js/app.js",
+            "/static/js/sessions.js",
+            "/static/js/attach.js",
+        ):
             resp = self.client.get(path)
             self.assertEqual(resp.status_code, 200, path)
 
@@ -709,7 +729,10 @@ class StateEventsEndpointTestCase(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(drv.headers.get("cache-control"), "no-cache")
             self.assertEqual(drv.headers.get("x-accel-buffering"), "no")
             snapshot = json.loads(await _read_first_sse_event(drv))
-        self.assertEqual(set(snapshot), {"workers", "worktrees", "sessions", "stuck"})
+        self.assertEqual(
+            set(snapshot),
+            {"workers", "worktrees", "sessions", "task_sessions", "stuck"},
+        )
         # The snapshot mirrors the per-resource endpoints: the seeded worker shows.
         self.assertEqual([w["repo"] for w in snapshot["workers"]], ["acme/widgets"])
 
