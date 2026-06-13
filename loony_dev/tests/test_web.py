@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -15,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from loony_dev.web import create_app
 from loony_dev.web import entries
-from loony_dev.web import services, streaming
+from loony_dev.web import routes, services, streaming
 
 _HAS_PROC = sys.platform.startswith("linux") and Path("/proc/self/stat").exists()
 
@@ -610,6 +611,56 @@ class SSEEndpointTestCase(unittest.IsolatedAsyncioTestCase):
         after = len(os.listdir(fd_dir))
         # Allow a tiny slack for unrelated runtime fds; a real leak would add ~25.
         self.assertLessEqual(after, before + 2, f"fd leak: {before} -> {after}")
+
+
+async def _read_first_sse_event(drv: "_SSEDriver") -> str:
+    """Return the body of the first complete SSE event (a ``data:`` payload)."""
+    raw = await drv.read_until("\n\n")
+    event = raw.split("\n\n", 1)[0]
+    return "".join(
+        line[len("data: "):] for line in event.split("\n") if line.startswith("data: ")
+    )
+
+
+class StateEventsEndpointTestCase(unittest.IsolatedAsyncioTestCase):
+    """Tests for the consolidated state SSE endpoint ``/api/events`` (issue #155)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        _make_worker(self.base, "acme", "widgets", os.getpid(), ["alpha", "beta"])
+        self.app = create_app(base_dir=self.base, supervisor_log=None)
+
+    async def test_events_emits_initial_snapshot_with_all_keys(self) -> None:
+        async with _SSEDriver(self.app, "/api/events") as drv:
+            self.assertEqual(drv.status, 200)
+            self.assertEqual(
+                drv.headers.get("content-type"), "text/event-stream; charset=utf-8"
+            )
+            self.assertEqual(drv.headers.get("cache-control"), "no-cache")
+            self.assertEqual(drv.headers.get("x-accel-buffering"), "no")
+            snapshot = json.loads(await _read_first_sse_event(drv))
+        self.assertEqual(set(snapshot), {"workers", "worktrees", "sessions", "stuck"})
+        # The snapshot mirrors the per-resource endpoints: the seeded worker shows.
+        self.assertEqual([w["repo"] for w in snapshot["workers"]], ["acme/widgets"])
+
+    async def test_events_heartbeat_during_idle(self) -> None:
+        # Shrink the cadences so an idle period elapses in test time; the state is
+        # static, so after the initial snapshot only heartbeats should arrive.
+        with mock.patch.object(routes, "SSE_STATE_INTERVAL", 0.02), \
+                mock.patch.object(routes, "SSE_HEARTBEAT_INTERVAL", 0.02):
+            async with _SSEDriver(self.app, "/api/events") as drv:
+                await _read_first_sse_event(drv)
+                heartbeat = await drv.read_until(": heartbeat")
+                self.assertIn(": heartbeat", heartbeat)
+
+    async def test_events_disconnect_tears_down_cleanly(self) -> None:
+        # Entering reads the initial snapshot; exiting delivers http.disconnect and
+        # awaits the ASGI task with a timeout — a leaked/wedged stream would hang.
+        async with _SSEDriver(self.app, "/api/events") as drv:
+            snapshot = json.loads(await _read_first_sse_event(drv))
+            self.assertIn("workers", snapshot)
 
 
 class StuckHeuristicTestCase(unittest.TestCase):
