@@ -249,7 +249,9 @@ def list_sessions(base_dir: Path) -> list[SessionView]:
         control_socket = data.get("control_socket")
 
         pid = _read_pid(repo_dir / REMOTE_CONTROL_PID_NAME)
-        alive = process_status(pid) == "running" if pid is not None else None
+        # "unknown" means the process exists but is owned by another user
+        # (we lack permission to signal it) — it is alive, not dead.
+        alive = process_status(pid) in ("running", "unknown") if pid is not None else None
 
         sessions.append(
             SessionView(
