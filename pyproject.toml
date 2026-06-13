@@ -16,6 +16,7 @@ include = ["loony_dev*"]
 
 [tool.setuptools.package-data]
 "loony_dev.web" = ["static/*", "static/js/*"]
+"loony_dev.commands" = ["*.md"]
 
 [dependency-groups]
 dev = [
