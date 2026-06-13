@@ -221,6 +221,22 @@ def create_api_router(
             )
         ]
 
+    @router.post("/sessions/{session_id}/interrupt")
+    def interrupt_session(
+        session_id: str = PathParam(..., min_length=1, description="Session id to interrupt"),
+    ) -> dict:
+        """Send an ESC interrupt to a session's in-flight turn (it stays alive).
+
+        This is the primary, reversible intervention for a wedged Claude turn;
+        the SIGTERM/SIGKILL ``/processes/{pid}/kill`` path remains the escalation.
+        """
+        try:
+            return services.interrupt_session(base_dir, session_id)
+        except services.SessionNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except services.SessionControlError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @router.post("/processes/{pid}/kill")
     def kill_process(
         background_tasks: BackgroundTasks,

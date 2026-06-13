@@ -21,6 +21,7 @@ import os
 import pty
 import re
 import signal
+import socket
 import struct
 import termios
 import threading
@@ -62,6 +63,15 @@ _DEFAULT_READINESS_TIMEOUT = 30.0
 _SUBMIT_DELAY = 0.1
 # Bytes of recent PTY output retained for a dashboard relay to read back.
 _DEFAULT_RING_BYTES = 256 * 1024
+
+# Control-channel (Unix-socket) tunables. The optional control socket lets a
+# *separate* process (the web dashboard, which does not own this session's PTY)
+# ask the session to interrupt its in-flight turn — see ``control_socket``.
+_CONTROL_BACKLOG = 8
+_CONTROL_ACCEPT_TIMEOUT = 0.5  # accept() wake-up period so the loop sees _closed
+_CONTROL_RECV_BYTES = 256
+# One-line command the control socket understands.
+_CONTROL_INTERRUPT = "interrupt"
 
 
 class ClaudeSessionError(Exception):
@@ -219,6 +229,7 @@ class ClaudeSession:
         extra_args: list[str] | None = None,
         env: dict[str, str] | None = None,
         log_file: Path | None = None,
+        control_socket: Path | None = None,
         cols: int = _DEFAULT_COLS,
         rows: int = _DEFAULT_ROWS,
         debounce: float = _DEFAULT_DEBOUNCE,
@@ -238,6 +249,7 @@ class ClaudeSession:
 
         self._jsonl_path = jsonl_path_for(self.cwd, self.session_id)
         self._log_path = log_file if log_file is not None else self._default_log_path()
+        self._control_socket_path = Path(control_socket) if control_socket is not None else None
 
         self._pid: int | None = None
         self._master_fd: int | None = None
@@ -246,12 +258,20 @@ class ClaudeSession:
         # One bot turn at a time per session; a future human-attach channel will
         # respect the same lock.
         self._turn_lock = threading.Lock()
+        # Turn-in-progress handshake for interrupt(). A separate small lock (not
+        # ``_turn_lock``, which is held for the whole turn) makes the "is a turn
+        # running?" check atomic with the ESC write, so an ESC cannot be queued
+        # between turns.
+        self._turn_state_lock = threading.Lock()
+        self._turn_in_progress = False
 
         self._drain_thread: threading.Thread | None = None
         self._closed = threading.Event()
         self._ring = bytearray()
         self._ring_lock = threading.Lock()
         self._log_fh = None
+        self._control_sock: socket.socket | None = None
+        self._control_thread: threading.Thread | None = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -319,6 +339,9 @@ class ClaudeSession:
         )
         self._drain_thread.start()
 
+        if self._control_socket_path is not None:
+            self._start_control_listener()
+
         self._await_readiness()
         logger.info(
             "ClaudeSession ready (pid=%d, session=%s, jsonl=%s)",
@@ -349,61 +372,78 @@ class ClaudeSession:
             raise ClaudeSessionError("session not open")
 
         with self._turn_lock:
-            # Consume any entries already on disk so they are not mistaken for
-            # this turn's output.
-            self._tailer.read_new()
+            # Mark the turn live so interrupt() may send ESC; the state lock
+            # makes the flag flip atomic with interrupt()'s check + ESC write.
+            with self._turn_state_lock:
+                self._turn_in_progress = True
+            try:
+                return self._run_turn(prompt, timeout=timeout)
+            finally:
+                with self._turn_state_lock:
+                    self._turn_in_progress = False
 
-            self._inject_prompt(prompt)
+    def _run_turn(self, prompt: str, *, timeout: float) -> TurnResult:
+        # Consume any entries already on disk so they are not mistaken for
+        # this turn's output.
+        self._tailer.read_new()
 
-            added: list[dict] = []
-            terminal: dict | None = None
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                for entry in self._tailer.read_new():
-                    added.append(entry)
-                    self._check_quota(entry)
-                    if terminal is None and (
-                        _is_terminal_assistant(entry) or _is_interrupt(entry)
-                    ):
-                        terminal = entry
-                if terminal is not None:
-                    break
-                if self._closed.is_set():
-                    raise ClaudeSessionError("session process exited mid-turn")
-                time.sleep(_POLL_INTERVAL)
-            else:
-                raise TurnTimeout(
-                    f"No terminal entry within {timeout:.0f}s for session {self.session_id}",
-                )
+        self._inject_prompt(prompt)
 
-            # Debounce: let trailing tool/system/snapshot entries flush, then
-            # fold them into the result.
-            time.sleep(self._debounce)
+        added: list[dict] = []
+        terminal: dict | None = None
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
             for entry in self._tailer.read_new():
                 added.append(entry)
                 self._check_quota(entry)
-
-            was_interrupted = _is_interrupt(terminal)
-            stop_reason = self._stop_reason(terminal, was_interrupted)
-            text = self._assistant_text(added)
-            return TurnResult(
-                text=text,
-                stop_reason=stop_reason,
-                was_interrupted=was_interrupted,
-                entries_added=len(added),
+                if terminal is None and (
+                    _is_terminal_assistant(entry) or _is_interrupt(entry)
+                ):
+                    terminal = entry
+            if terminal is not None:
+                break
+            if self._closed.is_set():
+                raise ClaudeSessionError("session process exited mid-turn")
+            time.sleep(_POLL_INTERVAL)
+        else:
+            raise TurnTimeout(
+                f"No terminal entry within {timeout:.0f}s for session {self.session_id}",
             )
 
-    def interrupt(self) -> None:
+        # Debounce: let trailing tool/system/snapshot entries flush, then
+        # fold them into the result.
+        time.sleep(self._debounce)
+        for entry in self._tailer.read_new():
+            added.append(entry)
+            self._check_quota(entry)
+
+        was_interrupted = _is_interrupt(terminal)
+        stop_reason = self._stop_reason(terminal, was_interrupted)
+        text = self._assistant_text(added)
+        return TurnResult(
+            text=text,
+            stop_reason=stop_reason,
+            was_interrupted=was_interrupted,
+            entries_added=len(added),
+        )
+
+    def interrupt(self) -> bool:
         """Send ESC to abort an in-flight turn (process survives).
 
-        No-op when no turn is running: a stray ESC written between turns would
-        sit in the PTY buffer and corrupt the next bracketed-paste prompt, so we
-        only send it while ``send_turn`` holds ``_turn_lock``.
+        Returns ``True`` if ESC was written (a turn was running), ``False``
+        otherwise. No-op when no turn is running: a stray ESC written between
+        turns would sit in the PTY buffer and corrupt the next bracketed-paste
+        prompt. The check and the ESC write happen under ``_turn_state_lock``,
+        which ``send_turn`` also holds when it flips ``_turn_in_progress``, so
+        a turn cannot end between the check and the write.
         """
         if self._master_fd is None:
             raise ClaudeSessionError("session not open")
-        if self._turn_lock.locked():
+        with self._turn_state_lock:
+            if not self._turn_in_progress:
+                return False
             self._write_all(_ESC)
+            return True
 
     def close(self) -> None:
         """Terminate the process and release the PTY / log handles."""
@@ -417,6 +457,7 @@ class ClaudeSession:
                 pass
             self._reap(grace=5.0)
         self._closed.set()
+        self._stop_control_listener()
         if self._master_fd is not None:
             try:
                 os.close(self._master_fd)
@@ -441,6 +482,94 @@ class ClaudeSession:
         """Return the tail of raw PTY output retained for a dashboard relay."""
         with self._ring_lock:
             return bytes(self._ring)
+
+    # ------------------------------------------------------------------
+    # Control channel (out-of-process interrupt)
+    # ------------------------------------------------------------------
+    #
+    # The dashboard runs in a different process and cannot write to this
+    # session's PTY master directly. When ``control_socket`` is set, ``open``
+    # binds a Unix-domain socket the dashboard connects to; a one-line command
+    # (``interrupt``) is dispatched to :meth:`interrupt`, so ESC reaches the PTY
+    # from the process that actually owns it.
+
+    def _start_control_listener(self) -> None:
+        path = self._control_socket_path
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # A stale socket file from a crashed predecessor blocks bind(); only
+            # remove an actual socket node, never an unrelated regular file (a
+            # typo/bad config must not destroy data — leave interrupt disabled).
+            if path.is_socket():
+                path.unlink()
+            elif path.exists():
+                logger.warning(
+                    "Control socket path %s exists and is not a socket; "
+                    "interrupt disabled", path,
+                )
+                self._control_sock = None
+                return
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.bind(str(path))
+            sock.listen(_CONTROL_BACKLOG)
+            sock.settimeout(_CONTROL_ACCEPT_TIMEOUT)
+        except OSError as exc:
+            # The control channel is best-effort: a bind failure must not stop
+            # the session from running — interrupt simply stays unavailable.
+            logger.warning("Could not start control socket %s: %s", path, exc)
+            self._control_sock = None
+            return
+        self._control_sock = sock
+        self._control_thread = threading.Thread(
+            target=self._control_loop, name=f"claude-ctl-{self.session_id[:8]}", daemon=True,
+        )
+        self._control_thread.start()
+
+    def _control_loop(self) -> None:
+        sock = self._control_sock
+        if sock is None:
+            return
+        while not self._closed.is_set():
+            try:
+                conn, _ = sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break  # listener closed during shutdown
+            with conn:
+                try:
+                    conn.settimeout(_CONTROL_ACCEPT_TIMEOUT)
+                    data = conn.recv(_CONTROL_RECV_BYTES)
+                except OSError:
+                    continue
+                try:
+                    conn.sendall(self._handle_control(data))
+                except OSError:
+                    pass
+
+    def _handle_control(self, data: bytes) -> bytes:
+        command = data.decode("utf-8", "replace").strip()
+        if command == _CONTROL_INTERRUPT:
+            return b"interrupted\n" if self.interrupt() else b"idle\n"
+        return b"error: unknown command\n"
+
+    def _stop_control_listener(self) -> None:
+        if self._control_sock is not None:
+            try:
+                self._control_sock.close()
+            except OSError:
+                pass
+            self._control_sock = None
+        if self._control_thread is not None:
+            self._control_thread.join(timeout=2.0)
+            self._control_thread = None
+        if self._control_socket_path is not None:
+            try:
+                self._control_socket_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     # ------------------------------------------------------------------
     # Internals

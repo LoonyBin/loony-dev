@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import threading
 import unittest
 from pathlib import Path
@@ -186,6 +187,75 @@ class TestInterruptAndResume(_StubSessionTest):
         self.assertFalse(r3.was_interrupted)
         self.assertEqual(r3.stop_reason, "end_turn")
         self.assertEqual(self.session.pid, pid)
+
+
+class TestControlSocketInterrupt(_StubSessionTest):
+    """A long turn is interrupted over the out-of-process control socket."""
+
+    extra_env = {"STUB_LONGTURN_SECS": "20"}
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Rebuild the session with a control socket so a separate "process"
+        # (here, a plain socket client) can request the interrupt.
+        self.session.close()
+        self.sock_path = Path(self.enterContext(_tmpdir())) / "ctl.sock"
+        self.session = ClaudeSession(
+            self.cwd, binary=str(_STUB), readiness_timeout=10.0, debounce=0.2,
+            control_socket=self.sock_path,
+        )
+
+    def _send_control(self, command: str) -> str:
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(5.0)
+        try:
+            client.connect(str(self.sock_path))
+            client.sendall(command.encode("utf-8") + b"\n")
+            return client.recv(256).decode("utf-8").strip()
+        finally:
+            client.close()
+
+    def test_socket_creates_on_open(self) -> None:
+        self.session.open()
+        self.assertTrue(self.sock_path.is_socket())
+
+    def test_interrupt_over_socket_then_resume(self) -> None:
+        self.session.open()
+        pid = self.session.pid
+
+        result: dict[str, TurnResult] = {}
+
+        def run_long() -> None:
+            result["turn"] = self.session.send_turn("LONGTURN please", timeout=20.0)
+
+        t = threading.Thread(target=run_long)
+        t.start()
+        _wait_until(lambda: b"LONGTURN" in self.session.recent_output(), timeout=5.0)
+
+        # The interrupt arrives over the control socket, not via a direct call.
+        self.assertEqual(self._send_control("interrupt"), "interrupted")
+        t.join(timeout=10.0)
+        self.assertFalse(t.is_alive())
+        self.assertTrue(result["turn"].was_interrupted)
+
+        # Session survives — a follow-up turn still completes on the same pid.
+        r = self.session.send_turn("after interrupt", timeout=10.0)
+        self.assertFalse(r.was_interrupted)
+        self.assertEqual(self.session.pid, pid)
+
+    def test_interrupt_when_idle_reports_idle(self) -> None:
+        self.session.open()
+        self.assertEqual(self._send_control("interrupt"), "idle")
+
+    def test_unknown_command_is_rejected(self) -> None:
+        self.session.open()
+        self.assertTrue(self._send_control("bogus").startswith("error"))
+
+    def test_socket_removed_on_close(self) -> None:
+        self.session.open()
+        self.assertTrue(self.sock_path.is_socket())
+        self.session.close()
+        self.assertFalse(self.sock_path.exists())
 
 
 class TestReadinessTimeout(_StubSessionTest):
