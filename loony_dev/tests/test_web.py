@@ -647,7 +647,10 @@ class StateEventsEndpointTestCase(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(drv.headers.get("cache-control"), "no-cache")
             self.assertEqual(drv.headers.get("x-accel-buffering"), "no")
             snapshot = json.loads(await _read_first_sse_event(drv))
-        self.assertEqual(set(snapshot), {"workers", "worktrees", "sessions", "stuck"})
+        self.assertEqual(
+            set(snapshot),
+            {"workers", "worktrees", "sessions", "task_sessions", "stuck"},
+        )
         # The snapshot mirrors the per-resource endpoints: the seeded worker shows.
         self.assertEqual([w["repo"] for w in snapshot["workers"]], ["acme/widgets"])
 

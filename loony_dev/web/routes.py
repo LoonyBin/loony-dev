@@ -129,13 +129,16 @@ def create_api_router(
     def _state_snapshot() -> dict:
         """Gather the consolidated dashboard state in one shot.
 
-        Mirrors the four per-resource GET endpoints so the streamed payload and
-        the polling fallback never drift apart.
+        Mirrors the per-resource GET endpoints so the streamed payload and the
+        polling fallback never drift apart.
         """
         return {
             "workers": [asdict(w) for w in services.list_workers(base_dir)],
             "worktrees": [asdict(w) for w in services.list_worktrees(base_dir)],
             "sessions": [asdict(s) for s in services.list_sessions(base_dir)],
+            "task_sessions": [
+                asdict(s) for s in services.list_task_sessions(base_dir)
+            ],
             "stuck": [
                 asdict(s)
                 for s in services.list_stuck(

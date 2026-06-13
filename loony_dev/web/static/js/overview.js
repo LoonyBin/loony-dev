@@ -2,7 +2,7 @@
 
 // Overview view: stuck-process banner/table, workers table, worktrees table.
 
-import { cell, setRows, formatAge, goView, requestRefresh } from "./dom.js";
+import { cell, setRows, formatAge, goView } from "./dom.js";
 import { loadLog } from "./logs.js";
 
 function renderWorker(w) {
@@ -46,10 +46,11 @@ async function killProcess(pid) {
       const detail = await resp.text();
       throw new Error(`${resp.status}: ${detail}`);
     }
+    // No manual refresh needed: the /api/events stream re-emits the new state
+    // (the process gone from the stuck table) within a couple of seconds.
   } catch (err) {
     window.alert(`Failed to kill PID ${pid}: ${err.message}`);
   }
-  requestRefresh();
 }
 
 function renderStuckRow(s) {
