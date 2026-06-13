@@ -35,22 +35,30 @@
     document.addEventListener("alpine:init", () => {
       const NAV = [
         { id: "overview", label: "Overview", icon: "📊" },
-        { id: "repos", label: "Repos", icon: "📁" },
         { id: "sessions", label: "Sessions", icon: "🔗" },
         { id: "skills", label: "Skills & Commands", icon: "🧩" },
         { id: "logs", label: "Logs", icon: "📜" },
       ];
       const VALID = new Set(NAV.map((n) => n.id));
-      const hashView = () => {
+      // The per-repo drill-down (#158) is not a nav item — it is reached by
+      // tapping a repo and lives at `#repo/<owner>/<name>`. Parse the hash into
+      // a {view, repo} pair so the detail route round-trips through the URL.
+      const parseHash = () => {
         const h = location.hash.replace(/^#/, "");
-        return VALID.has(h) ? h : "overview";
+        if (h.startsWith("repo/")) {
+          const repo = h.slice("repo/".length);
+          return { view: repo ? "repo" : "overview", repo: repo || null };
+        }
+        return { view: VALID.has(h) ? h : "overview", repo: null };
       };
       const systemDark = window.matchMedia
         && window.matchMedia("(prefers-color-scheme: dark)").matches;
+      const initial = parseHash();
 
       window.Alpine.store("app", {
         nav: NAV,
-        view: hashView(),
+        view: initial.view,
+        repo: initial.repo,
         stuckCount: 0,
         // Live SSE health. Starts true (optimistic) so the "reconnecting…"
         // indicator only appears once the stream actually drops; app.js flips
@@ -61,9 +69,21 @@
         go(view) {
           if (!VALID.has(view)) view = "overview";
           this.view = view;
+          this.repo = null;
           if (location.hash.replace(/^#/, "") !== view) location.hash = view;
         },
-        syncFromHash() { this.view = hashView(); },
+        goRepo(repo) {
+          if (!repo) { this.go("overview"); return; }
+          this.view = "repo";
+          this.repo = repo;
+          const target = "repo/" + repo;
+          if (location.hash.replace(/^#/, "") !== target) location.hash = target;
+        },
+        syncFromHash() {
+          const s = parseHash();
+          this.view = s.view;
+          this.repo = s.repo;
+        },
         toggleTheme() {
           this.theme = this.theme === "dark" ? "light" : "dark";
           document.documentElement.setAttribute("data-theme", this.theme);
@@ -153,7 +173,9 @@
     </nav>
 
     <main>
-      <!-- Overview: stuck processes + workers + worktrees -->
+      <!-- Overview: a roll-up of every repo. Each card drills into a per-repo
+           detail page (#158). A global stuck banner/table stays here because a
+           wedged process is an urgent, cross-repo signal. -->
       <section class="view" x-show="$store.app.view === 'overview'">
         <div id="stuck-banner" class="banner banner-danger" hidden></div>
 
@@ -170,28 +192,52 @@
           </div>
         </div>
 
-        <h2>Workers</h2>
-        <div class="table-wrap">
-          <table id="workers" class="data-table">
-            <thead><tr><th>Repo</th><th>PID</th><th>Status</th><th>Started (approx)</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-
-        <h2>Worktrees</h2>
-        <div class="table-wrap">
-          <table id="worktrees" class="data-table">
-            <thead><tr><th>Repo</th><th>Branch</th><th>HEAD</th><th>Path</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
+        <h2>Repos</h2>
+        <div id="repos-list" class="repo-grid"></div>
       </section>
 
-      <!-- Repos: discovered repos (drill-down lands in #158) -->
-      <section class="view" x-show="$store.app.view === 'repos'">
-        <h2>Repos</h2>
-        <p class="muted">Per-repo drill-down pages arrive in a later change; for now this lists discovered repos.</p>
-        <div id="repos-list" class="repo-grid"></div>
+      <!-- Repo detail: everything for one repo in one place (#158). Reached by
+           tapping a repo card; not a primary nav item. The view module renders
+           into these slots and live-tails this repo's worker log. -->
+      <section class="view repo-detail" x-show="$store.app.view === 'repo'"
+               x-effect="window.repoDetail && window.repoDetail.show($store.app.view === 'repo' ? $store.app.repo : null)">
+        <button class="back-link" type="button" @click="$store.app.go('overview')">← All repos</button>
+        <h2 id="repo-detail-title" x-text="$store.app.repo || 'Repo'"></h2>
+
+        <div class="detail-grid">
+          <div class="card" id="repo-worker-card">
+            <h3>Worker</h3>
+            <div id="repo-worker-body"></div>
+          </div>
+          <div class="card" id="repo-session-card">
+            <h3>Remote-control session</h3>
+            <div id="repo-session-body"></div>
+          </div>
+        </div>
+
+        <h3>Worktrees</h3>
+        <div class="table-wrap">
+          <table id="repo-worktrees" class="data-table">
+            <thead><tr><th>Branch</th><th>HEAD</th><th>Path</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <div id="repo-stuck-section" hidden>
+          <h3>Stuck processes</h3>
+          <div class="table-wrap">
+            <table id="repo-stuck" class="data-table">
+              <thead><tr>
+                <th>Task</th><th>PID</th><th>Cmdline</th>
+                <th>Age</th><th>Blocked on</th><th>Action</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <h3>Log <span id="repo-log-title" class="muted"></span></h3>
+        <pre id="repo-log" class="log-pane">Loading…</pre>
       </section>
 
       <!-- Sessions: remote-control sessions (join URL + QR land in #157) -->

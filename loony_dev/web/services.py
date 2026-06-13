@@ -66,7 +66,10 @@ class SessionView:
     session_id: str
     repo: str | None
     key: str | None
-    join_url: str | None = None  # claude.ai deep-link; null until Claude emits it
+    # The claude.ai join link the child emits once the remote-control session is
+    # live (``null`` until it appears). Surfaced so the dashboard can render a
+    # join link + QR for the per-repo session card.
+    join_url: str | None = None
     mode: str | None = None  # e.g. "remote-control"
     updated_at: str | None = None  # ISO-8601 mtime of remote-control.json (staleness)
     alive: bool | None = None  # remote-control process running; null if no PID file
