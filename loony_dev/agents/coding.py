@@ -7,6 +7,11 @@ from typing import TYPE_CHECKING
 
 from loony_dev.agents.base import Agent
 from loony_dev.agents.claude_quota import ClaudeQuotaMixin
+from loony_dev.agents.claude_session import (
+    ClaudeSession,
+    ClaudeSessionError,
+    QuotaExceededError,
+)
 from loony_dev.models import GitError, HookFailureError, TaskResult, truncate_for_log
 
 if TYPE_CHECKING:
@@ -14,6 +19,30 @@ if TYPE_CHECKING:
     from loony_dev.tasks.issue_task import IssueTask
 
 logger = logging.getLogger(__name__)
+
+# Per-turn timeout for ``ClaudeSession.send_turn``. A single phase (implement a
+# whole issue, fix a review) can run for many minutes, so this is generous;
+# override via the ``claude_turn_timeout_seconds`` key under ``[worker]``.
+_DEFAULT_TURN_TIMEOUT = 30 * 60
+
+
+def _turn_timeout() -> float:
+    """Return the per-turn timeout (seconds) for the persistent session."""
+    from loony_dev import config
+
+    # The key is documented under [worker], which lands in config.settings as
+    # a nested dict — not a flat top-level key. Fall back to a top-level key
+    # if present for forward compatibility.
+    worker_cfg = config.settings.get("worker")
+    if isinstance(worker_cfg, dict) and "claude_turn_timeout_seconds" in worker_cfg:
+        raw = worker_cfg["claude_turn_timeout_seconds"]
+    else:
+        raw = config.settings.get("claude_turn_timeout_seconds", _DEFAULT_TURN_TIMEOUT)
+
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(_DEFAULT_TURN_TIMEOUT)
 
 
 class CodingAgent(ClaudeQuotaMixin, Agent):
@@ -31,38 +60,38 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         prompt = task.describe()
         session_id = self._session_id_for(task)
         logger.debug(
-            "Running Claude CLI (cwd=%s, session=%s): claude -p --dangerously-skip-permissions <prompt>",
-            work_dir, session_id,
+            "Opening ClaudeSession (cwd=%s, session=%s)", work_dir, session_id,
         )
         logger.debug("Claude prompt: %s", truncate_for_log(prompt))
 
         baseline_commit = self._get_head_commit(work_dir)
 
-        stdout, stderr, returncode = self._run_claude_cli(
-            prompt, cwd=work_dir, session_id=session_id,
-        )
-
-        logger.debug("Claude CLI exited with code %d", returncode)
-        if stdout:
-            logger.debug("Claude stdout: %s", truncate_for_log(stdout))
-        if stderr:
-            logger.debug("Claude stderr: %s", truncate_for_log(stderr))
-
-        if returncode != 0:
-            combined = f"{stdout}\n{stderr}"
-            is_quota = self._is_quota_error(combined)
-            if is_quota:
-                self._handle_quota_error(combined)
+        try:
+            session = self._open_session(work_dir, session_id)
+        except ClaudeSessionError as exc:
+            logger.warning("Failed to open ClaudeSession: %s", exc)
             return TaskResult(
                 success=False,
-                output=combined,
-                summary=f"Agent exited with code {returncode}",
-                rate_limited=is_quota,
+                output=str(exc),
+                summary=f"Failed to start Claude session: {exc}",
             )
 
-        summary = self._generate_summary(stdout, work_dir)
+        try:
+            turn, failure = self._run_turn(
+                session, prompt, timeout=_turn_timeout(), phase="execution",
+            )
+            if failure is not None:
+                return failure
+            output = turn.text
+        finally:
+            self._close_session(session)
+
+        if output:
+            logger.debug("Claude output: %s", truncate_for_log(output))
+
+        summary = self._generate_summary(output, work_dir)
         has_changes = self._has_code_changes(baseline_commit, work_dir)
-        return TaskResult(success=True, output=stdout, summary=summary, post_summary=has_changes)
+        return TaskResult(success=True, output=output, summary=summary, post_summary=has_changes)
 
     def execute_issue(self, task: IssueTask, work_dir: Path) -> TaskResult:
         """Multi-phase execution for IssueTask with optional Coderabbit verification.
@@ -88,192 +117,234 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         git = GitRepo(work_dir, default_branch=default_branch)
         session_id = self._session_id_for(task)
         branch = task.branch_name
+        timeout = _turn_timeout()
 
         # The worktree handed to us by the orchestrator is already checked out
         # on `branch` (git worktree add -B), so no branch preparation is needed.
         logger.info("Issue #%d: working on branch '%s'", task.issue.number, branch)
 
-        # If the branch has no prior commits the session carries stale context
-        # from a different branch — skip it so Claude implements from scratch.
+        # If the branch has no prior commits, any deterministic session would
+        # carry stale context from a different branch — open a fresh one
+        # (session_id=None) so Claude implements from scratch.
         ahead = git.count_commits_ahead(default_branch, branch)
-        run_session_id = session_id if ahead > 0 else None
-        if run_session_id is None and ahead == 0:
+        if ahead == 0:
             logger.info(
                 "Issue #%d: branch '%s' is empty — using fresh session",
                 task.issue.number, branch,
             )
+            session_id = None
 
-        # ── Phase 1: Implement ──────────────────────────────────────────────
-        logger.info("Issue #%d: phase 1 — implementing", task.issue.number)
-        implement_prompt = task.implement_prompt()
-        logger.debug("Claude prompt: %s", truncate_for_log(implement_prompt))
-
-        stdout, stderr, returncode = self._run_claude_cli(
-            implement_prompt, cwd=work_dir, session_id=run_session_id,
-        )
-        logger.debug("Claude CLI exited with code %d", returncode)
-        if stdout:
-            logger.debug("Claude stdout: %s", truncate_for_log(stdout))
-        if stderr:
-            logger.debug("Claude stderr: %s", truncate_for_log(stderr))
-
-        if returncode != 0:
-            combined = f"{stdout}\n{stderr}"
-            is_quota = self._is_quota_error(combined)
-            if is_quota:
-                self._handle_quota_error(combined)
+        try:
+            session = self._open_session(work_dir, session_id)
+        except ClaudeSessionError as exc:
+            logger.warning("Issue #%d: failed to open ClaudeSession: %s", task.issue.number, exc)
             return TaskResult(
                 success=False,
-                output=combined,
-                summary=f"Agent exited with code {returncode}",
-                rate_limited=is_quota,
+                output=str(exc),
+                summary=f"Failed to start Claude session: {exc}",
             )
 
-        # ── Phase 2: Coderabbit verify+fix loop ────────────────────────────
-        if cr_available:
-            logger.info("Issue #%d: phase 2 — Coderabbit review (max %d)", task.issue.number, max_review)
-            for attempt in range(max_review):
-                try:
-                    cr_result = cr.run_review(work_dir)
-                except cr.CodeRabbitError as exc:
-                    logger.warning("Coderabbit review failed: %s", exc)
-                    break
+        try:
+            # ── Phase 1: Implement ──────────────────────────────────────────
+            logger.info("Issue #%d: phase 1 — implementing", task.issue.number)
+            implement_prompt = task.implement_prompt()
+            logger.debug("Claude prompt: %s", truncate_for_log(implement_prompt))
 
-                if not cr_result.has_issues:
-                    logger.info("Issue #%d: Coderabbit found no issues", task.issue.number)
-                    break
+            turn, failure = self._run_turn(
+                session, implement_prompt, timeout=timeout, phase="implementation",
+            )
+            if failure is not None:
+                return failure
+            implement_output = turn.text
+            if implement_output:
+                logger.debug("Claude output: %s", truncate_for_log(implement_output))
 
-                if attempt == max_review - 1:
-                    logger.warning(
-                        "Issue #%d: Coderabbit review retries exhausted — continuing anyway",
-                        task.issue.number,
-                    )
-                    break
-
-                logger.info(
-                    "Issue #%d: Coderabbit found issues (attempt %d/%d), asking Claude to fix",
-                    task.issue.number, attempt + 1, max_review,
-                )
-                fix_stdout, fix_stderr, fix_rc = self._run_claude_cli(
-                    task.fix_review_prompt(cr_result.agent_prompt),
-                    cwd=work_dir,
-                    session_id=run_session_id,
-                )
-                if fix_rc != 0:
-                    combined = f"{fix_stdout}\n{fix_stderr}"
-                    is_quota = self._is_quota_error(combined)
-                    if is_quota:
-                        self._handle_quota_error(combined)
-                    return TaskResult(
-                        success=False,
-                        output=combined,
-                        summary=f"Agent exited with code {fix_rc} during review fix",
-                        rate_limited=is_quota,
-                    )
-        else:
-            logger.debug("Issue #%d: Coderabbit not available, skipping review phase", task.issue.number)
-
-        # ── Phase 3: Commit message + commit+push loop ──────────────────────
-        logger.info("Issue #%d: phase 3 — generating commit message", task.issue.number)
-        commit_msg = self._generate_commit_message(task, work_dir)
-        self._save_commit_message(commit_msg, task)
-
-        logger.info("Issue #%d: committing to branch '%s' (max %d attempts)", task.issue.number, branch, max_commits)
-        hook_failed_output: str | None = None
-        commit_succeeded = False
-
-        _COMMIT_MSG_REJECTION = ("commit message", "conventional commit", "commit-msg")
-
-        for attempt in range(max_commits):
-            try:
-                git.commit_and_push(commit_msg, branch)
-                commit_succeeded = True
-                break
-            except HookFailureError as exc:
-                hook_failed_output = exc.output
-                if attempt == max_commits - 1:
-                    logger.warning(
-                        "Issue #%d: hook failures exhausted all %d commit retries",
-                        task.issue.number, max_commits,
-                    )
-                    break
-                if any(kw in hook_failed_output.lower() for kw in _COMMIT_MSG_REJECTION):
-                    logger.info(
-                        "Issue #%d: commit message rejected (attempt %d/%d), regenerating",
-                        task.issue.number, attempt + 1, max_commits,
-                    )
-                    commit_msg = self._generate_commit_message(task, work_dir)
-                    continue
-                logger.info(
-                    "Issue #%d: hook failure (attempt %d/%d), asking Claude to fix",
-                    task.issue.number, attempt + 1, max_commits,
-                )
-                hook_fix_stdout, hook_fix_stderr, hook_fix_rc = self._run_claude_cli(
-                    task.fix_hook_prompt(hook_failed_output),
-                    cwd=work_dir,
-                    session_id=run_session_id,
-                )
-                if hook_fix_rc != 0:
-                    combined = f"{hook_fix_stdout}\n{hook_fix_stderr}"
-                    is_quota = self._is_quota_error(combined)
-                    if is_quota:
-                        self._handle_quota_error(combined)
-                    return TaskResult(
-                        success=False,
-                        output=combined,
-                        summary=f"Agent exited with code {hook_fix_rc} during hook fix",
-                        rate_limited=is_quota,
-                    )
-                if cr_available:
+            # ── Phase 2: Coderabbit verify+fix loop ─────────────────────────
+            if cr_available:
+                logger.info("Issue #%d: phase 2 — Coderabbit review (max %d)", task.issue.number, max_review)
+                for attempt in range(max_review):
                     try:
                         cr_result = cr.run_review(work_dir)
-                        if cr_result.has_issues:
-                            cr_fix_stdout, cr_fix_stderr, cr_fix_rc = self._run_claude_cli(
-                                task.fix_review_prompt(cr_result.agent_prompt),
-                                cwd=work_dir,
-                                session_id=run_session_id,
-                            )
-                            if cr_fix_rc != 0:
-                                combined = f"{cr_fix_stdout}\n{cr_fix_stderr}"
-                                is_quota = self._is_quota_error(combined)
-                                if is_quota:
-                                    self._handle_quota_error(combined)
-                                return TaskResult(
-                                    success=False,
-                                    output=combined,
-                                    summary=f"Agent exited with code {cr_fix_rc} during post-hook review fix",
-                                    rate_limited=is_quota,
-                                )
                     except cr.CodeRabbitError as exc:
-                        logger.warning("Coderabbit review after hook fix failed: %s", exc)
-            except GitError as exc:
-                logger.warning("Issue #%d: git error during commit/push: %s", task.issue.number, exc)
-                return TaskResult(
-                    success=False,
-                    output=str(exc),
-                    summary=f"git error during commit/push: {exc}",
-                )
+                        logger.warning("Coderabbit review failed: %s", exc)
+                        break
 
-        if not commit_succeeded:
-            task.mark_commit_exhausted(hook_failed_output)
-            wip_msg = f"[WIP] {commit_msg}"
-            logger.warning("Issue #%d: committing as WIP: %s", task.issue.number, wip_msg)
-            try:
-                git.commit_and_push(wip_msg, branch, no_verify=True)
-            except (GitError, HookFailureError) as exc:
-                logger.error("Issue #%d: failed to commit WIP: %s", task.issue.number, exc)
-                return TaskResult(
-                    success=False,
-                    output=str(exc),
-                    summary=f"Failed to commit even as WIP: {exc}",
-                )
+                    if not cr_result.has_issues:
+                        logger.info("Issue #%d: Coderabbit found no issues", task.issue.number)
+                        break
 
-        # ── Phase 4: Create PR ──────────────────────────────────────────────
-        logger.info("Issue #%d: phase 4 — creating PR", task.issue.number)
-        self._create_pr(task, branch, default_branch, work_dir)
+                    if attempt == max_review - 1:
+                        logger.warning(
+                            "Issue #%d: Coderabbit review retries exhausted — continuing anyway",
+                            task.issue.number,
+                        )
+                        break
 
-        summary = self._generate_summary(stdout, work_dir)
-        return TaskResult(success=True, output=stdout, summary=summary, post_summary=True)
+                    logger.info(
+                        "Issue #%d: Coderabbit found issues (attempt %d/%d), asking Claude to fix",
+                        task.issue.number, attempt + 1, max_review,
+                    )
+                    _, failure = self._run_turn(
+                        session,
+                        task.fix_review_prompt(cr_result.agent_prompt),
+                        timeout=timeout,
+                        phase="review fix",
+                    )
+                    if failure is not None:
+                        return failure
+            else:
+                logger.debug("Issue #%d: Coderabbit not available, skipping review phase", task.issue.number)
+
+            # ── Phase 3: Commit message + commit+push loop ──────────────────
+            logger.info("Issue #%d: phase 3 — generating commit message", task.issue.number)
+            commit_msg = self._generate_commit_message(task, work_dir)
+            self._save_commit_message(commit_msg, task)
+
+            logger.info("Issue #%d: committing to branch '%s' (max %d attempts)", task.issue.number, branch, max_commits)
+            hook_failed_output: str | None = None
+            commit_succeeded = False
+
+            _COMMIT_MSG_REJECTION = ("commit message", "conventional commit", "commit-msg")
+
+            for attempt in range(max_commits):
+                try:
+                    git.commit_and_push(commit_msg, branch)
+                    commit_succeeded = True
+                    break
+                except HookFailureError as exc:
+                    hook_failed_output = exc.output
+                    if attempt == max_commits - 1:
+                        logger.warning(
+                            "Issue #%d: hook failures exhausted all %d commit retries",
+                            task.issue.number, max_commits,
+                        )
+                        break
+                    if any(kw in hook_failed_output.lower() for kw in _COMMIT_MSG_REJECTION):
+                        logger.info(
+                            "Issue #%d: commit message rejected (attempt %d/%d), regenerating",
+                            task.issue.number, attempt + 1, max_commits,
+                        )
+                        commit_msg = self._generate_commit_message(task, work_dir)
+                        continue
+                    logger.info(
+                        "Issue #%d: hook failure (attempt %d/%d), asking Claude to fix",
+                        task.issue.number, attempt + 1, max_commits,
+                    )
+                    _, failure = self._run_turn(
+                        session,
+                        task.fix_hook_prompt(hook_failed_output),
+                        timeout=timeout,
+                        phase="hook fix",
+                    )
+                    if failure is not None:
+                        return failure
+                    if cr_available:
+                        try:
+                            cr_result = cr.run_review(work_dir)
+                            if cr_result.has_issues:
+                                _, failure = self._run_turn(
+                                    session,
+                                    task.fix_review_prompt(cr_result.agent_prompt),
+                                    timeout=timeout,
+                                    phase="post-hook review fix",
+                                )
+                                if failure is not None:
+                                    return failure
+                        except cr.CodeRabbitError as exc:
+                            logger.warning("Coderabbit review after hook fix failed: %s", exc)
+                except GitError as exc:
+                    logger.warning("Issue #%d: git error during commit/push: %s", task.issue.number, exc)
+                    return TaskResult(
+                        success=False,
+                        output=str(exc),
+                        summary=f"git error during commit/push: {exc}",
+                    )
+
+            if not commit_succeeded:
+                task.mark_commit_exhausted(hook_failed_output)
+                wip_msg = f"[WIP] {commit_msg}"
+                logger.warning("Issue #%d: committing as WIP: %s", task.issue.number, wip_msg)
+                try:
+                    git.commit_and_push(wip_msg, branch, no_verify=True)
+                except (GitError, HookFailureError) as exc:
+                    logger.error("Issue #%d: failed to commit WIP: %s", task.issue.number, exc)
+                    return TaskResult(
+                        success=False,
+                        output=str(exc),
+                        summary=f"Failed to commit even as WIP: {exc}",
+                    )
+
+            # ── Phase 4: Create PR ──────────────────────────────────────────
+            logger.info("Issue #%d: phase 4 — creating PR", task.issue.number)
+            self._create_pr(task, branch, default_branch, work_dir)
+
+            summary = self._generate_summary(implement_output, work_dir)
+            return TaskResult(success=True, output=implement_output, summary=summary, post_summary=True)
+        finally:
+            self._close_session(session)
+
+    # ------------------------------------------------------------------
+    # Persistent session helpers
+    # ------------------------------------------------------------------
+
+    def _open_session(self, work_dir: Path, session_id: str | None) -> ClaudeSession:
+        """Open and register a persistent ClaudeSession for the task.
+
+        Registration lets :meth:`ClaudeQuotaMixin.terminate` close the session
+        on an orchestrator shutdown signal. The caller owns the session and
+        must release it via :meth:`_close_session`.
+        """
+        session = ClaudeSession(cwd=work_dir, session_id=session_id)
+        self._register_session(session)
+        try:
+            session.open()
+        except Exception:
+            self._unregister_session(session)
+            session.close()
+            raise
+        return session
+
+    def _close_session(self, session: ClaudeSession) -> None:
+        """Close *session* and drop it from the registry (best-effort)."""
+        self._unregister_session(session)
+        try:
+            session.close()
+        except Exception:  # pragma: no cover - best-effort teardown
+            logger.debug("Error closing ClaudeSession", exc_info=True)
+
+    def _run_turn(
+        self,
+        session: ClaudeSession,
+        prompt: str,
+        *,
+        timeout: float,
+        phase: str,
+    ) -> tuple[object | None, TaskResult | None]:
+        """Send one turn; translate quota/session errors into a TaskResult.
+
+        Returns ``(turn_result, None)`` on success, or ``(None, failure)``
+        where *failure* is a ready-to-return :class:`TaskResult`. A quota error
+        triggers :meth:`_handle_quota_error` (self-disabling the agent) exactly
+        as the per-respawn path did, and is reported with ``rate_limited=True``.
+        """
+        try:
+            turn = session.send_turn(prompt, timeout=timeout)
+        except QuotaExceededError as exc:
+            self._handle_quota_error(exc.output)
+            return None, TaskResult(
+                success=False,
+                output=exc.output,
+                summary=f"Rate limited during {phase}",
+                rate_limited=True,
+            )
+        except ClaudeSessionError as exc:
+            logger.warning("ClaudeSession error during %s: %s", phase, exc)
+            return None, TaskResult(
+                success=False,
+                output=str(exc),
+                summary=f"Agent error during {phase}: {exc}",
+            )
+        return turn, None
 
     # ------------------------------------------------------------------
     # Helpers

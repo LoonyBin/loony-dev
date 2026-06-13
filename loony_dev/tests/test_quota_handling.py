@@ -174,35 +174,40 @@ class TestDisabledUntil(unittest.TestCase):
 
 
 class TestQuotaWorkerGracefulHandling(unittest.TestCase):
-    """Quota errors must not raise or exit the worker; they return TaskResult(success=False)."""
+    """Quota errors must not raise or exit the worker; they return TaskResult(success=False).
 
-    def _make_popen_mock(self, stdout: str, stderr: str, returncode: int) -> MagicMock:
-        mock_proc = MagicMock()
-        mock_proc.__enter__.return_value = mock_proc
-        mock_proc.__exit__.return_value = False
-        mock_proc.communicate.return_value = (stdout, stderr)
-        mock_proc.returncode = returncode
-        return mock_proc
+    ``execute`` now drives a persistent :class:`ClaudeSession`, which surfaces a
+    quota condition as :class:`QuotaExceededError` from ``send_turn`` (rather
+    than a non-zero subprocess exit), so these tests inject the error there.
+    """
+
+    def _quota_session(self, message: str) -> MagicMock:
+        from loony_dev.agents.claude_session import QuotaExceededError
+
+        session = MagicMock()
+        session.send_turn.side_effect = QuotaExceededError(message)
+        return session
 
     def test_quota_error_returns_task_result_not_raises(self) -> None:
-        """execute() with a quota-error response must return TaskResult without raising."""
+        """execute() with a quota-error turn must return TaskResult without raising."""
         from loony_dev.agents.coding import CodingAgent
         from loony_dev.models import TaskResult
 
         agent = CodingAgent()
-        quota_stderr = "You've hit your limit · resets 7:30pm (Asia/Calcutta)"
-        mock_proc = self._make_popen_mock(stdout="", stderr=quota_stderr, returncode=1)
+        session = self._quota_session("You've hit your limit · resets 7:30pm (Asia/Calcutta)")
 
         mock_task = MagicMock()
         mock_task.describe.return_value = "implement test feature"
         mock_task.task_type = "implement_issue"
 
-        with patch("subprocess.Popen", return_value=mock_proc), \
-             patch("subprocess.check_output", return_value=b"abc123\n"):
+        with patch.object(agent, "_open_session", return_value=session), \
+             patch.object(agent, "_close_session"), \
+             patch.object(agent, "_get_head_commit", return_value="abc123"):
             result = agent.execute(mock_task, Path("/tmp"))
 
         self.assertIsInstance(result, TaskResult)
         self.assertFalse(result.success)
+        self.assertTrue(result.rate_limited)
         self.assertTrue(agent.is_disabled())
 
     def test_quota_error_is_disabled_not_crashed(self) -> None:
@@ -210,17 +215,14 @@ class TestQuotaWorkerGracefulHandling(unittest.TestCase):
         from loony_dev.agents.coding import CodingAgent
 
         agent = CodingAgent()
-        mock_proc = self._make_popen_mock(
-            stdout="rate limit exceeded",
-            stderr="",
-            returncode=1,
-        )
+        session = self._quota_session("rate limit exceeded")
 
         mock_task = MagicMock()
         mock_task.describe.return_value = "implement test feature"
 
-        with patch("subprocess.Popen", return_value=mock_proc), \
-             patch("subprocess.check_output", return_value=b"deadbeef\n"):
+        with patch.object(agent, "_open_session", return_value=session), \
+             patch.object(agent, "_close_session"), \
+             patch.object(agent, "_get_head_commit", return_value="deadbeef"):
             agent.execute(mock_task, Path("/tmp"))
 
         self.assertTrue(agent.is_disabled())
