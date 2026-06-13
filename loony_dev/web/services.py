@@ -28,10 +28,13 @@ WORKER_LOG_NAME = "loony-worker.log"
 WORKER_PID_NAME = "loony-worker.pid"
 
 # Per-repo remote-control "connection file". The canonical schema and writer live
-# in ``loony_dev.supervisor`` (see ``_write_connection_file``); this reader only
-# consumes the first three keys ``{session_id, repo, key}``. Parsing is defensive:
-# unknown keys are ignored and malformed/missing files are skipped.
+# in ``loony_dev.supervisor`` (see ``_write_connection_file``); this reader
+# consumes ``{session_id, repo, key, mode, join_url}`` plus the file's mtime.
+# Parsing is defensive: unknown keys are ignored and malformed/missing files are
+# skipped. The sibling ``remote-control.pid`` file gives process liveness, read
+# the same defensive way as the worker PID file.
 REMOTE_CONTROL_CONN_NAME = "remote-control.json"
+REMOTE_CONTROL_PID_NAME = "remote-control.pid"
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +70,9 @@ class SessionView:
     # live (``null`` until it appears). Surfaced so the dashboard can render a
     # join link + QR for the per-repo session card.
     join_url: str | None = None
+    mode: str | None = None  # e.g. "remote-control"
+    updated_at: str | None = None  # ISO-8601 mtime of remote-control.json (staleness)
+    alive: bool | None = None  # remote-control process running; null if no PID file
     control_socket: str | None = None
 
 
@@ -219,6 +225,13 @@ def list_sessions(base_dir: Path) -> list[SessionView]:
     canonical schema in :mod:`loony_dev.supervisor`). Parsing is defensive:
     malformed/missing files are skipped, unknown keys are ignored, and
     ``session_id`` falls back to ``owner/repo`` when absent.
+
+    Beyond the identity fields it surfaces the ``join_url`` (the claude.ai
+    deep-link, ``null`` until Claude emits it), the ``mode``, the connection
+    file's mtime as ``updated_at`` (so the UI can show staleness), and ``alive``
+    — read from the sibling ``remote-control.pid`` file the same defensive way
+    :func:`list_workers` reads the worker PID, falling back to ``None`` when no
+    PID file is present.
     """
     import json
 
@@ -235,13 +248,23 @@ def list_sessions(base_dir: Path) -> list[SessionView]:
         session_id = data.get("session_id") or repo
         key = data.get("key")
         join_url = data.get("join_url")
+        mode = data.get("mode")
         control_socket = data.get("control_socket")
+
+        pid = _read_pid(repo_dir / REMOTE_CONTROL_PID_NAME)
+        # "unknown" means the process exists but is owned by another user
+        # (we lack permission to signal it) — it is alive, not dead.
+        alive = process_status(pid) in ("running", "unknown") if pid is not None else None
+
         sessions.append(
             SessionView(
                 session_id=str(session_id),
                 repo=str(repo) if repo is not None else None,
                 key=str(key) if key is not None else None,
                 join_url=str(join_url) if join_url is not None else None,
+                mode=str(mode) if mode is not None else None,
+                updated_at=_iso_mtime(conn_path),
+                alive=alive,
                 control_socket=str(control_socket) if control_socket else None,
             )
         )
