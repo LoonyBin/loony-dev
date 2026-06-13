@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -15,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from loony_dev.web import create_app
 from loony_dev.web import entries
-from loony_dev.web import services, streaming
+from loony_dev.web import routes, services, streaming
 
 _HAS_PROC = sys.platform.startswith("linux") and Path("/proc/self/stat").exists()
 
@@ -197,6 +200,12 @@ class WebAppTestCase(unittest.TestCase):
         resp = self.client.get("/")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("loony-dev dashboard", resp.text)
+
+    def test_static_assets_reachable(self) -> None:
+        # The app shell loads its stylesheet and ES modules from /static.
+        for path in ("/static/app.css", "/static/js/app.js"):
+            resp = self.client.get(path)
+            self.assertEqual(resp.status_code, 200, path)
 
     def test_workers_endpoint(self) -> None:
         resp = self.client.get("/api/workers")
@@ -663,6 +672,56 @@ class SSEEndpointTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(after, before + 2, f"fd leak: {before} -> {after}")
 
 
+async def _read_first_sse_event(drv: "_SSEDriver") -> str:
+    """Return the body of the first complete SSE event (a ``data:`` payload)."""
+    raw = await drv.read_until("\n\n")
+    event = raw.split("\n\n", 1)[0]
+    return "".join(
+        line[len("data: "):] for line in event.split("\n") if line.startswith("data: ")
+    )
+
+
+class StateEventsEndpointTestCase(unittest.IsolatedAsyncioTestCase):
+    """Tests for the consolidated state SSE endpoint ``/api/events`` (issue #155)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        _make_worker(self.base, "acme", "widgets", os.getpid(), ["alpha", "beta"])
+        self.app = create_app(base_dir=self.base, supervisor_log=None)
+
+    async def test_events_emits_initial_snapshot_with_all_keys(self) -> None:
+        async with _SSEDriver(self.app, "/api/events") as drv:
+            self.assertEqual(drv.status, 200)
+            self.assertEqual(
+                drv.headers.get("content-type"), "text/event-stream; charset=utf-8"
+            )
+            self.assertEqual(drv.headers.get("cache-control"), "no-cache")
+            self.assertEqual(drv.headers.get("x-accel-buffering"), "no")
+            snapshot = json.loads(await _read_first_sse_event(drv))
+        self.assertEqual(set(snapshot), {"workers", "worktrees", "sessions", "stuck"})
+        # The snapshot mirrors the per-resource endpoints: the seeded worker shows.
+        self.assertEqual([w["repo"] for w in snapshot["workers"]], ["acme/widgets"])
+
+    async def test_events_heartbeat_during_idle(self) -> None:
+        # Shrink the cadences so an idle period elapses in test time; the state is
+        # static, so after the initial snapshot only heartbeats should arrive.
+        with mock.patch.object(routes, "SSE_STATE_INTERVAL", 0.02), \
+                mock.patch.object(routes, "SSE_HEARTBEAT_INTERVAL", 0.02):
+            async with _SSEDriver(self.app, "/api/events") as drv:
+                await _read_first_sse_event(drv)
+                heartbeat = await drv.read_until(": heartbeat")
+                self.assertIn(": heartbeat", heartbeat)
+
+    async def test_events_disconnect_tears_down_cleanly(self) -> None:
+        # Entering reads the initial snapshot; exiting delivers http.disconnect and
+        # awaits the ASGI task with a timeout — a leaked/wedged stream would hang.
+        async with _SSEDriver(self.app, "/api/events") as drv:
+            snapshot = json.loads(await _read_first_sse_event(drv))
+            self.assertIn("workers", snapshot)
+
+
 class StuckHeuristicTestCase(unittest.TestCase):
     """Unit tests for ``list_stuck`` with synthetic process trees.
 
@@ -785,6 +844,20 @@ class StuckHeuristicTestCase(unittest.TestCase):
             stuck = services.list_stuck(base2, threshold_seconds=0,
                                         activity_sample_seconds=0)
         self.assertEqual(stuck, [])
+
+    def test_stuck_view_carries_owning_session(self) -> None:
+        # When the worker's repo advertises a session, the stuck descendant is
+        # tagged with that session's id/key so the ESC endpoint can address it.
+        conn = self.base / ".logs" / "acme" / "widgets" / services.REMOTE_CONTROL_CONN_NAME
+        conn.write_text(json.dumps(
+            {"session_id": "loony-acme-widgets", "repo": "acme/widgets", "key": "base"}
+        ))
+        with self._patch([self._sample(5), self._sample(5)]):
+            stuck = services.list_stuck(self.base, threshold_seconds=300,
+                                        activity_sample_seconds=0)
+        self.assertEqual(len(stuck), 1)
+        self.assertEqual(stuck[0].session_id, "loony-acme-widgets")
+        self.assertEqual(stuck[0].task_key, "base")
 
 
 @unittest.skipUnless(_HAS_PROC, "requires a Linux /proc filesystem")
@@ -914,6 +987,245 @@ class KillDescendantTestCase(unittest.TestCase):
         self.assertEqual(body["signal_sent"], "SIGTERM")
         proc.wait(timeout=5)
         self.assertIsNotNone(proc.poll())
+
+
+class _FakeControlServer:
+    """A tiny Unix-socket server standing in for a ClaudeSession control channel.
+
+    Records the command it received and replies with a canned line, so the
+    services/route layer can be tested without a real session.
+    """
+
+    def __init__(self, path: Path, reply: bytes = b"interrupted\n") -> None:
+        self.path = path
+        self.reply = reply
+        self.received: list[str] = []
+        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._sock.bind(str(path))
+        self._sock.listen(4)
+        self._sock.settimeout(5.0)
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._closed = False
+        self._thread.start()
+
+    def _serve(self) -> None:
+        while not self._closed:
+            try:
+                conn, _ = self._sock.accept()
+            except (socket.timeout, OSError):
+                if self._closed:
+                    break
+                continue
+            with conn:
+                try:
+                    data = conn.recv(256)
+                    self.received.append(data.decode("utf-8").strip())
+                    conn.sendall(self.reply)
+                except OSError:
+                    pass
+
+    def close(self) -> None:
+        self._closed = True
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+        self._thread.join(timeout=2.0)
+
+
+class SessionInterruptServiceTestCase(unittest.TestCase):
+    """Unit tests for ``interrupt_session`` and the auto-interrupt selector."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _write_conn(self, owner: str, repo: str, body: dict) -> Path:
+        repo_dir = self.base / ".logs" / owner / repo
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        (repo_dir / services.REMOTE_CONTROL_CONN_NAME).write_text(json.dumps(body))
+        return repo_dir
+
+    def test_list_sessions_reads_control_socket(self) -> None:
+        self._write_conn("acme", "x", {
+            "session_id": "s1", "repo": "acme/x", "key": "base",
+            "control_socket": "/tmp/s1.sock",
+        })
+        sessions = services.list_sessions(self.base)
+        self.assertEqual(sessions[0].control_socket, "/tmp/s1.sock")
+
+    def test_interrupt_unknown_session_raises(self) -> None:
+        with self.assertRaises(services.SessionNotFoundError):
+            services.interrupt_session(self.base, "nope")
+
+    def test_interrupt_session_without_control_channel_raises(self) -> None:
+        self._write_conn("acme", "x", {"session_id": "s1", "repo": "acme/x", "key": "base"})
+        with self.assertRaises(services.SessionControlError):
+            services.interrupt_session(self.base, "s1")
+
+    def test_interrupt_session_round_trips_over_socket(self) -> None:
+        repo_dir = self._write_conn("acme", "x", {"session_id": "s1", "repo": "acme/x", "key": "base"})
+        sock_path = repo_dir / "ctl.sock"
+        server = _FakeControlServer(sock_path, reply=b"interrupted\n")
+        self.addCleanup(server.close)
+        # Re-point the connection file at the live socket.
+        self._write_conn("acme", "x", {
+            "session_id": "s1", "repo": "acme/x", "key": "base",
+            "control_socket": str(sock_path),
+        })
+        result = services.interrupt_session(self.base, "s1")
+        self.assertTrue(result["interrupted"])
+        self.assertEqual(result["repo"], "acme/x")
+        self.assertEqual(server.received, ["interrupt"])
+
+    def test_interrupt_session_idle_reply(self) -> None:
+        repo_dir = self._write_conn("acme", "x", {"session_id": "s1", "repo": "acme/x", "key": "base"})
+        sock_path = repo_dir / "ctl.sock"
+        server = _FakeControlServer(sock_path, reply=b"idle\n")
+        self.addCleanup(server.close)
+        self._write_conn("acme", "x", {
+            "session_id": "s1", "repo": "acme/x", "key": "base",
+            "control_socket": str(sock_path),
+        })
+        result = services.interrupt_session(self.base, "s1")
+        self.assertFalse(result["interrupted"])
+
+    def test_interrupt_session_unreachable_socket_raises(self) -> None:
+        self._write_conn("acme", "x", {
+            "session_id": "s1", "repo": "acme/x", "key": "base",
+            "control_socket": str(self.base / "missing.sock"),
+        })
+        with self.assertRaises(services.SessionControlError):
+            services.interrupt_session(self.base, "s1")
+
+    def test_auto_interrupt_candidates_selects_old_sessions(self) -> None:
+        def view(session_id, age):
+            return services.StuckProcessView(
+                worker_repo="acme/x", task_key="base", pid=1, cmdline="sleep",
+                age_seconds=age, blocked_on="nanosleep", session_id=session_id,
+            )
+        stuck = [view("s1", 1000), view("s1", 50), view("s2", 50), view(None, 9999)]
+        # Disabled by default.
+        self.assertEqual(
+            services.auto_interrupt_candidates(stuck, auto_interrupt_after_seconds=0), [])
+        # Only s1 (>= 600) qualifies; deduped; the None-session row is ignored.
+        self.assertEqual(
+            services.auto_interrupt_candidates(stuck, auto_interrupt_after_seconds=600),
+            ["s1"])
+
+
+@unittest.skipUnless(_HAS_PROC, "Unix-domain control sockets require a POSIX platform")
+class SessionInterruptApiTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.client = TestClient(create_app(base_dir=self.base, supervisor_log=None))
+
+    def _write_conn(self, owner: str, repo: str, body: dict) -> Path:
+        repo_dir = self.base / ".logs" / owner / repo
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        (repo_dir / services.REMOTE_CONTROL_CONN_NAME).write_text(json.dumps(body))
+        return repo_dir
+
+    def test_api_interrupt_unknown_session_404(self) -> None:
+        resp = self.client.post("/api/sessions/nope/interrupt")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_api_interrupt_without_control_channel_409(self) -> None:
+        self._write_conn("acme", "x", {"session_id": "s1", "repo": "acme/x", "key": "base"})
+        resp = self.client.post("/api/sessions/s1/interrupt")
+        self.assertEqual(resp.status_code, 409)
+
+    def test_api_interrupt_ok(self) -> None:
+        repo_dir = self._write_conn("acme", "x", {"session_id": "s1", "repo": "acme/x", "key": "base"})
+        sock_path = repo_dir / "ctl.sock"
+        server = _FakeControlServer(sock_path, reply=b"interrupted\n")
+        self.addCleanup(server.close)
+        self._write_conn("acme", "x", {
+            "session_id": "s1", "repo": "acme/x", "key": "base",
+            "control_socket": str(sock_path),
+        })
+        resp = self.client.post("/api/sessions/s1/interrupt")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["session_id"], "s1")
+        self.assertTrue(body["interrupted"])
+
+
+@unittest.skipUnless(_HAS_PROC, "ClaudeSession PTY/socket reproducer requires POSIX")
+class SessionInterruptReproducerTestCase(unittest.TestCase):
+    """Acceptance reproducer (issue #163): a long turn is ESC'd via the HTTP API
+    and the session returns to idle without process death."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.config_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.cwd = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        # CLAUDE_CONFIG_DIR must be set before the session is constructed: the
+        # JSONL path is computed at __init__ from the environment.
+        self.enterContext(mock.patch.dict(
+            os.environ, {"CLAUDE_CONFIG_DIR": str(self.config_dir)}))
+
+    def test_long_turn_interrupted_via_api(self) -> None:
+        from loony_dev.agents.claude_session import ClaudeSession, _is_interrupt
+
+        stub = Path(__file__).parent / "_claude_stub.py"
+        os.chmod(stub, 0o755)
+
+        repo_dir = self.base / ".logs" / "acme" / "widgets"
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        sock_path = repo_dir / "ctl.sock"
+
+        session = ClaudeSession(
+            self.cwd, session_id="repro-163", binary=str(stub),
+            readiness_timeout=10.0, debounce=0.2, control_socket=sock_path,
+            env={"STUB_LONGTURN_SECS": "20"},
+        )
+        session.open()
+        self.addCleanup(session.close)
+
+        # Advertise the session (with its control socket) the way the supervisor
+        # would, so the dashboard can resolve and reach it.
+        (repo_dir / services.REMOTE_CONTROL_CONN_NAME).write_text(json.dumps({
+            "session_id": "repro-163", "repo": "acme/widgets", "key": "base",
+            "control_socket": str(sock_path),
+        }))
+
+        pid = session.pid
+        result: dict[str, object] = {}
+
+        def run_long() -> None:
+            result["turn"] = session.send_turn("LONGTURN please", timeout=20.0)
+
+        t = threading.Thread(target=run_long)
+        t.start()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and b"LONGTURN" not in session.recent_output():
+            time.sleep(0.05)
+        # Hard barrier: fail at setup if the turn never started, rather than
+        # intermittently at the interrupt assertions below.
+        self.assertIn(b"LONGTURN", session.recent_output())
+
+        client = TestClient(create_app(base_dir=self.base, supervisor_log=None))
+        resp = client.post("/api/sessions/repro-163/interrupt")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["interrupted"])
+
+        t.join(timeout=10.0)
+        self.assertFalse(t.is_alive())
+        self.assertTrue(result["turn"].was_interrupted)
+
+        # The JSONL records the interrupt, and the session is alive and steerable.
+        entries = [json.loads(line) for line in
+                   session.jsonl_path.read_text().splitlines() if line.strip()]
+        self.assertTrue(any(_is_interrupt(e) for e in entries))
+        follow_up = session.send_turn("after interrupt", timeout=10.0)
+        self.assertFalse(follow_up.was_interrupted)
+        self.assertEqual(session.pid, pid)
 
 
 if __name__ == "__main__":

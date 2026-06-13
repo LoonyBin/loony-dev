@@ -9,6 +9,7 @@ from loony_dev import config
 from loony_dev.agents.coding import CodingAgent
 from loony_dev.agents.null_agent import NullAgent
 from loony_dev.agents.planning import PlanningAgent
+from loony_dev.commands import install_commands
 from loony_dev.git import GitRepo
 from loony_dev.github import Repo
 from loony_dev.orchestrator import Orchestrator
@@ -80,6 +81,15 @@ def worker(**_) -> None:
         logging.getLogger().info("Also writing DEBUG logs to %s", config.settings.log_file)
 
     work_path = Path(config.settings.work_dir).resolve()
+
+    # Install/upgrade the bundled slash commands into <repo-checkout>/.claude/commands/
+    # so workers and attached operators share the same prompt vocabulary (#165).
+    try:
+        written = install_commands(work_path)
+        if written:
+            click.echo(f"Installed {len(written)} loony-dev slash command(s) into {work_path / '.claude' / 'commands'}")
+    except OSError as e:
+        logging.getLogger(__name__).warning("Failed to install slash commands: %s", e)
 
     repo_name = config.settings.repo
     if repo_name is None:
@@ -194,6 +204,12 @@ def supervisor_cmd(**_) -> None:
     "--kill-grace", "kill_grace", default=5.0, show_default=True,
     help="Seconds to wait after SIGTERM before escalating to SIGKILL.",
 )
+@click.option(
+    "--auto-interrupt-after", "auto_interrupt_after", default=0.0, show_default=True,
+    help="Seconds a Claude turn may stay stuck before the dashboard ESC-interrupts "
+         "it automatically. 0 disables auto-intervention (SIGKILL is never "
+         "auto-escalated).",
+)
 def web_cmd(**_) -> None:
     """Launch the read-only web dashboard to monitor the supervisor and workers.
 
@@ -216,6 +232,7 @@ def web_cmd(**_) -> None:
     stuck_after = int(config.settings.get("stuck_after", 300))
     activity_sample = float(config.settings.get("activity_sample", 0.3))
     kill_grace = float(config.settings.get("kill_grace", 5.0))
+    auto_interrupt_after = float(config.settings.get("auto_interrupt_after", 0.0))
 
     app = create_app(
         base_dir=base_dir,
@@ -225,6 +242,7 @@ def web_cmd(**_) -> None:
         stuck_after_seconds=stuck_after,
         activity_sample_seconds=activity_sample,
         kill_grace_seconds=kill_grace,
+        auto_interrupt_after_seconds=auto_interrupt_after,
     )
     click.echo(f"Serving loony-dev dashboard at http://{host}:{port} (base-dir: {base_dir})")
     uvicorn.run(app, host=host, port=port)

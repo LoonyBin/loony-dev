@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from dataclasses import asdict
 from pathlib import Path
 
@@ -24,6 +25,11 @@ MAX_TAIL_LINES = 5000
 # Seconds between SSE heartbeat comments: keeps proxies from idling the
 # connection out and lets the server notice a vanished client.
 SSE_HEARTBEAT_INTERVAL = 15.0
+
+# Seconds between server-side state recomputes for the consolidated /events
+# stream. The snapshot is cheap to gather, so a short poll + emit-on-change is
+# enough to feel real-time without a change-notification bus (issue #155).
+SSE_STATE_INTERVAL = 2.0
 
 # Stuck-detection defaults (issue #132) — mirrored by the app factory / CLI.
 DEFAULT_STUCK_AFTER_SECONDS = 300
@@ -70,6 +76,68 @@ def create_api_router(
     @router.get("/sessions")
     def get_sessions() -> list[dict]:
         return [asdict(s) for s in services.list_sessions(base_dir)]
+
+    def _state_snapshot() -> dict:
+        """Gather the consolidated dashboard state in one shot.
+
+        Mirrors the four per-resource GET endpoints so the streamed payload and
+        the polling fallback never drift apart.
+        """
+        return {
+            "workers": [asdict(w) for w in services.list_workers(base_dir)],
+            "worktrees": [asdict(w) for w in services.list_worktrees(base_dir)],
+            "sessions": [asdict(s) for s in services.list_sessions(base_dir)],
+            "stuck": [
+                asdict(s)
+                for s in services.list_stuck(
+                    base_dir,
+                    threshold_seconds=stuck_after_seconds,
+                    activity_sample_seconds=activity_sample_seconds,
+                )
+            ],
+        }
+
+    @router.get("/events")
+    async def stream_events(request: Request) -> StreamingResponse:
+        """Push a consolidated state snapshot, then updates as state changes.
+
+        Replaces the frontend's 5s poll of the four per-resource endpoints. An
+        initial snapshot is emitted on connect; thereafter the state is recomputed
+        every ``SSE_STATE_INTERVAL`` seconds and re-emitted only when it differs.
+        A heartbeat comment is sent during idle periods so proxies don't drop the
+        connection, and ``request.is_disconnected()`` reaps vanished clients —
+        the same teardown contract as the log-tail stream.
+        """
+
+        async def event_stream():
+            loop = asyncio.get_running_loop()
+            last_payload: str | None = None
+            last_sent = loop.time()
+            while True:
+                if await request.is_disconnected():
+                    break
+                # The snapshot reads /proc and the worktree tree; run it off the
+                # event loop so a slow gather never stalls other connections.
+                snapshot = await asyncio.to_thread(_state_snapshot)
+                payload = json.dumps(snapshot, sort_keys=True)
+                now = loop.time()
+                if payload != last_payload:
+                    last_payload = payload
+                    last_sent = now
+                    yield _format_sse(payload)
+                elif now - last_sent >= SSE_HEARTBEAT_INTERVAL:
+                    last_sent = now
+                    yield ": heartbeat\n\n"
+                await asyncio.sleep(SSE_STATE_INTERVAL)
+
+        headers = {
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        }
+        return StreamingResponse(
+            event_stream(), media_type="text/event-stream", headers=headers
+        )
 
     @router.get("/logs/{owner}/{repo}/tail")
     def get_log_tail(
@@ -152,6 +220,22 @@ def create_api_router(
                 activity_sample_seconds=activity_sample_seconds,
             )
         ]
+
+    @router.post("/sessions/{session_id}/interrupt")
+    def interrupt_session(
+        session_id: str = PathParam(..., min_length=1, description="Session id to interrupt"),
+    ) -> dict:
+        """Send an ESC interrupt to a session's in-flight turn (it stays alive).
+
+        This is the primary, reversible intervention for a wedged Claude turn;
+        the SIGTERM/SIGKILL ``/processes/{pid}/kill`` path remains the escalation.
+        """
+        try:
+            return services.interrupt_session(base_dir, session_id)
+        except services.SessionNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except services.SessionControlError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @router.post("/processes/{pid}/kill")
     def kill_process(
