@@ -4,9 +4,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -795,6 +797,20 @@ class StuckHeuristicTestCase(unittest.TestCase):
                                         activity_sample_seconds=0)
         self.assertEqual(stuck, [])
 
+    def test_stuck_view_carries_owning_session(self) -> None:
+        # When the worker's repo advertises a session, the stuck descendant is
+        # tagged with that session's id/key so the ESC endpoint can address it.
+        conn = self.base / ".logs" / "acme" / "widgets" / services.REMOTE_CONTROL_CONN_NAME
+        conn.write_text(json.dumps(
+            {"session_id": "loony-acme-widgets", "repo": "acme/widgets", "key": "base"}
+        ))
+        with self._patch([self._sample(5), self._sample(5)]):
+            stuck = services.list_stuck(self.base, threshold_seconds=300,
+                                        activity_sample_seconds=0)
+        self.assertEqual(len(stuck), 1)
+        self.assertEqual(stuck[0].session_id, "loony-acme-widgets")
+        self.assertEqual(stuck[0].task_key, "base")
+
 
 @unittest.skipUnless(_HAS_PROC, "requires a Linux /proc filesystem")
 class StuckRealProcessTestCase(unittest.TestCase):
@@ -923,6 +939,245 @@ class KillDescendantTestCase(unittest.TestCase):
         self.assertEqual(body["signal_sent"], "SIGTERM")
         proc.wait(timeout=5)
         self.assertIsNotNone(proc.poll())
+
+
+class _FakeControlServer:
+    """A tiny Unix-socket server standing in for a ClaudeSession control channel.
+
+    Records the command it received and replies with a canned line, so the
+    services/route layer can be tested without a real session.
+    """
+
+    def __init__(self, path: Path, reply: bytes = b"interrupted\n") -> None:
+        self.path = path
+        self.reply = reply
+        self.received: list[str] = []
+        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._sock.bind(str(path))
+        self._sock.listen(4)
+        self._sock.settimeout(5.0)
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._closed = False
+        self._thread.start()
+
+    def _serve(self) -> None:
+        while not self._closed:
+            try:
+                conn, _ = self._sock.accept()
+            except (socket.timeout, OSError):
+                if self._closed:
+                    break
+                continue
+            with conn:
+                try:
+                    data = conn.recv(256)
+                    self.received.append(data.decode("utf-8").strip())
+                    conn.sendall(self.reply)
+                except OSError:
+                    pass
+
+    def close(self) -> None:
+        self._closed = True
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+        self._thread.join(timeout=2.0)
+
+
+class SessionInterruptServiceTestCase(unittest.TestCase):
+    """Unit tests for ``interrupt_session`` and the auto-interrupt selector."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _write_conn(self, owner: str, repo: str, body: dict) -> Path:
+        repo_dir = self.base / ".logs" / owner / repo
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        (repo_dir / services.REMOTE_CONTROL_CONN_NAME).write_text(json.dumps(body))
+        return repo_dir
+
+    def test_list_sessions_reads_control_socket(self) -> None:
+        self._write_conn("acme", "x", {
+            "session_id": "s1", "repo": "acme/x", "key": "base",
+            "control_socket": "/tmp/s1.sock",
+        })
+        sessions = services.list_sessions(self.base)
+        self.assertEqual(sessions[0].control_socket, "/tmp/s1.sock")
+
+    def test_interrupt_unknown_session_raises(self) -> None:
+        with self.assertRaises(services.SessionNotFoundError):
+            services.interrupt_session(self.base, "nope")
+
+    def test_interrupt_session_without_control_channel_raises(self) -> None:
+        self._write_conn("acme", "x", {"session_id": "s1", "repo": "acme/x", "key": "base"})
+        with self.assertRaises(services.SessionControlError):
+            services.interrupt_session(self.base, "s1")
+
+    def test_interrupt_session_round_trips_over_socket(self) -> None:
+        repo_dir = self._write_conn("acme", "x", {"session_id": "s1", "repo": "acme/x", "key": "base"})
+        sock_path = repo_dir / "ctl.sock"
+        server = _FakeControlServer(sock_path, reply=b"interrupted\n")
+        self.addCleanup(server.close)
+        # Re-point the connection file at the live socket.
+        self._write_conn("acme", "x", {
+            "session_id": "s1", "repo": "acme/x", "key": "base",
+            "control_socket": str(sock_path),
+        })
+        result = services.interrupt_session(self.base, "s1")
+        self.assertTrue(result["interrupted"])
+        self.assertEqual(result["repo"], "acme/x")
+        self.assertEqual(server.received, ["interrupt"])
+
+    def test_interrupt_session_idle_reply(self) -> None:
+        repo_dir = self._write_conn("acme", "x", {"session_id": "s1", "repo": "acme/x", "key": "base"})
+        sock_path = repo_dir / "ctl.sock"
+        server = _FakeControlServer(sock_path, reply=b"idle\n")
+        self.addCleanup(server.close)
+        self._write_conn("acme", "x", {
+            "session_id": "s1", "repo": "acme/x", "key": "base",
+            "control_socket": str(sock_path),
+        })
+        result = services.interrupt_session(self.base, "s1")
+        self.assertFalse(result["interrupted"])
+
+    def test_interrupt_session_unreachable_socket_raises(self) -> None:
+        self._write_conn("acme", "x", {
+            "session_id": "s1", "repo": "acme/x", "key": "base",
+            "control_socket": str(self.base / "missing.sock"),
+        })
+        with self.assertRaises(services.SessionControlError):
+            services.interrupt_session(self.base, "s1")
+
+    def test_auto_interrupt_candidates_selects_old_sessions(self) -> None:
+        def view(session_id, age):
+            return services.StuckProcessView(
+                worker_repo="acme/x", task_key="base", pid=1, cmdline="sleep",
+                age_seconds=age, blocked_on="nanosleep", session_id=session_id,
+            )
+        stuck = [view("s1", 1000), view("s1", 50), view("s2", 50), view(None, 9999)]
+        # Disabled by default.
+        self.assertEqual(
+            services.auto_interrupt_candidates(stuck, auto_interrupt_after_seconds=0), [])
+        # Only s1 (>= 600) qualifies; deduped; the None-session row is ignored.
+        self.assertEqual(
+            services.auto_interrupt_candidates(stuck, auto_interrupt_after_seconds=600),
+            ["s1"])
+
+
+@unittest.skipUnless(_HAS_PROC, "Unix-domain control sockets require a POSIX platform")
+class SessionInterruptApiTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.client = TestClient(create_app(base_dir=self.base, supervisor_log=None))
+
+    def _write_conn(self, owner: str, repo: str, body: dict) -> Path:
+        repo_dir = self.base / ".logs" / owner / repo
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        (repo_dir / services.REMOTE_CONTROL_CONN_NAME).write_text(json.dumps(body))
+        return repo_dir
+
+    def test_api_interrupt_unknown_session_404(self) -> None:
+        resp = self.client.post("/api/sessions/nope/interrupt")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_api_interrupt_without_control_channel_409(self) -> None:
+        self._write_conn("acme", "x", {"session_id": "s1", "repo": "acme/x", "key": "base"})
+        resp = self.client.post("/api/sessions/s1/interrupt")
+        self.assertEqual(resp.status_code, 409)
+
+    def test_api_interrupt_ok(self) -> None:
+        repo_dir = self._write_conn("acme", "x", {"session_id": "s1", "repo": "acme/x", "key": "base"})
+        sock_path = repo_dir / "ctl.sock"
+        server = _FakeControlServer(sock_path, reply=b"interrupted\n")
+        self.addCleanup(server.close)
+        self._write_conn("acme", "x", {
+            "session_id": "s1", "repo": "acme/x", "key": "base",
+            "control_socket": str(sock_path),
+        })
+        resp = self.client.post("/api/sessions/s1/interrupt")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["session_id"], "s1")
+        self.assertTrue(body["interrupted"])
+
+
+@unittest.skipUnless(_HAS_PROC, "ClaudeSession PTY/socket reproducer requires POSIX")
+class SessionInterruptReproducerTestCase(unittest.TestCase):
+    """Acceptance reproducer (issue #163): a long turn is ESC'd via the HTTP API
+    and the session returns to idle without process death."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.config_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.cwd = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        # CLAUDE_CONFIG_DIR must be set before the session is constructed: the
+        # JSONL path is computed at __init__ from the environment.
+        self.enterContext(mock.patch.dict(
+            os.environ, {"CLAUDE_CONFIG_DIR": str(self.config_dir)}))
+
+    def test_long_turn_interrupted_via_api(self) -> None:
+        from loony_dev.agents.claude_session import ClaudeSession, _is_interrupt
+
+        stub = Path(__file__).parent / "_claude_stub.py"
+        os.chmod(stub, 0o755)
+
+        repo_dir = self.base / ".logs" / "acme" / "widgets"
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        sock_path = repo_dir / "ctl.sock"
+
+        session = ClaudeSession(
+            self.cwd, session_id="repro-163", binary=str(stub),
+            readiness_timeout=10.0, debounce=0.2, control_socket=sock_path,
+            env={"STUB_LONGTURN_SECS": "20"},
+        )
+        session.open()
+        self.addCleanup(session.close)
+
+        # Advertise the session (with its control socket) the way the supervisor
+        # would, so the dashboard can resolve and reach it.
+        (repo_dir / services.REMOTE_CONTROL_CONN_NAME).write_text(json.dumps({
+            "session_id": "repro-163", "repo": "acme/widgets", "key": "base",
+            "control_socket": str(sock_path),
+        }))
+
+        pid = session.pid
+        result: dict[str, object] = {}
+
+        def run_long() -> None:
+            result["turn"] = session.send_turn("LONGTURN please", timeout=20.0)
+
+        t = threading.Thread(target=run_long)
+        t.start()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and b"LONGTURN" not in session.recent_output():
+            time.sleep(0.05)
+        # Hard barrier: fail at setup if the turn never started, rather than
+        # intermittently at the interrupt assertions below.
+        self.assertIn(b"LONGTURN", session.recent_output())
+
+        client = TestClient(create_app(base_dir=self.base, supervisor_log=None))
+        resp = client.post("/api/sessions/repro-163/interrupt")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["interrupted"])
+
+        t.join(timeout=10.0)
+        self.assertFalse(t.is_alive())
+        self.assertTrue(result["turn"].was_interrupted)
+
+        # The JSONL records the interrupt, and the session is alive and steerable.
+        entries = [json.loads(line) for line in
+                   session.jsonl_path.read_text().splitlines() if line.strip()]
+        self.assertTrue(any(_is_interrupt(e) for e in entries))
+        follow_up = session.send_turn("after interrupt", timeout=10.0)
+        self.assertFalse(follow_up.was_interrupted)
+        self.assertEqual(session.pid, pid)
 
 
 if __name__ == "__main__":

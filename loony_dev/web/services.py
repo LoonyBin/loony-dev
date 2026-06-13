@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import signal
+import socket
 import time
 from collections import deque
 from collections.abc import Iterator
@@ -63,6 +64,7 @@ class SessionView:
     session_id: str
     repo: str | None
     key: str | None
+    control_socket: str | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,10 @@ class StuckProcessView:
     cmdline: str
     age_seconds: int
     blocked_on: str
+    # Globally-unique id of the ClaudeSession that owns this descendant, used to
+    # address the ESC-interrupt endpoint (``None`` when no session is advertised
+    # for the worker's repo).
+    session_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -242,11 +248,13 @@ def list_sessions(base_dir: Path) -> list[SessionView]:
         repo = data.get("repo") or f"{owner}/{name}"
         session_id = data.get("session_id") or repo
         key = data.get("key")
+        control_socket = data.get("control_socket")
         sessions.append(
             SessionView(
                 session_id=str(session_id),
                 repo=str(repo) if repo is not None else None,
                 key=str(key) if key is not None else None,
+                control_socket=str(control_socket) if control_socket else None,
             )
         )
     return sessions
@@ -257,7 +265,7 @@ def list_sessions(base_dir: Path) -> list[SessionView]:
 # ---------------------------------------------------------------------------
 
 class SessionNotFoundError(Exception):
-    """Raised when no live per-task session matches a requested task key."""
+    """Raised when no live session matches a requested task key or session id."""
 
 
 def list_task_sessions(base_dir: Path) -> list[TaskSessionView]:
@@ -310,6 +318,121 @@ def inject_turn(base_dir: Path, task_key: str, prompt: str) -> dict:
         "source": session_registry.SOURCE_OPERATOR,
         "queued": path.name,
     }
+
+
+# ---------------------------------------------------------------------------
+# Session interrupt (issue #163)
+#
+# ESC is the *primary* intervention for a wedged Claude turn: it aborts the
+# in-flight turn but leaves the persistent session alive and steerable, unlike
+# the SIGTERM/SIGKILL path. The web process does not own the session's PTY, so
+# it reaches it over a Unix-domain control socket the session advertises in its
+# connection file (``control_socket``). Sessions are addressed by their
+# globally-unique ``session_id`` rather than a bare task key, which is ambiguous
+# across repos.
+# ---------------------------------------------------------------------------
+
+# Seconds to wait on a control-socket round trip before giving up.
+SESSION_CONTROL_TIMEOUT = 5.0
+
+
+class SessionControlError(Exception):
+    """Raised when a session's control channel is missing or unreachable."""
+
+
+def _find_session(base_dir: Path, session_id: str) -> SessionView:
+    """Return the advertised session whose id is *session_id*.
+
+    Looking the session up among the on-disk connection files is the security
+    gate: only a socket the supervisor itself advertised can be addressed, never
+    an arbitrary path supplied by the caller.
+    """
+    for session in list_sessions(base_dir):
+        if session.session_id == session_id:
+            return session
+    raise SessionNotFoundError(f"no session with id {session_id!r}")
+
+
+def _send_control_command(socket_path: Path, command: str, *, timeout: float) -> str:
+    """Send a one-line *command* to a session control socket and return its reply."""
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect(str(socket_path))
+        sock.sendall(command.encode("utf-8") + b"\n")
+        chunks: list[bytes] = []
+        while True:
+            data = sock.recv(256)
+            if not data:
+                break
+            chunks.append(data)
+            if b"\n" in data:
+                break
+    except OSError as exc:
+        raise SessionControlError(
+            f"control socket {socket_path} unreachable: {exc}"
+        ) from exc
+    finally:
+        sock.close()
+    return b"".join(chunks).decode("utf-8", "replace").strip()
+
+
+def interrupt_session(
+    base_dir: Path, session_id: str, *, timeout: float = SESSION_CONTROL_TIMEOUT
+) -> dict:
+    """Send an ESC interrupt to the ClaudeSession identified by *session_id*.
+
+    Resolves the session from the on-disk connection files, connects to its
+    control socket, and asks it to interrupt the in-flight turn. The session
+    process survives; only the current turn aborts (its ``on_failure`` runs as
+    usual). Returns ``{session_id, repo, interrupted, detail}``.
+
+    Raises :class:`SessionNotFoundError` when no session matches, or
+    :class:`SessionControlError` when the session advertises no control channel
+    or the socket cannot be reached.
+    """
+    session = _find_session(base_dir, session_id)
+    if not session.control_socket:
+        raise SessionControlError(f"session {session_id!r} has no control channel")
+    reply = _send_control_command(
+        Path(session.control_socket), "interrupt", timeout=timeout
+    )
+    if reply not in {"interrupted", "idle"}:
+        # A stale/mismatched control server (e.g. "error: ..." or an empty
+        # reply) is a control failure, not a successful idle interrupt.
+        raise SessionControlError(
+            f"control socket {session.control_socket} returned invalid reply: {reply!r}"
+        )
+    return {
+        "session_id": session_id,
+        "repo": session.repo,
+        "interrupted": reply == "interrupted",
+        "detail": reply,
+    }
+
+
+def auto_interrupt_candidates(
+    stuck: list[StuckProcessView], *, auto_interrupt_after_seconds: float
+) -> list[str]:
+    """Return the distinct session ids eligible for automatic ESC interrupt.
+
+    A session qualifies when one of its stuck descendants has been wedged for at
+    least *auto_interrupt_after_seconds*. Returns an empty list when the feature
+    is disabled (``auto_interrupt_after_seconds <= 0``), so auto-intervention is
+    strictly opt-in; SIGKILL is never auto-escalated.
+    """
+    if auto_interrupt_after_seconds <= 0:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for view in stuck:
+        sid = view.session_id
+        if not sid or sid in seen:
+            continue
+        if view.age_seconds >= auto_interrupt_after_seconds:
+            seen.add(sid)
+            out.append(sid)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -662,8 +785,10 @@ def list_stuck(
     CPU/IO work. The (potentially blocking) activity sample is taken only when at
     least one old, blocked candidate exists, so the common case pays no latency.
     """
+    # Map each repo to its advertised session so a stuck descendant can be tied
+    # back to the ClaudeSession that owns it (for the ESC-interrupt endpoint).
     sessions = list_sessions(base_dir)
-    repo_to_key = {s.repo: s.key for s in sessions if s.repo}
+    repo_to_session = {s.repo: s for s in sessions if s.repo}
 
     stuck: list[StuckProcessView] = []
     for worker in list_workers(base_dir):
@@ -696,14 +821,16 @@ def list_stuck(
                 idle_cache[root] = _subtree_is_idle(root, activity_sample_seconds)
             if not idle_cache[root]:
                 continue  # Claude is actively progressing — not stuck.
+            session = repo_to_session.get(worker.repo)
             stuck.append(
                 StuckProcessView(
                     worker_repo=worker.repo,
-                    task_key=repo_to_key.get(worker.repo),
+                    task_key=session.key if session else None,
                     pid=info.pid,
                     cmdline=info.cmdline_str,
                     age_seconds=int(_proc_age_seconds(info.starttime)),
                     blocked_on=_blocked_on_label(info),
+                    session_id=session.session_id if session else None,
                 )
             )
     return stuck

@@ -36,6 +36,26 @@ function renderWorktree(w) {
   return tr;
 }
 
+// ESC interrupt: the primary, reversible intervention. It aborts the in-flight
+// turn but leaves the session alive, so no confirmation prompt is needed.
+async function interruptSession(sessionId) {
+  try {
+    const resp = await fetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/interrupt`,
+      { method: "POST" },
+    );
+    if (!resp.ok) {
+      const detail = await resp.text();
+      throw new Error(`${resp.status}: ${detail}`);
+    }
+  } catch (err) {
+    window.alert(`Failed to interrupt session ${sessionId}: ${err.message}`);
+  }
+  requestRefresh();
+}
+
+// Kill is the escalation path (SIGTERM → SIGKILL); it ends the process, so it
+// keeps a confirmation prompt.
 async function killProcess(pid) {
   if (!window.confirm(`Send SIGTERM to PID ${pid}? It will be SIGKILLed if it does not exit.`)) {
     return;
@@ -63,14 +83,34 @@ function renderStuckRow(s) {
   tr.appendChild(cmd);
   tr.appendChild(cell(formatAge(s.age_seconds), "Age"));
   tr.appendChild(cell(s.blocked_on, "Blocked on"));
+
   const actionTd = document.createElement("td");
   actionTd.dataset.label = "Action";
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "kill-btn";
-  btn.textContent = "Kill";
-  btn.addEventListener("click", () => killProcess(s.pid));
-  actionTd.appendChild(btn);
+
+  // Interrupt (ESC) is primary — the default nudge. Disabled when the owning
+  // session has no control channel advertised yet (nothing to ESC).
+  const interruptBtn = document.createElement("button");
+  interruptBtn.type = "button";
+  interruptBtn.className = "interrupt-btn";
+  interruptBtn.textContent = "Interrupt";
+  if (s.session_id) {
+    interruptBtn.title = "Send ESC to abort the in-flight turn (session stays alive)";
+    interruptBtn.addEventListener("click", () => interruptSession(s.session_id));
+  } else {
+    interruptBtn.disabled = true;
+    interruptBtn.title = "No control channel for this session yet";
+  }
+  actionTd.appendChild(interruptBtn);
+
+  // Kill stays as the secondary/danger escalation.
+  const killBtn = document.createElement("button");
+  killBtn.type = "button";
+  killBtn.className = "kill-btn";
+  killBtn.textContent = "Kill";
+  killBtn.title = "SIGTERM the wedged process, escalating to SIGKILL";
+  killBtn.addEventListener("click", () => killProcess(s.pid));
+  actionTd.appendChild(killBtn);
+
   tr.appendChild(actionTd);
   return tr;
 }
