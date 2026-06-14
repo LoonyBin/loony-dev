@@ -74,13 +74,41 @@ class TestSessionKeyOnTasks(unittest.TestCase):
         from loony_dev.github import PullRequest
         from loony_dev.tasks.ci_failure_task import CIFailureTask
         task = CIFailureTask(PullRequest(number=5, branch="b", title="t", _repo=self._mock_repo()), [])
-        self.assertEqual(task.session_key, "pr:5")
+        self.assertEqual(task.session_key, "pr:5:ci")
 
     def test_conflict_task_key(self) -> None:
         from loony_dev.github import PullRequest
         from loony_dev.tasks.conflict_task import ConflictResolutionTask
         task = ConflictResolutionTask(PullRequest(number=3, branch="b", title="t", _repo=self._mock_repo()))
-        self.assertEqual(task.session_key, "pr:3")
+        self.assertEqual(task.session_key, "pr:3:conflicts")
+
+    def test_pr_side_tasks_have_distinct_session_keys(self) -> None:
+        """Review, CI, and conflict tasks for one PR run in different worktrees,
+        so their session keys must differ — a session id reused across two
+        worktrees makes the Claude readiness wait time out (see PR #177)."""
+        from loony_dev.github import PullRequest
+        from loony_dev.tasks.ci_failure_task import CIFailureTask
+        from loony_dev.tasks.conflict_task import ConflictResolutionTask
+        from loony_dev.tasks.pr_review_task import PRReviewTask
+
+        def pr() -> PullRequest:
+            return PullRequest(number=177, branch="b", title="t", _repo=self._mock_repo())
+
+        tasks = [
+            PRReviewTask(pr()),
+            CIFailureTask(pr(), []),
+            ConflictResolutionTask(pr()),
+        ]
+        session_keys = [t.session_key for t in tasks]
+        worktree_keys = [t.worktree_key for t in tasks]
+        # session keys are unique...
+        self.assertEqual(len(set(session_keys)), len(session_keys))
+        # ...and 1:1 with worktree keys (same number of distinct values, no
+        # session id shared between two distinct worktrees).
+        self.assertEqual(len(set(worktree_keys)), len(worktree_keys))
+        self.assertEqual(
+            len(set(zip(session_keys, worktree_keys))), len(session_keys),
+        )
 
     def test_stuck_item_task_has_no_session_key(self) -> None:
         from loony_dev.github import Issue

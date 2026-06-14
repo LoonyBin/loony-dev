@@ -70,7 +70,11 @@ class CIFailureTask(Task):
 
     @property
     def session_key(self) -> str:
-        return f"pr:{self.pr.number}"
+        # Must stay 1:1 with ``worktree_key``: the Claude transcript JSONL path
+        # is derived from (cwd, session_id), so reusing a session id across two
+        # worktrees makes the readiness wait time out. Distinct from the PR
+        # review / conflict session keys for the same PR for the same reason.
+        return f"pr:{self.pr.number}:ci"
 
     @property
     def target_branch(self) -> str:
