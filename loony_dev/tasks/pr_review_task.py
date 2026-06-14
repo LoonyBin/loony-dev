@@ -184,12 +184,19 @@ class PRReviewTask(Task):
                 "PR #%d has %d authorized new comment(s) — yielding task",
                 pr.number, len(authorized_comments),
             )
-            # Create a new PR object with just the relevant data for the task
+            # Create a new PR object with just the relevant data for the task.
+            # `comments`/`reviews` are carried over (not just `new_comments`) so
+            # the repeated-failure -> in-error escalation in on_failure can see
+            # the bot's own prior failure comments via get_comments(); without
+            # them get_comments() returns [] and the item never escalates.
             from loony_dev.github import PullRequest as PR
             yield PRReviewTask(PR(
                 number=pr.number,
                 branch=pr.branch,
                 title=pr.title,
+                labels=pr.labels,
+                comments=pr.comments,
+                reviews=pr.reviews,
                 new_comments=authorized_comments,
                 _repo=pr._repo,
             ))

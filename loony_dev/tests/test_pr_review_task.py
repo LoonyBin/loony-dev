@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 from loony_dev.github.comment import Comment
 from loony_dev.github.content import Content
 from loony_dev.github.pull_request import PullRequest
-from loony_dev.tasks.base import SUCCESS_MARKER, SUCCESS_MARKER_PREFIX, encode_marker
+from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, SUCCESS_MARKER_PREFIX, encode_marker
 from loony_dev.models import TaskResult
 from loony_dev.tasks.pr_review_task import PRReviewTask
 
@@ -217,6 +217,30 @@ class TestDiscoverInlineOnly(unittest.TestCase):
         tasks = list(PRReviewTask.discover(repo))
 
         self.assertEqual(tasks, [])
+
+    def test_discover_carries_comments_for_failure_escalation(self) -> None:
+        """The yielded task's PR must carry full `comments`, not just
+        `new_comments` — otherwise get_comments() returns [] and the
+        repeated-failure -> in-error escalation can never see prior failures.
+        Regression for PR #177's unbounded retry loop.
+        """
+        prior_failure = {
+            "author": {"login": BOT_NAME},
+            "body": f"{FAILURE_MARKER}\n\nFailed to address review comments: boom",
+            "createdAt": "2024-01-01T11:00:00Z",
+        }
+        pr_data = self._pr_data(comments=[prior_failure])
+        inline = _inline("2024-01-01T13:00:00Z")
+        repo = self._make_repo_with_prs([pr_data], [inline])
+
+        tasks = list(PRReviewTask.discover(repo))
+
+        self.assertEqual(len(tasks), 1)
+        carried = tasks[0].pr.get_comments()
+        self.assertTrue(
+            any(str(c.body).startswith(FAILURE_MARKER) and c.author == BOT_NAME for c in carried),
+            "task PR dropped the bot's prior failure comment — escalation would never fire",
+        )
 
 
 class TestOnComplete(unittest.TestCase):
