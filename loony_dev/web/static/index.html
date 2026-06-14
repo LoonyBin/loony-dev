@@ -28,6 +28,14 @@
           integrity="sha384-X9kJyAubVxnP0hcA+AMMs21U445qsnqhnUF8EBlEpP3a42Kh/JwWjlv2ZcvGfphb"
           crossorigin="anonymous" defer></script>
 
+  <!-- QR generator for the Sessions view: renders a join-URL QR client-side so
+       a phone can scan into the same remote-control relay session. Pure JS, no
+       build step; exposes a global `qrcode`. sessions.js degrades gracefully
+       (link only, no QR) if this fails to load. -->
+  <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"
+          integrity="sha384-8FWZA6BGMXhsfO+BLtrJK0We6gg5o1JyO8xQm6peWDEUs17ACA5ziE/NIAkl9z2k"
+          crossorigin="anonymous" defer></script>
+
   <!-- xterm.js (CDN, no build) backs the per-task Attach terminal (#164). The
        fit addon keeps the PTY sized to the viewport on desktop and mobile. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css"
@@ -265,13 +273,13 @@
           </table>
         </div>
 
+        <!-- Remote-control relay sessions (#157). Each card surfaces the
+             claude.ai join URL as a tappable button plus a scannable QR code so a
+             phone can drop straight into the same session. No PTY bridge — the
+             interactive surface is Claude's own hosted relay. -->
         <h2>Remote-control sessions</h2>
-        <div class="table-wrap">
-          <table id="sessions" class="data-table">
-            <thead><tr><th>Session ID</th><th>Repo</th><th>Key</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
+        <p class="muted">Open a remote-control session in a new tab, or scan its QR code to drive it from your phone.</p>
+        <div id="sessions" class="session-grid"></div>
       </section>
 
       <!-- Skills & Commands editor -->
