@@ -57,7 +57,11 @@ _DEFAULT_ROWS = 40
 # trailing tool/system/file-history-snapshot flushes are captured in full.
 _DEFAULT_DEBOUNCE = 1.0
 _POLL_INTERVAL = 0.1
-_DEFAULT_READINESS_TIMEOUT = 30.0
+# How long (s) to wait for the session JSONL transcript to appear after the
+# ``claude`` child is forked. First-token latency from CLI startup can be slow
+# in production, so this is generous; override via the
+# ``claude_session_startup_timeout_seconds`` key under ``[worker]``.
+_DEFAULT_STARTUP_TIMEOUT = 120.0
 # Gap between writing the bracketed-paste block and the Enter that submits it.
 # Sending them in one write lets the trailing CR be absorbed as a literal
 # newline inside the (multi-line) input rather than submitting the turn.
@@ -246,7 +250,7 @@ class ClaudeSession:
         cols: int = _DEFAULT_COLS,
         rows: int = _DEFAULT_ROWS,
         debounce: float = _DEFAULT_DEBOUNCE,
-        readiness_timeout: float = _DEFAULT_READINESS_TIMEOUT,
+        startup_timeout_seconds: float = _DEFAULT_STARTUP_TIMEOUT,
         ring_bytes: int = _DEFAULT_RING_BYTES,
     ) -> None:
         self.cwd = Path(cwd)
@@ -257,7 +261,7 @@ class ClaudeSession:
         self._cols = cols
         self._rows = rows
         self._debounce = debounce
-        self._readiness_timeout = readiness_timeout
+        self._startup_timeout = startup_timeout_seconds
         self._ring_bytes = ring_bytes
 
         self._jsonl_path = jsonl_path_for(self.cwd, self.session_id)
@@ -383,7 +387,7 @@ class ClaudeSession:
         )
 
     def _await_readiness(self) -> None:
-        deadline = time.monotonic() + self._readiness_timeout
+        deadline = time.monotonic() + self._startup_timeout
         while time.monotonic() < deadline:
             if self._jsonl_path.exists():
                 return
@@ -392,7 +396,7 @@ class ClaudeSession:
             time.sleep(_POLL_INTERVAL)
         raise ReadinessTimeout(
             f"JSONL {self._jsonl_path} did not appear within "
-            f"{self._readiness_timeout:.0f}s",
+            f"{self._startup_timeout:.0f}s",
         )
 
     def send_turn(self, prompt: str, *, timeout: float) -> TurnResult:

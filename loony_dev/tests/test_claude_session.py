@@ -12,6 +12,7 @@ import os
 import shutil
 import socket
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -124,7 +125,7 @@ class _StubSessionTest(unittest.TestCase):
         self.session = ClaudeSession(
             self.cwd,
             binary=str(_STUB),
-            readiness_timeout=10.0,
+            startup_timeout_seconds=10.0,
             debounce=0.2,
         )
 
@@ -201,7 +202,7 @@ class TestControlSocketInterrupt(_StubSessionTest):
         self.session.close()
         self.sock_path = Path(self.enterContext(_tmpdir())) / "ctl.sock"
         self.session = ClaudeSession(
-            self.cwd, binary=str(_STUB), readiness_timeout=10.0, debounce=0.2,
+            self.cwd, binary=str(_STUB), startup_timeout_seconds=10.0, debounce=0.2,
             control_socket=self.sock_path,
         )
 
@@ -266,12 +267,37 @@ class TestReadinessTimeout(_StubSessionTest):
         # Rebuild the session with a short readiness window.
         self.session.close()
         self.session = ClaudeSession(
-            self.cwd, binary=str(_STUB), readiness_timeout=1.0, debounce=0.2,
+            self.cwd, binary=str(_STUB), startup_timeout_seconds=1.0, debounce=0.2,
         )
 
     def test_readiness_timeout_raised(self) -> None:
         with self.assertRaises(ReadinessTimeout):
             self.session.open()
+
+
+class TestStartupTimeoutHonoured(_StubSessionTest):
+    """The configured ``startup_timeout_seconds`` bounds how long ``open`` waits."""
+
+    extra_env = {"STUB_NO_JSONL": "1"}
+
+    def setUp(self) -> None:
+        super().setUp()
+        # A tiny startup window against a config dir that never gets a JSONL: the
+        # session must give up after ~that duration, not the 120s default.
+        self.session.close()
+        self.session = ClaudeSession(
+            self.cwd, binary=str(_STUB), startup_timeout_seconds=0.1, debounce=0.2,
+        )
+
+    def test_open_gives_up_after_configured_window(self) -> None:
+        start = time.monotonic()
+        with self.assertRaises(ReadinessTimeout) as ctx:
+            self.session.open()
+        elapsed = time.monotonic() - start
+        # The configured 0.1s window is honoured: it gives up far sooner than the
+        # 120s default (generous upper bound to stay reliable on slow hosts).
+        self.assertLess(elapsed, 10.0)
+        self.assertIn(str(self.session.jsonl_path), str(ctx.exception))
 
 
 class TestQuota(_StubSessionTest):
@@ -308,7 +334,7 @@ class TestRealClaudeIntegration(unittest.TestCase):
     def test_persistent_session_four_events(self) -> None:
         cwd = Path(self.enterContext(_tmpdir()))
         self.enterContext(_trusted_dir(cwd))
-        session = ClaudeSession(cwd, readiness_timeout=60.0)
+        session = ClaudeSession(cwd, startup_timeout_seconds=60.0)
         session.open()
         try:
             pid = session.pid
