@@ -26,6 +26,13 @@ logger = logging.getLogger(__name__)
 # override via the ``claude_turn_timeout_seconds`` key under ``[worker]``.
 _DEFAULT_TURN_TIMEOUT = 30 * 60
 
+# Startup readiness timeout for ``ClaudeSession.open`` — how long to wait for the
+# session JSONL transcript to appear after forking ``claude``. First-token
+# latency from CLI startup can exceed the old hardcoded 30s in production;
+# override via the ``claude_session_startup_timeout_seconds`` key under
+# ``[worker]``.
+_DEFAULT_STARTUP_TIMEOUT = 120
+
 
 def _turn_timeout() -> float:
     """Return the per-turn timeout (seconds) for the persistent session."""
@@ -44,6 +51,26 @@ def _turn_timeout() -> float:
         return float(raw)
     except (TypeError, ValueError):
         return float(_DEFAULT_TURN_TIMEOUT)
+
+
+def _startup_timeout() -> float:
+    """Return the session-startup readiness timeout (seconds)."""
+    from loony_dev import config
+
+    # Same lookup shape as ``_turn_timeout``: the key lives under [worker]
+    # (nested dict), with a flat top-level fallback for forward compatibility.
+    worker_cfg = config.settings.get("worker")
+    if isinstance(worker_cfg, dict) and "claude_session_startup_timeout_seconds" in worker_cfg:
+        raw = worker_cfg["claude_session_startup_timeout_seconds"]
+    else:
+        raw = config.settings.get(
+            "claude_session_startup_timeout_seconds", _DEFAULT_STARTUP_TIMEOUT,
+        )
+
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(_DEFAULT_STARTUP_TIMEOUT)
 
 
 class CodingAgent(ClaudeQuotaMixin, Agent):
@@ -295,7 +322,11 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         on an orchestrator shutdown signal. The caller owns the session and
         must release it via :meth:`_close_session`.
         """
-        session = ClaudeSession(cwd=work_dir, session_id=session_id)
+        session = ClaudeSession(
+            cwd=work_dir,
+            session_id=session_id,
+            startup_timeout_seconds=_startup_timeout(),
+        )
         self._register_session(session)
         try:
             session.open()

@@ -185,7 +185,7 @@ class _StubSession(unittest.TestCase):
         env = {"CLAUDE_CONFIG_DIR": str(self.config_dir), **self.extra_env}
         self.enterContext(mock.patch.dict(os.environ, env))
         self.session = ClaudeSession(
-            self.cwd, binary=str(_STUB), readiness_timeout=10.0, debounce=0.2,
+            self.cwd, binary=str(_STUB), startup_timeout_seconds=10.0, debounce=0.2,
         )
         self.session.open()
         self.addCleanup(self.session.close)
@@ -403,7 +403,7 @@ class AttachWebSocketTestCase(unittest.TestCase):
             os.environ, {"CLAUDE_CONFIG_DIR": str(self.config_dir), "STUB_LONGTURN_SECS": "20"},
         ))
         self.session = ClaudeSession(
-            self.cwd, binary=str(_STUB), readiness_timeout=10.0, debounce=0.2,
+            self.cwd, binary=str(_STUB), startup_timeout_seconds=10.0, debounce=0.2,
         )
         self.session.open()
         self.addCleanup(self.session.close)
