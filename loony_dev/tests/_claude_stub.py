@@ -20,12 +20,26 @@ binary. It plays *both* the CLI and the hook scripts the CLI would invoke:
   usage-limit message; ``LONGTURN`` produces a delayed completion that ESC can
   pre-empt (recording an interrupt).
 
+Prompt keywords that exercise the idle/liveness backstop (issue #166):
+
+* ``HEARTBEAT`` — an *active* long turn: append a (non-terminal) ``tool_use``
+  assistant entry every ``STUB_HEARTBEAT_GAP`` seconds for ``STUB_HEARTBEAT_SECS``
+  total, then complete normally with a ``stop`` event. The transcript keeps
+  growing, so a productive turn whose total time exceeds the backstop survives.
+* ``MISSEDSTOP`` — write a *terminal* assistant entry to the transcript but never
+  emit the ``stop`` event, then fall silent. Drives the transcript fallback that
+  recovers a completed turn whose ``Stop`` hook was missed.
+* ``STALL`` — neither grow the transcript nor emit ``stop``. Drives a genuine
+  stall: ``TurnTimeout`` after the idle window.
+
 Behaviour is steered by environment variables:
     STUB_NO_JSONL=1        never create the JSONL transcript.
     STUB_NO_SESSION_START=1 never emit the session_start event (drives the
                             readiness backstop).
     STUB_STARTUP_DELAY     seconds to wait before signalling readiness.
     STUB_LONGTURN_SECS     how long a LONGTURN prompt runs before completing.
+    STUB_HEARTBEAT_GAP     seconds between HEARTBEAT transcript appends (def 0.1).
+    STUB_HEARTBEAT_SECS    total seconds a HEARTBEAT turn runs (def 2.0).
 """
 from __future__ import annotations
 
@@ -95,6 +109,25 @@ def _assistant(path: str, text: str, stop_reason: str = "end_turn") -> None:
     })
 
 
+def _heartbeat(path: str, n: int) -> None:
+    """Append a non-terminal (``stop_reason="tool_use"``) assistant entry.
+
+    Mimics the real CLI writing transcript entries continuously while a turn is
+    still working — exactly the production case (292 entries over 16 min) that a
+    fixed wall-clock backstop wrongly killed. Non-terminal so the transcript
+    fallback does not mistake mid-turn growth for a completed turn.
+    """
+    _append(path, {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "name": "Bash", "input": {"n": n}}],
+            "stop_reason": "tool_use",
+            "stop_sequence": None,
+        },
+    })
+
+
 def _interrupt(path: str) -> None:
     _append(path, {
         "type": "user",
@@ -130,6 +163,8 @@ def main() -> int:
         _emit(session_id, "session_start", source="startup")
 
     longturn_secs = float(os.environ.get("STUB_LONGTURN_SECS", "3") or "3")
+    heartbeat_gap = float(os.environ.get("STUB_HEARTBEAT_GAP", "0.1") or "0.1")
+    heartbeat_secs = float(os.environ.get("STUB_HEARTBEAT_SECS", "2.0") or "2.0")
 
     # The real CLI puts the tty in raw mode so a bare ESC (interrupt) is
     # delivered immediately rather than buffered until the next newline.
@@ -141,6 +176,12 @@ def main() -> int:
     buf = bytearray()
     pending_deadline: float | None = None  # set while a LONGTURN is "running"
     turn_index = 0
+    # HEARTBEAT state: while active, append a transcript entry every
+    # ``heartbeat_gap`` seconds until ``hb_end``, then complete normally. ``STALL``
+    # sets ``stall`` so the loop does nothing further (no growth, no stop).
+    hb_end: float | None = None
+    hb_next: float = 0.0
+    hb_count = 0
 
     def complete_turn(text: str) -> None:
         """Emit the transcript entry + pre/post tool + stop events for a turn."""
@@ -151,7 +192,8 @@ def main() -> int:
         _emit(session_id, "stop", text=text, interrupted=False)
 
     while True:
-        timeout = 0.05 if pending_deadline is not None else 1.0
+        active = pending_deadline is not None or hb_end is not None
+        timeout = 0.05 if active else 1.0
         rlist, _, _ = select.select([sys.stdin.buffer], [], [], timeout)
         if rlist:
             chunk = os.read(sys.stdin.fileno(), 65536)
@@ -172,6 +214,20 @@ def main() -> int:
         if pending_deadline is not None and time.monotonic() >= pending_deadline:
             complete_turn(f"done turn {turn_index}")
             pending_deadline = None
+
+        # Drive an active HEARTBEAT turn: grow the transcript each gap, then
+        # complete normally once the run window elapses. Growth (not a fixed
+        # timer) is what keeps the bot's idle backstop from tripping.
+        if hb_end is not None:
+            now = time.monotonic()
+            if now >= hb_end:
+                complete_turn(f"heartbeat done turn {turn_index}")
+                hb_end = None
+            elif now >= hb_next:
+                hb_count += 1
+                if not no_jsonl:
+                    _heartbeat(path, hb_count)
+                hb_next = now + heartbeat_gap
 
         # Process any complete bracketed-paste prompt(s).
         while b"\x1b[200~" in buf and b"\x1b[201~" in buf:
@@ -197,6 +253,22 @@ def main() -> int:
                 # test can synchronise before interrupting.  The slave is in raw
                 # mode (no input echo), so an explicit marker is needed.
                 os.write(sys.stdout.fileno(), b"LONGTURN running\n")
+            elif "HEARTBEAT" in prompt:
+                # Active long turn: keep the transcript growing past the bot's
+                # backstop, then complete normally.
+                now = time.monotonic()
+                hb_end = now + heartbeat_secs
+                hb_next = now
+                hb_count = 0
+            elif "MISSEDSTOP" in prompt:
+                # The turn completed (terminal transcript entry) but the Stop
+                # hook is never emitted — drives the transcript fallback.
+                if not no_jsonl:
+                    _assistant(path, f"missed-stop reply turn {turn_index}")
+            elif "STALL" in prompt:
+                # Genuinely stalled: no transcript growth, no stop event. The
+                # loop keeps draining stdin but takes no further action.
+                pass
             else:
                 complete_turn(f"reply to: {prompt[:80]}")
 
