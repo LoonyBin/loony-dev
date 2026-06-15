@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
 # Imported at runtime (not TYPE_CHECKING) so isinstance checks work.
 from loony_dev.agents.coding import CodingAgent
+from loony_dev.agents.claude_session import trust_directory
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +307,12 @@ class Orchestrator:
                         worktree_path, branch, base,
                     )
                     self.git.create_worktree(branch=branch, path=worktree_path, base=base)
+                    # Pre-trust the fresh worktree so the interactive ClaudeSession
+                    # does not block on claude's folder-trust dialog (which
+                    # --dangerously-skip-permissions does not bypass). New worktree
+                    # paths are always untrusted; without this, session startup
+                    # hangs and every task times out. See #178.
+                    trust_directory(worktree_path)
                     work_dir = worktree_path
 
             # ── Execute (concurrent — runs inside the isolated worktree) ─────
