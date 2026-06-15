@@ -38,7 +38,7 @@ def setup_cmd() -> None:
         "loony-dev hooks are applied per-session via `claude --settings`; "
         "no global install is needed."
     )
-    click.echo(f"Hook command: {session_hooks.hook_command('<event>')}")
+    click.echo(f"Hook command example (Stop): {session_hooks.hook_command('Stop')}")
 
 
 @cli.command("hook", context_settings={"ignore_unknown_options": True})
