@@ -20,7 +20,6 @@ from unittest import mock
 from loony_dev.agents.claude_session import (
     ClaudeSession,
     QuotaExceededError,
-    ReadinessTimeout,
     TurnResult,
     _entry_text,
     _is_interrupt,
@@ -28,6 +27,7 @@ from loony_dev.agents.claude_session import (
     _JsonlTailer,
     _project_slug,
     jsonl_path_for,
+    trust_directory,
 )
 
 _STUB = Path(__file__).parent / "_claude_stub.py"
@@ -259,45 +259,71 @@ class TestControlSocketInterrupt(_StubSessionTest):
         self.assertFalse(self.sock_path.exists())
 
 
-class TestReadinessTimeout(_StubSessionTest):
-    extra_env = {"STUB_NO_JSONL": "1"}
-
-    def setUp(self) -> None:
-        super().setUp()
-        # Rebuild the session with a short readiness window.
-        self.session.close()
-        self.session = ClaudeSession(
-            self.cwd, binary=str(_STUB), startup_timeout_seconds=1.0, debounce=0.2,
-        )
-
-    def test_readiness_timeout_raised(self) -> None:
-        with self.assertRaises(ReadinessTimeout):
-            self.session.open()
-
-
-class TestStartupTimeoutHonoured(_StubSessionTest):
-    """The configured ``startup_timeout_seconds`` bounds how long ``open`` waits."""
+class TestStartupGraceProceeds(_StubSessionTest):
+    """STOPGAP (#178): interactive ``claude`` writes no transcript until the
+    first turn, so ``open`` must PROCEED after the startup grace even when no
+    JSONL appears — not raise. The first ``send_turn`` creates the transcript.
+    The grace window is bounded by ``startup_timeout_seconds``.
+    """
 
     extra_env = {"STUB_NO_JSONL": "1"}
 
     def setUp(self) -> None:
         super().setUp()
-        # A tiny startup window against a config dir that never gets a JSONL: the
-        # session must give up after ~that duration, not the 120s default.
         self.session.close()
         self.session = ClaudeSession(
-            self.cwd, binary=str(_STUB), startup_timeout_seconds=0.1, debounce=0.2,
+            self.cwd, binary=str(_STUB), startup_timeout_seconds=0.3, debounce=0.2,
         )
 
-    def test_open_gives_up_after_configured_window(self) -> None:
+    def test_open_proceeds_without_transcript(self) -> None:
         start = time.monotonic()
-        with self.assertRaises(ReadinessTimeout) as ctx:
-            self.session.open()
-        elapsed = time.monotonic() - start
-        # The configured 0.1s window is honoured: it gives up far sooner than the
-        # 120s default (generous upper bound to stay reliable on slow hosts).
-        self.assertLess(elapsed, 10.0)
-        self.assertIn(str(self.session.jsonl_path), str(ctx.exception))
+        self.session.open()  # must not raise
+        try:
+            elapsed = time.monotonic() - start
+            # Waited ~the grace window, then proceeded (bounded well under the
+            # old 120s default).
+            self.assertGreaterEqual(elapsed, 0.3)
+            self.assertLess(elapsed, 10.0)
+            self.assertFalse(self.session.jsonl_path.exists())
+        finally:
+            self.session.close()
+
+
+class TestTrustDirectory(unittest.TestCase):
+    """``trust_directory`` records folder-trust so interactive claude skips the
+    trust dialog (which otherwise blocks session startup in fresh worktrees)."""
+
+    def test_sets_trust_flag(self) -> None:
+        cfgdir = Path(self.enterContext(_tmpdir()))
+        cwd = Path(self.enterContext(_tmpdir()))
+        (cfgdir / ".claude.json").write_text(json.dumps({"projects": {}}))
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(cfgdir)}):
+            self.assertTrue(trust_directory(cwd))
+            # Idempotent: a second call still reports trusted.
+            self.assertTrue(trust_directory(cwd))
+        data = json.loads((cfgdir / ".claude.json").read_text())
+        self.assertIs(
+            data["projects"][os.path.abspath(str(cwd))]["hasTrustDialogAccepted"], True,
+        )
+
+    def test_preserves_existing_entry_fields(self) -> None:
+        cfgdir = Path(self.enterContext(_tmpdir()))
+        cwd = Path(self.enterContext(_tmpdir()))
+        key = os.path.abspath(str(cwd))
+        (cfgdir / ".claude.json").write_text(
+            json.dumps({"projects": {key: {"allowedTools": ["Bash"]}}}),
+        )
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(cfgdir)}):
+            self.assertTrue(trust_directory(cwd))
+        data = json.loads((cfgdir / ".claude.json").read_text())
+        self.assertEqual(data["projects"][key]["allowedTools"], ["Bash"])
+        self.assertIs(data["projects"][key]["hasTrustDialogAccepted"], True)
+
+    def test_missing_config_is_non_fatal(self) -> None:
+        cfgdir = Path(self.enterContext(_tmpdir()))  # no .claude.json inside
+        cwd = Path(self.enterContext(_tmpdir()))
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(cfgdir)}):
+            self.assertFalse(trust_directory(cwd))
 
 
 class TestQuota(_StubSessionTest):
@@ -334,7 +360,7 @@ class TestRealClaudeIntegration(unittest.TestCase):
     def test_persistent_session_four_events(self) -> None:
         cwd = Path(self.enterContext(_tmpdir()))
         self.enterContext(_trusted_dir(cwd))
-        session = ClaudeSession(cwd, startup_timeout_seconds=60.0)
+        session = ClaudeSession(cwd, startup_timeout_seconds=15.0)
         session.open()
         try:
             pid = session.pid

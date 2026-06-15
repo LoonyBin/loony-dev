@@ -57,11 +57,16 @@ _DEFAULT_ROWS = 40
 # trailing tool/system/file-history-snapshot flushes are captured in full.
 _DEFAULT_DEBOUNCE = 1.0
 _POLL_INTERVAL = 0.1
-# How long (s) to wait for the session JSONL transcript to appear after the
-# ``claude`` child is forked. First-token latency from CLI startup can be slow
-# in production, so this is generous; override via the
+# STOPGAP grace (s) before the first turn is sent. Interactive ``claude`` does
+# not write the session JSONL transcript until the first turn is submitted, so
+# we cannot use "transcript exists" as a startup readiness signal (it would
+# never fire pre-input). Instead we give the child this long to reach its
+# interactive prompt, then proceed; the first turn creates the transcript and
+# the tailer picks it up. Callers MUST pre-trust the cwd (see
+# ``trust_directory``) or interactive ``claude`` blocks on the folder-trust
+# dialog. The durable fix is hook-driven readiness (#178). Override via the
 # ``claude_session_startup_timeout_seconds`` key under ``[worker]``.
-_DEFAULT_STARTUP_TIMEOUT = 120.0
+_DEFAULT_STARTUP_TIMEOUT = 10.0
 # Gap between writing the bracketed-paste block and the Enter that submits it.
 # Sending them in one write lets the trailing CR be absorbed as a literal
 # newline inside the (multi-line) input rather than submitting the turn.
@@ -148,6 +153,64 @@ def _claude_config_dir() -> Path:
 def jsonl_path_for(cwd: Path, session_id: str) -> Path:
     """Compute the JSONL transcript path for *session_id* run in *cwd*."""
     return _claude_config_dir() / "projects" / _project_slug(cwd) / f"{session_id}.jsonl"
+
+
+def _claude_json_path() -> Path:
+    """Return the path to Claude's ``.claude.json`` config file.
+
+    When ``CLAUDE_CONFIG_DIR`` is set the file lives inside it; otherwise it is
+    ``~/.claude.json`` (note: a sibling of the ``~/.claude`` config *dir*, not
+    inside it).
+    """
+    override = os.environ.get("CLAUDE_CONFIG_DIR")
+    return (Path(override) / ".claude.json") if override else Path.home() / ".claude.json"
+
+
+def trust_directory(cwd: Path) -> bool:
+    """Mark *cwd* as a trusted workspace so interactive ``claude`` skips its
+    folder-trust dialog ("Is this a project you trust?").
+
+    Interactive ``claude`` blocks on that dialog for any directory it has not
+    recorded as trusted, and ``--dangerously-skip-permissions`` does NOT bypass
+    it (only non-interactive ``-p`` mode does). Freshly-created worktrees are
+    always new, untrusted paths, so a ``ClaudeSession`` launched in one would
+    hang at the prompt and never start. This sets
+    ``projects.<cwd>.hasTrustDialogAccepted = true`` in ``~/.claude.json``.
+
+    Idempotent and lock-guarded (``flock``) so concurrent workers do not clobber
+    each other. Returns ``True`` if the directory is trusted afterwards, ``False``
+    if the config could not be updated (logged, non-fatal).
+    """
+    key = os.path.abspath(str(cwd))
+    path = _claude_json_path()
+    try:
+        with open(path, "r+", encoding="utf-8") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                try:
+                    data = json.load(fh)
+                except json.JSONDecodeError:
+                    data = {}
+                if not isinstance(data, dict):
+                    data = {}
+                projects = data.setdefault("projects", {})
+                entry = projects.setdefault(key, {})
+                if entry.get("hasTrustDialogAccepted") is True:
+                    return True
+                entry["hasTrustDialogAccepted"] = True
+                fh.seek(0)
+                json.dump(data, fh, indent=2)
+                fh.truncate()
+                return True
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+    except FileNotFoundError:
+        logger.warning(
+            "Cannot pre-trust %s: %s does not exist (run claude once first)", cwd, path,
+        )
+    except OSError as exc:
+        logger.warning("Failed to pre-trust %s in %s: %s", cwd, path, exc)
+    return False
 
 
 def _entry_text(entry: dict) -> str:
@@ -387,6 +450,18 @@ class ClaudeSession:
         )
 
     def _await_readiness(self) -> None:
+        """Give the forked ``claude`` a grace period to reach its interactive
+        prompt, then return so the first turn can be sent.
+
+        STOPGAP: interactive ``claude`` does not create the session JSONL until
+        the first turn is submitted, so we cannot wait for the transcript here
+        (it would never appear pre-input). We poll for it up to the grace window
+        — a fast path for the rare case a transcript already exists (resumed
+        sessions, tests) — but proceed anyway once the grace elapses; the first
+        ``send_turn`` creates the transcript and the tailer picks it up. The
+        cwd must be pre-trusted (see :func:`trust_directory`). Aborts early if
+        the process dies. Durable fix: hook-driven readiness (#178).
+        """
         deadline = time.monotonic() + self._startup_timeout
         while time.monotonic() < deadline:
             if self._jsonl_path.exists():
@@ -394,9 +469,10 @@ class ClaudeSession:
             if self._closed.is_set():
                 raise ClaudeSessionError("session process exited during startup")
             time.sleep(_POLL_INTERVAL)
-        raise ReadinessTimeout(
-            f"JSONL {self._jsonl_path} did not appear within "
-            f"{self._startup_timeout:.0f}s",
+        logger.debug(
+            "ClaudeSession %s: startup grace (%.0fs) elapsed without a transcript; "
+            "proceeding to first turn (it will create the transcript)",
+            self.session_id, self._startup_timeout,
         )
 
     def send_turn(self, prompt: str, *, timeout: float) -> TurnResult:

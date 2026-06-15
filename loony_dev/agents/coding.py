@@ -26,12 +26,13 @@ logger = logging.getLogger(__name__)
 # override via the ``claude_turn_timeout_seconds`` key under ``[worker]``.
 _DEFAULT_TURN_TIMEOUT = 30 * 60
 
-# Startup readiness timeout for ``ClaudeSession.open`` — how long to wait for the
-# session JSONL transcript to appear after forking ``claude``. First-token
-# latency from CLI startup can exceed the old hardcoded 30s in production;
-# override via the ``claude_session_startup_timeout_seconds`` key under
+# Startup grace for ``ClaudeSession.open`` — how long to let ``claude`` reach
+# its interactive prompt before the first turn is sent. Interactive ``claude``
+# does not write the session transcript until the first turn, so this is a
+# fixed grace, not a wait-for-transcript timeout (see ``ClaudeSession`` /
+# #178). Override via the ``claude_session_startup_timeout_seconds`` key under
 # ``[worker]``.
-_DEFAULT_STARTUP_TIMEOUT = 120
+_DEFAULT_STARTUP_TIMEOUT = 10
 
 
 def _turn_timeout() -> float:
