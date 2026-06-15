@@ -473,6 +473,14 @@ class HookEventSource(SessionEventSource):
         # mistaken for this one (mirrors the JSONL tailer's discard at turn
         # start; correlation is by sequencing under the per-turn lock).
         self._drain_stops()
+        # Remember where the transcript ends *before* this turn so the missed-Stop
+        # fallback only inspects entries this turn appended — otherwise a later
+        # stalled turn could reuse a previous turn's terminal entry (the session
+        # is persistent and the transcript accumulates across turns).
+        try:
+            turn_start_offset = session._jsonl_path.stat().st_size
+        except FileNotFoundError:
+            turn_start_offset = 0
         session._inject_prompt(prompt)
 
         # The backstop is an *idle* window, not a total cap: an actively-working
@@ -511,7 +519,9 @@ class HookEventSource(SessionEventSource):
                     # missed leaves a terminal assistant entry. If we find one,
                     # synthesise a normal completion; only a truly silent CLI
                     # (no terminal entry) is a real stall.
-                    fallback = self._fallback_from_transcript(session)
+                    fallback = self._fallback_from_transcript(
+                        session, start_offset=turn_start_offset,
+                    )
                     if fallback is not None:
                         logger.warning(
                             "No Stop hook within %.0fs for session %s; recovered a "
@@ -563,15 +573,17 @@ class HookEventSource(SessionEventSource):
         Any change between two polls means the turn produced output (Claude
         appends entries continuously while working), so it is alive. Missing
         file → ``(0, 0)`` so a transcript appearing for the first time counts as
-        activity. Errors degrade to ``(0, 0)`` rather than tripping the stall.
+        activity. Other OS errors propagate rather than being masked as a stall.
         """
         try:
             st = session._jsonl_path.stat()
-        except OSError:
+        except FileNotFoundError:
             return (0, 0)
         return (st.st_size, st.st_mtime_ns)
 
-    def _fallback_from_transcript(self, session: "ClaudeSession") -> "TurnResult | None":
+    def _fallback_from_transcript(
+        self, session: "ClaudeSession", *, start_offset: int,
+    ) -> "TurnResult | None":
         """Synthesise a completed :class:`TurnResult` from the transcript, or None.
 
         Used when the idle window lapses without a ``Stop`` event: if the turn
@@ -580,16 +592,22 @@ class HookEventSource(SessionEventSource):
         instead of falsely reporting a stall. Returns ``None`` when no terminal
         entry exists (a genuine stall mid-turn).
 
+        Only entries appended at/after ``start_offset`` (the transcript size at
+        this turn's start) are inspected, so a stalled turn cannot reuse an
+        earlier turn's terminal entry from the accumulated transcript.
+
         Mirrors the ``Stop`` path's shape: quota errors still raise
         :class:`QuotaExceededError`; ``was_interrupted`` is derived from the
         transcript tail exactly as the hook would; text comes from the assistant
-        entries via :meth:`_assistant_text`.
+        entries via :meth:`_assistant_text`. A missing transcript → ``None``
+        (a genuine stall); other OS errors propagate.
         """
         path = session._jsonl_path
         try:
-            raw = path.read_text(encoding="utf-8")
-        except OSError:
+            raw_bytes = path.read_bytes()
+        except FileNotFoundError:
             return None
+        raw = raw_bytes[max(0, start_offset):].decode("utf-8", "replace")
         entries: list[dict] = []
         for line in raw.splitlines():
             line = line.strip()
@@ -618,7 +636,9 @@ class HookEventSource(SessionEventSource):
 
         was_interrupted = _is_interrupt(terminal)
         stop_reason = "interrupted" if was_interrupted else "end_turn"
-        text = scan.assistant_text if scan is not None else session._assistant_text(entries)
+        # Text comes from *this turn's* entries only (scoped above), not the
+        # whole-transcript ``scan`` which the quota guard uses.
+        text = session._assistant_text(entries)
         return TurnResult(
             text=text,
             stop_reason=stop_reason,

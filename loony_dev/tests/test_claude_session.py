@@ -395,6 +395,21 @@ class TestStalledTurnTimesOut(_StubSessionTest):
         # Stable, non-false wording (not the old "CLI process likely dead").
         self.assertIn("Claude CLI appears stalled", message)
 
+    def test_stall_after_success_does_not_reuse_prior_terminal(self) -> None:
+        """A first turn completes (leaving a terminal entry in the accumulated
+        transcript); a *second* turn then stalls. The fallback must be scoped to
+        the second turn's entries, so it raises ``TurnTimeout`` instead of
+        reusing the first turn's terminal entry as a stale result."""
+        self.session.open()
+        first = self.session.send_turn("hello there", timeout=0.6)
+        self.assertIsInstance(first, TurnResult)
+        self.assertIn("hello there", first.text)
+        # Second turn stalls: no new transcript growth, no Stop. The earlier
+        # terminal entry is still in the file but precedes this turn's offset.
+        with self.assertRaises(TurnTimeout) as ctx:
+            self.session.send_turn("please STALL forever", timeout=0.5)
+        self.assertIn("Claude CLI appears stalled", str(ctx.exception))
+
 
 # ---------------------------------------------------------------------------
 # Integration test against the real claude CLI
