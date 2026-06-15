@@ -1,9 +1,15 @@
 ---
 description: Generate a conventional commit message only
-argument-hint: <issue number and title>
+argument-hint: <path to JSON context file>
 ---
-Generate a conventional commit message for the changes made to implement the following:
+Generate a conventional commit message. The argument is the path to a JSON context file.
 
-$ARGUMENTS
+Read the JSON file at: $ARGUMENTS
 
-Output ONLY the commit message — no explanation, no preamble, no markdown fences. The message must reference the issue number.
+It contains:
+- `issue_number` — the GitHub issue number the changes implement
+- `title` — the issue title
+
+Generate a conventional commit message for the changes made to implement the issue.
+
+Output ONLY the commit message — no explanation, no preamble, no markdown fences. The message must reference `#<issue_number>`.

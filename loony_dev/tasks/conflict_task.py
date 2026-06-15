@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 class ConflictResolutionTask(Task):
     task_type = "resolve_conflicts"
     priority = 10
+    command_name = "resolve-conflicts"
 
     def __init__(self, pr: PullRequest, default_branch: str = "main") -> None:
         self.pr = pr
@@ -65,18 +66,21 @@ class ConflictResolutionTask(Task):
         return f"pr-{self.pr.number}-conflicts"
 
     def describe(self) -> str:
-        return (
-            f"Resolve merge conflicts on PR #{self.pr.number}: {self.pr.title}\n\n"
-            f"The branch '{self.pr.branch}' has conflicts with {self.default_branch} that must be resolved before merging.\n\n"
-            f"Instructions:\n"
-            f"- Run: git checkout {self.pr.branch}\n"
-            f"- Run: git merge {self.default_branch}\n"
-            f"- If conflicts arise, read each conflicting file, understand the intent of both sides,\n"
-            f"  and resolve the markers appropriately\n"
-            f"- Stage resolved files and run: git merge --continue\n"
-            f"- Push: git push --force-with-lease\n"
-            f"- Do NOT create a new PR or commit unrelated changes"
-        )
+        """Human-readable label for logging/dashboard (not sent as a turn).
+
+        The work is driven via the ``/resolve-conflicts`` slash command built
+        from :meth:`context_payload` (issue #166).
+        """
+        return f"Resolve merge conflicts on PR #{self.pr.number}: {self.pr.title}"
+
+    def context_payload(self) -> dict:
+        """Context for ``/resolve-conflicts``."""
+        return {
+            "pr_number": self.pr.number,
+            "title": self.pr.title,
+            "branch": self.pr.branch,
+            "default_branch": self.default_branch,
+        }
 
     def on_start(self, repo: Repo) -> None:
         self.pr.add_label("in-progress")

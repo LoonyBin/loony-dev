@@ -6,6 +6,7 @@ position-based fallback (old markers without last-seen).
 from __future__ import annotations
 
 import unittest
+from unittest.mock import MagicMock
 
 from loony_dev.github.comment import Comment
 from loony_dev.github.content import Content
@@ -169,6 +170,49 @@ class TestSplitRevisionNote(unittest.TestCase):
         plan, note = _split_revision_note(summary)
         self.assertEqual(plan, summary)
         self.assertEqual(note, "")
+
+
+class TestContextPayload(unittest.TestCase):
+    """PlanningTask.context_payload() — the /plan-issue slash-command context (#166)."""
+
+    def _issue(self, number: int = 5, title: str = "Add X", body: str = "details") -> MagicMock:
+        issue = MagicMock()
+        issue.number = number
+        issue.title = title
+        issue.body = body
+        return issue
+
+    def test_command_name_is_plan_issue(self) -> None:
+        self.assertEqual(PlanningTask.command_name, "plan-issue")
+
+    def test_fresh_plan_payload_has_no_revision_keys(self) -> None:
+        task = PlanningTask(self._issue(), existing_plan=None, new_comments=[])
+        payload = task.context_payload()
+        self.assertEqual(payload["issue_number"], 5)
+        self.assertEqual(payload["title"], "Add X")
+        self.assertEqual(payload["body"], "details")
+        self.assertNotIn("current_plan", payload)
+        self.assertNotIn("feedback", payload)
+
+    def test_revision_payload_carries_plan_feedback_and_delimiter(self) -> None:
+        comments = [
+            _comment(USER, "Please tweak step 2.", "2024-01-01T10:00:00Z"),
+            _comment("bob", "And step 3.", "2024-01-01T11:00:00Z"),
+        ]
+        task = PlanningTask(
+            self._issue(), existing_plan="The current plan.", new_comments=comments,
+        )
+        payload = task.context_payload()
+        self.assertEqual(payload["current_plan"], "The current plan.")
+        self.assertIn("Please tweak step 2.", payload["feedback"])
+        self.assertIn("And step 3.", payload["feedback"])
+        self.assertEqual(payload["revision_note_delimiter"], REVISION_NOTE_DELIMITER)
+
+    def test_describe_is_short_label(self) -> None:
+        fresh = PlanningTask(self._issue(number=9, title="T"), existing_plan=None, new_comments=[])
+        self.assertEqual(fresh.describe(), "Create implementation plan for issue #9: T")
+        revision = PlanningTask(self._issue(number=9, title="T"), existing_plan="p", new_comments=[])
+        self.assertEqual(revision.describe(), "Revise implementation plan for issue #9: T")
 
 
 if __name__ == "__main__":

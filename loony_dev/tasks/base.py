@@ -42,6 +42,21 @@ class Task(ABC):
     task_type: str
     priority: int  # Lower number = higher priority; used to order discovery across tick
 
+    # The slash command driving this task's single-shot ``execute()`` path
+    # (issue #166). ``None`` for multi-phase tasks (IssueTask, driven by
+    # ``execute_issue``) and cleanup-style tasks that need no Claude turn.
+    command_name: str | None = None
+
+    def context_payload(self) -> dict:
+        """Structured context for this task's :attr:`command_name` slash command.
+
+        The agent serialises this to a JSON file and sends ``/<command> <path>``
+        as the turn; the command body reads the JSON. Only meaningful for tasks
+        that set :attr:`command_name`; multi-phase and cleanup tasks never call
+        it.
+        """
+        raise NotImplementedError
+
     @staticmethod
     @abstractmethod
     def discover(repo: Repo) -> Iterator[Task]:

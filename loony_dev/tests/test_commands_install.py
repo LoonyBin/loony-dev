@@ -86,5 +86,60 @@ class CommandInstallTest(unittest.TestCase):
         self.assertEqual(mine.read_text(encoding="utf-8"), "my custom prompt\n")
 
 
+# Each path-based command (#166) and the JSON keys its payload provides. The
+# command body must reference $ARGUMENTS as a path and name every key, so a
+# future edit to a task payload can't silently drop a key the body relies on.
+# `cleanup-stuck` is intentionally absent — it still interpolates $ARGUMENTS
+# inline and is not migrated.
+_COMMAND_PAYLOAD_KEYS = {
+    "implement-issue": ["issue_number", "title", "body", "plan"],
+    "fix-review": ["issue_number", "review_output"],
+    "fix-hook": ["issue_number", "hook_output"],
+    "commit-message": ["issue_number", "title"],
+    "pr-body": ["issue_number", "title", "body", "diff"],
+    "address-reviews": [
+        "pr_number", "title", "branch", "owner", "repo", "pr",
+        "allow_create_issues", "comments",
+    ],
+    "plan-issue": [
+        "issue_number", "title", "body", "current_plan", "feedback",
+        "revision_note_delimiter",
+    ],
+    "resolve-conflicts": ["pr_number", "title", "branch", "default_branch"],
+    "fix-ci": ["pr_number", "title", "branch", "failed_checks"],
+}
+
+
+class CommandTemplateContractTest(unittest.TestCase):
+    """Migrated bodies take $ARGUMENTS as a path and document their JSON keys."""
+
+    def _source(self, name: str) -> str:
+        for path in commands._command_sources():
+            if path.stem == name:
+                return path.read_text(encoding="utf-8")
+        self.fail(f"no bundled command source for {name!r}")
+
+    def test_every_payload_key_is_named_in_body(self) -> None:
+        for name, keys in _COMMAND_PAYLOAD_KEYS.items():
+            body = self._source(name)
+            with self.subTest(command=name):
+                self.assertIn("$ARGUMENTS", body)
+                # $ARGUMENTS is documented as a path to a JSON context file.
+                self.assertIn("JSON", body)
+                self.assertRegex(body, r"argument-hint:.*path")
+                for key in keys:
+                    self.assertIn(key, body, f"{name} body never names key {key!r}")
+
+    def test_plan_issue_emits_revision_delimiter(self) -> None:
+        # The delimiter contract with planning_task._split_revision_note must hold.
+        from loony_dev.tasks.planning_task import REVISION_NOTE_DELIMITER
+
+        self.assertIn(REVISION_NOTE_DELIMITER, self._source("plan-issue"))
+
+    def test_cleanup_stuck_is_not_path_based(self) -> None:
+        # cleanup-stuck still interpolates content inline; it is not migrated.
+        self.assertNotIn("JSON context file", self._source("cleanup-stuck"))
+
+
 if __name__ == "__main__":
     unittest.main()
