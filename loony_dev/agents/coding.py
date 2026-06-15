@@ -5,14 +5,12 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from loony_dev.agents import session_hooks
 from loony_dev.agents.base import Agent
 from loony_dev.agents.claude_quota import ClaudeQuotaMixin
 from loony_dev.agents.claude_session import (
     ClaudeSession,
     ClaudeSessionError,
     QuotaExceededError,
-    ReadinessTimeout,
     TurnResult,
 )
 from loony_dev.models import GitError, HookFailureError, TaskResult, truncate_for_log
@@ -329,22 +327,6 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         self._register_session(session)
         try:
             session.open()
-        except ReadinessTimeout:
-            self._unregister_session(session)
-            try:
-                session.close()
-            except Exception:  # pragma: no cover - best-effort teardown
-                logger.debug("Error closing ClaudeSession after open failure", exc_info=True)
-            # A missed SessionStart most often means an operator wiped our hooks
-            # from settings.json (config drift). Re-check on failure and, if so,
-            # surface the actionable message instead of a bare liveness timeout.
-            ok, reason = session_hooks.verify_hooks()
-            if not ok:
-                raise ClaudeSessionError(
-                    "required Claude Code hooks are missing or stale "
-                    f"({reason}) — run `loony-dev setup`",
-                ) from None
-            raise
         except Exception:
             self._unregister_session(session)
             try:

@@ -15,9 +15,6 @@ from loony_dev.git import GitRepo
 from loony_dev.github import Repo
 from loony_dev.orchestrator import Orchestrator
 
-# Message shown when required Claude Code hooks are missing/stale at worker start.
-_HOOKS_MISSING_MSG = "required Claude Code hooks are missing or stale — run `loony-dev setup`"
-
 
 @click.group(cls=config.ClickGroup)
 def cli() -> None:
@@ -26,22 +23,22 @@ def cli() -> None:
 
 @cli.command("setup")
 def setup_cmd() -> None:
-    """Install the Claude Code hooks loony-dev needs into ~/.claude/settings.json.
+    """Report Claude Code hook configuration (no global install required).
 
-    Idempotent: merges loony-dev's SessionStart/Stop/PreToolUse/PostToolUse hooks
-    into your Claude config, preserving any hand-authored hooks. Run this once
-    (or after upgrading) so the worker's hook-driven session events work; the
-    worker refuses to start without them.
+    loony-dev no longer installs hooks into ``~/.claude/settings.json``. Instead
+    it passes its SessionStart/Stop/PreToolUse/PostToolUse hooks to each session
+    it launches via ``claude --settings`` (see
+    :mod:`loony_dev.agents.session_hooks`), so the hooks apply only to
+    loony-managed sessions and never to your own ``claude`` invocations. This
+    command exists for backward compatibility and prints the hook command that
+    will be used.
     """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    changed = session_hooks.install_hooks()
-    ok, reason = session_hooks.verify_hooks()
-    if not ok:
-        raise click.ClickException(f"hook install did not verify: {reason}")
-    if changed:
-        click.echo("Installed/updated loony-dev Claude Code hooks.")
-    else:
-        click.echo("loony-dev Claude Code hooks already up to date.")
+    click.echo(
+        "loony-dev hooks are applied per-session via `claude --settings`; "
+        "no global install is needed."
+    )
+    click.echo(f"Hook command: {session_hooks.hook_command('<event>')}")
 
 
 @cli.command("hook", context_settings={"ignore_unknown_options": True})
@@ -128,17 +125,11 @@ def worker(**_) -> None:
     except OSError as e:
         logging.getLogger(__name__).warning("Failed to install slash commands: %s", e)
 
-    # Install/verify the Claude Code hooks the hook-driven session events need
-    # (#178). Install is idempotent; if verification still fails (e.g. an
-    # operator wiped our hooks from a custom settings.json), refuse to start
-    # rather than silently degrading to a stale/missing-hook path.
-    try:
-        session_hooks.install_hooks()
-    except OSError as e:
-        logging.getLogger(__name__).warning("Failed to install Claude Code hooks: %s", e)
-    ok, reason = session_hooks.verify_hooks()
-    if not ok:
-        raise click.ClickException(f"{_HOOKS_MISSING_MSG} ({reason})")
+    # Hook-driven session events (#178) are wired per-session: each ClaudeSession
+    # launches ``claude --settings <json>`` carrying loony-dev's lifecycle hooks
+    # (see loony_dev.agents.session_hooks), so there is no global settings.json
+    # state to install or verify here — and a human's own ``claude`` runs are
+    # never affected.
 
     repo_name = config.settings.repo
     if repo_name is None:

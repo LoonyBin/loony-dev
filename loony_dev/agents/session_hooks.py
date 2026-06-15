@@ -11,15 +11,16 @@ module:
 * computes the per-session control-socket path (:func:`channel_path`), keyed by
   ``session_id`` and honouring ``CLAUDE_CONFIG_DIR``;
 * implements the hook executable itself (:func:`run_hook`), invoked as
-  ``loony-dev hook <event>``: it reads the hook payload on stdin, looks up the
-  session's socket by the payload's ``session_id``, and writes one event line;
-* installs/verifies the hook block in ``~/.claude/settings.json`` idempotently
-  (:func:`install_hooks` / :func:`verify_hooks`), mirroring the managed-marker
-  read-modify-write pattern of :mod:`loony_dev.commands`.
+  ``{python} -m loony_dev hook <event>``: it reads the hook payload on stdin,
+  looks up the session's socket by the payload's ``session_id``, and writes one
+  event line;
+* builds the ``--settings`` payload loony-dev passes when it *launches* a
+  ``claude`` session (:func:`session_settings_json`), so the hooks apply **only**
+  to loony-managed sessions and never to a human's own ``claude`` invocations.
 
 The bet (vs. JSONL-shape coupling): hook payloads change less often and break
-*louder* — if Claude Code stops firing the hook, the worker's backstop trips and
-``verify_hooks`` refuses to start, rather than silently mis-parsing.
+*louder* — if Claude Code stops firing the hook, the worker's per-turn backstop
+trips, rather than silently mis-parsing.
 
 Schema confirmed against Claude Code ``2.1.177`` (binary Zod definitions). Base
 payload (all events): ``session_id``, ``transcript_path``, ``cwd``,
@@ -32,10 +33,10 @@ transcript tail once for the ``[Request interrupted by user]`` marker.
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import os
+import shlex
 import socket
 import sys
 from pathlib import Path
@@ -71,11 +72,6 @@ HOOK_EVENT_NAMES: dict[str, str] = {
 # tail. Kept here (not imported from claude_session) to keep the hook executable
 # import-light.
 INTERRUPT_PREFIX = "[Request interrupted by user"
-
-# Managed-marker for the settings.json hook block, mirroring
-# :data:`loony_dev.commands.MANAGED_MARKER`. We only ever (re)write hook entries
-# whose command carries this token, so hand-authored hooks are never clobbered.
-MANAGED_TOKEN = "loony-dev:hook"
 
 # Bytes of a hook event line; events are tiny.
 _RECV_BYTES = 64 * 1024
@@ -134,24 +130,33 @@ def decode_event(line: bytes) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# settings.json hook block (install / verify)
+# Per-session ``--settings`` payload
+#
+# Rather than installing hooks globally into ``~/.claude/settings.json`` (which
+# would run for *every* ``claude`` session on the machine — and fail loudly when
+# ``loony-dev`` is not on ``PATH``, e.g. inside a venv), loony-dev passes these
+# hooks via ``claude --settings <json>`` only for the sessions *it* launches.
+# Two consequences:
+#   * a human's own ``claude`` invocations are never touched, so a missing
+#     ``loony-dev`` on ``PATH`` cannot break them;
+#   * the hook command is invoked through the current interpreter
+#     (``{sys.executable} -m loony_dev``), so it resolves regardless of ``PATH``.
 # ---------------------------------------------------------------------------
 
 def hook_command(event_name: str) -> str:
-    """Return the shell command settings.json runs for *event_name*.
+    """Return the shell command Claude Code runs for *event_name*.
 
-    Carries :data:`MANAGED_TOKEN` (as a trailing comment-style arg the CLI
-    ignores) so :func:`install_hooks` can recognise and upgrade its own entries
-    without touching hand-authored ones.
+    Invokes the hook through the running interpreter as
+    ``{sys.executable} -m loony_dev hook <event>`` (see
+    :mod:`loony_dev.__main__`) rather than the bare ``loony-dev`` console
+    script, so the hook resolves even when ``loony-dev`` is installed in a venv
+    that is not on the session's ``PATH``.
     """
-    # ``loony-dev hook <event>`` invokes :func:`run_hook`. The token is appended
-    # as an extra positional that ``run_hook`` ignores; it makes the managed
-    # entry self-identifying in settings.json.
-    return f"loony-dev hook {event_name} #{MANAGED_TOKEN}"
+    return f"{shlex.quote(sys.executable)} -m loony_dev hook {event_name}"
 
 
 def desired_settings_hooks() -> dict:
-    """Return the ``hooks`` block loony-dev wants merged into settings.json."""
+    """Return the ``hooks`` block loony-dev passes via ``--settings``."""
     hooks: dict[str, list] = {}
     for hook_event in HOOK_EVENT_NAMES:
         entry: dict = {"hooks": [{"type": "command", "command": hook_command(hook_event)}]}
@@ -162,118 +167,23 @@ def desired_settings_hooks() -> dict:
     return hooks
 
 
-def _is_managed_entry(entry: object) -> bool:
-    if not isinstance(entry, dict):
-        return False
-    for spec in entry.get("hooks", []):
-        if isinstance(spec, dict) and MANAGED_TOKEN in str(spec.get("command", "")):
-            return True
-    return False
+def session_settings() -> dict:
+    """Return the full settings object loony-dev passes to ``claude --settings``.
 
-
-def install_hooks(config_dir: Path | None = None) -> bool:
-    """Idempotently merge loony-dev's hooks into ``<config>/settings.json``.
-
-    Read-modify-write under ``flock`` (mirrors :func:`trust_directory` and
-    :func:`loony_dev.commands.install_commands`): for each required hook event we
-    drop any prior *managed* entry of ours and install the current one, while
-    preserving every hand-authored hook entry. Returns ``True`` if the file was
-    changed (or created), ``False`` if it was already up to date.
+    Claude Code merges this on top of the user's own settings for that session
+    only, so loony-dev's lifecycle hooks are active for the launched session
+    without persisting anything to ``~/.claude/settings.json``.
     """
-    base = config_dir if config_dir is not None else _claude_config_dir()
-    base.mkdir(parents=True, exist_ok=True)
-    path = base / "settings.json"
-    desired = desired_settings_hooks()
-
-    # ``open(..., "a+")`` creates the file if missing without truncating, and we
-    # flock it so concurrent workers/`setup` runs serialise their read-modify-write.
-    with open(path, "a+", encoding="utf-8") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        try:
-            fh.seek(0)
-            raw = fh.read()
-            try:
-                data = json.loads(raw) if raw.strip() else {}
-            except json.JSONDecodeError:
-                logger.warning("settings.json at %s is not valid JSON; leaving it alone", path)
-                return False
-            if not isinstance(data, dict):
-                data = {}
-
-            hooks = data.get("hooks")
-            if not isinstance(hooks, dict):
-                hooks = {}
-
-            changed = False
-            for hook_event, desired_entries in desired.items():
-                existing = hooks.get(hook_event)
-                existing = existing if isinstance(existing, list) else []
-                # Keep hand-authored entries; drop our own prior managed entries.
-                preserved = [e for e in existing if not _is_managed_entry(e)]
-                new_list = preserved + desired_entries
-                if hooks.get(hook_event) != new_list:
-                    hooks[hook_event] = new_list
-                    changed = True
-
-            if not changed:
-                return False
-
-            data["hooks"] = hooks
-            fh.seek(0)
-            fh.truncate()
-            json.dump(data, fh, indent=2)
-            fh.write("\n")
-            logger.info("Installed/updated loony-dev Claude Code hooks in %s", path)
-            return True
-        finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
+    return {"hooks": desired_settings_hooks()}
 
 
-def verify_hooks(config_dir: Path | None = None) -> tuple[bool, str]:
-    """Return ``(ok, reason)`` confirming every required hook is installed.
-
-    ``ok`` is ``True`` only if ``settings.json`` exists, parses, and maps each
-    required Claude Code event to our current managed hook command. Otherwise
-    ``reason`` names what is missing/stale so the worker can refuse to start with
-    a clear message.
-    """
-    base = config_dir if config_dir is not None else _claude_config_dir()
-    path = base / "settings.json"
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return False, f"{path} does not exist"
-    except OSError as exc:
-        return False, f"could not read {path}: {exc}"
-
-    try:
-        data = json.loads(raw) if raw.strip() else {}
-    except json.JSONDecodeError:
-        return False, f"{path} is not valid JSON"
-    hooks = data.get("hooks") if isinstance(data, dict) else None
-    if not isinstance(hooks, dict):
-        return False, f"{path} has no hooks block"
-
-    for hook_event in HOOK_EVENT_NAMES:
-        entries = hooks.get(hook_event)
-        if not isinstance(entries, list):
-            return False, f"missing hook for {hook_event}"
-        expected = hook_command(hook_event)
-        found = any(
-            isinstance(e, dict)
-            and any(
-                isinstance(s, dict) and s.get("command") == expected
-                for s in e.get("hooks", [])
-            )
-            for e in entries
-        )
-        if not found:
-            return False, f"hook for {hook_event} is missing or stale"
-    return True, "ok"
+def session_settings_json() -> str:
+    """Return :func:`session_settings` serialised for the ``--settings`` flag."""
+    return json.dumps(session_settings())
 
 
 # ---------------------------------------------------------------------------
-# The hook executable (invoked as ``loony-dev hook <event>``)
+# The hook executable (invoked as ``{python} -m loony_dev hook <event>``)
 # ---------------------------------------------------------------------------
 
 def _transcript_was_interrupted(transcript_path: str | None) -> bool:
@@ -323,7 +233,7 @@ def _entry_starts_with_interrupt(entry: dict) -> bool:
 
 
 def run_hook(argv: list[str], stdin_text: str) -> int:
-    """Entry point for ``loony-dev hook <event>``.
+    """Entry point for ``{python} -m loony_dev hook <event>``.
 
     Reads the Claude Code hook payload (*stdin_text*), maps the Claude event name
     to our event, looks up the session's control socket by the payload's

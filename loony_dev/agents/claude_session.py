@@ -902,8 +902,14 @@ class ClaudeSession:
             "--dangerously-skip-permissions",
             "--session-id",
             self.session_id,
-            *self._extra_args,
         ]
+        # Hook-driven sessions carry loony-dev's lifecycle hooks via a
+        # per-session ``--settings`` payload, scoping them to this session only
+        # (never the operator's own ``claude`` runs); the legacy JSONL source
+        # needs no hooks. See :mod:`loony_dev.agents.session_hooks`.
+        if self._session_events != SESSION_EVENTS_JSONL:
+            cmd += ["--settings", session_hooks.session_settings_json()]
+        cmd += self._extra_args
         env = os.environ.copy()
         env.setdefault("TERM", "xterm-256color")
         env.update(self._env_overrides)
