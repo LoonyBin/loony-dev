@@ -54,6 +54,18 @@ function qrImage(url) {
   }
 }
 
+// claude.ai relay deep-links are always https. Reject anything else so a
+// javascript:/data: URL from a tampered connection file can never become a
+// clickable href. Returns the normalized href, or null if unusable.
+function safeJoinUrl(raw) {
+  try {
+    const u = new URL(raw);
+    return u.protocol === "https:" ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
 function badge(text, kind) {
   const span = document.createElement("span");
   span.className = `session-badge session-badge-${kind}`;
@@ -102,17 +114,27 @@ function renderState(card, s) {
     return;
   }
 
-  const open = document.createElement("a");
-  open.className = "btn btn-primary session-open";
-  open.href = s.join_url;
-  open.target = "_blank";
-  open.rel = "noopener noreferrer";
-  open.textContent = "Open session ↗";
-  card.appendChild(open);
+  // Alive with a URL, but it isn't a usable https deep-link.
+  const joinUrl = safeJoinUrl(s.join_url);
+  if (!joinUrl) {
+    const note = document.createElement("p");
+    note.className = "session-note session-note-offline";
+    note.textContent = "Session link unavailable — the join URL is not a valid https link.";
+    card.appendChild(note);
+    return;
+  }
+
+  const joinLink = document.createElement("a");
+  joinLink.className = "btn btn-primary session-open";
+  joinLink.href = joinUrl;
+  joinLink.target = "_blank";
+  joinLink.rel = "noopener noreferrer";
+  joinLink.textContent = "Open session ↗";
+  card.appendChild(joinLink);
 
   const qrWrap = document.createElement("div");
   qrWrap.className = "session-qr";
-  const img = qrImage(s.join_url);
+  const img = qrImage(joinUrl);
   if (img) {
     qrWrap.appendChild(img);
     const hint = document.createElement("p");
@@ -164,7 +186,7 @@ export function render(sessions) {
   if (!container) return;
   container.innerHTML = "";
 
-  if (!sessions.length) {
+  if (!Array.isArray(sessions) || !sessions.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
     empty.textContent = "No active sessions.";

@@ -487,7 +487,7 @@ button.action:hover,
   white-space: nowrap;
 }
 .session-badge-live { color: var(--primary-contrast); background: var(--running); }
-.session-badge-offline { color: #fff; background: var(--stale); }
+.session-badge-offline { color: var(--primary-contrast); background: var(--stale); }
 .session-badge-unknown { color: var(--primary-contrast); background: var(--unknown); }
 
 .session-meta {
