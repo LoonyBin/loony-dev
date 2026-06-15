@@ -6,6 +6,7 @@ from pathlib import Path
 import click
 
 from loony_dev import config
+from loony_dev.agents import session_hooks
 from loony_dev.agents.coding import CodingAgent
 from loony_dev.agents.null_agent import NullAgent
 from loony_dev.agents.planning import PlanningAgent
@@ -14,10 +15,46 @@ from loony_dev.git import GitRepo
 from loony_dev.github import Repo
 from loony_dev.orchestrator import Orchestrator
 
+# Message shown when required Claude Code hooks are missing/stale at worker start.
+_HOOKS_MISSING_MSG = "required Claude Code hooks are missing or stale — run `loony-dev setup`"
+
 
 @click.group(cls=config.ClickGroup)
 def cli() -> None:
     """Loony-Dev: Agent orchestrator that watches GitHub and dispatches work."""
+
+
+@cli.command("setup")
+def setup_cmd() -> None:
+    """Install the Claude Code hooks loony-dev needs into ~/.claude/settings.json.
+
+    Idempotent: merges loony-dev's SessionStart/Stop/PreToolUse/PostToolUse hooks
+    into your Claude config, preserving any hand-authored hooks. Run this once
+    (or after upgrading) so the worker's hook-driven session events work; the
+    worker refuses to start without them.
+    """
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    changed = session_hooks.install_hooks()
+    ok, reason = session_hooks.verify_hooks()
+    if not ok:
+        raise click.ClickException(f"hook install did not verify: {reason}")
+    if changed:
+        click.echo("Installed/updated loony-dev Claude Code hooks.")
+    else:
+        click.echo("loony-dev Claude Code hooks already up to date.")
+
+
+@cli.command("hook", context_settings={"ignore_unknown_options": True})
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def hook_cmd(args: tuple[str, ...]) -> None:
+    """Internal: the executable Claude Code invokes for each lifecycle hook.
+
+    Reads the hook payload on stdin and writes one event line to the session's
+    control socket. Not meant to be run by hand — settings.json wires it up.
+    """
+    import sys
+
+    raise SystemExit(session_hooks.run_hook(list(args), sys.stdin.read()))
 
 
 @cli.command("worker")
@@ -90,6 +127,18 @@ def worker(**_) -> None:
             click.echo(f"Installed {len(written)} loony-dev slash command(s) into {work_path / '.claude' / 'commands'}")
     except OSError as e:
         logging.getLogger(__name__).warning("Failed to install slash commands: %s", e)
+
+    # Install/verify the Claude Code hooks the hook-driven session events need
+    # (#178). Install is idempotent; if verification still fails (e.g. an
+    # operator wiped our hooks from a custom settings.json), refuse to start
+    # rather than silently degrading to a stale/missing-hook path.
+    try:
+        session_hooks.install_hooks()
+    except OSError as e:
+        logging.getLogger(__name__).warning("Failed to install Claude Code hooks: %s", e)
+    ok, reason = session_hooks.verify_hooks()
+    if not ok:
+        raise click.ClickException(f"{_HOOKS_MISSING_MSG} ({reason})")
 
     repo_name = config.settings.repo
     if repo_name is None:

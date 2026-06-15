@@ -5,12 +5,14 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from loony_dev.agents import session_hooks
 from loony_dev.agents.base import Agent
 from loony_dev.agents.claude_quota import ClaudeQuotaMixin
 from loony_dev.agents.claude_session import (
     ClaudeSession,
     ClaudeSessionError,
     QuotaExceededError,
+    ReadinessTimeout,
     TurnResult,
 )
 from loony_dev.models import GitError, HookFailureError, TaskResult, truncate_for_log
@@ -26,52 +28,47 @@ logger = logging.getLogger(__name__)
 # override via the ``claude_turn_timeout_seconds`` key under ``[worker]``.
 _DEFAULT_TURN_TIMEOUT = 30 * 60
 
-# Startup grace for ``ClaudeSession.open`` — how long to let ``claude`` reach
-# its interactive prompt before the first turn is sent. Interactive ``claude``
-# does not write the session transcript until the first turn, so this is a
-# fixed grace, not a wait-for-transcript timeout (see ``ClaudeSession`` /
-# #178). Override via the ``claude_session_startup_timeout_seconds`` key under
-# ``[worker]``.
-_DEFAULT_STARTUP_TIMEOUT = 10
+# Backstop for ``ClaudeSession.open`` / ``send_turn`` — a *liveness net only*
+# (#178). The authoritative signals are the SessionStart / Stop hook events; this
+# large window merely stops a crashed CLI from hanging the worker. Override via
+# the ``claude_session_backstop_seconds`` key under ``[worker]``.
+_DEFAULT_BACKSTOP = 600
+
+# Default inbound event source: "hooks" (the hook-driven control channel) or
+# "jsonl" (the legacy poll/parse fallback, selectable for one release).
+_DEFAULT_SESSION_EVENTS = "hooks"
+
+
+def _worker_setting(key: str, default: object) -> object:
+    """Read *key* from the ``[worker]`` config section (flat fallback)."""
+    from loony_dev import config
+
+    worker_cfg = config.settings.get("worker")
+    if isinstance(worker_cfg, dict) and key in worker_cfg:
+        return worker_cfg[key]
+    return config.settings.get(key, default)
 
 
 def _turn_timeout() -> float:
     """Return the per-turn timeout (seconds) for the persistent session."""
-    from loony_dev import config
-
-    # The key is documented under [worker], which lands in config.settings as
-    # a nested dict — not a flat top-level key. Fall back to a top-level key
-    # if present for forward compatibility.
-    worker_cfg = config.settings.get("worker")
-    if isinstance(worker_cfg, dict) and "claude_turn_timeout_seconds" in worker_cfg:
-        raw = worker_cfg["claude_turn_timeout_seconds"]
-    else:
-        raw = config.settings.get("claude_turn_timeout_seconds", _DEFAULT_TURN_TIMEOUT)
-
     try:
-        return float(raw)
+        return float(_worker_setting("claude_turn_timeout_seconds", _DEFAULT_TURN_TIMEOUT))
     except (TypeError, ValueError):
         return float(_DEFAULT_TURN_TIMEOUT)
 
 
-def _startup_timeout() -> float:
-    """Return the session-startup readiness timeout (seconds)."""
-    from loony_dev import config
-
-    # Same lookup shape as ``_turn_timeout``: the key lives under [worker]
-    # (nested dict), with a flat top-level fallback for forward compatibility.
-    worker_cfg = config.settings.get("worker")
-    if isinstance(worker_cfg, dict) and "claude_session_startup_timeout_seconds" in worker_cfg:
-        raw = worker_cfg["claude_session_startup_timeout_seconds"]
-    else:
-        raw = config.settings.get(
-            "claude_session_startup_timeout_seconds", _DEFAULT_STARTUP_TIMEOUT,
-        )
-
+def _backstop_timeout() -> float:
+    """Return the session backstop (seconds) — a liveness net, not the signal."""
     try:
-        return float(raw)
+        return float(_worker_setting("claude_session_backstop_seconds", _DEFAULT_BACKSTOP))
     except (TypeError, ValueError):
-        return float(_DEFAULT_STARTUP_TIMEOUT)
+        return float(_DEFAULT_BACKSTOP)
+
+
+def _session_events() -> str:
+    """Return the configured inbound event source ("hooks" or "jsonl")."""
+    value = _worker_setting("session_events", _DEFAULT_SESSION_EVENTS)
+    return str(value) if value else _DEFAULT_SESSION_EVENTS
 
 
 class CodingAgent(ClaudeQuotaMixin, Agent):
@@ -326,11 +323,28 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         session = ClaudeSession(
             cwd=work_dir,
             session_id=session_id,
-            startup_timeout_seconds=_startup_timeout(),
+            backstop_seconds=_backstop_timeout(),
+            session_events=_session_events(),
         )
         self._register_session(session)
         try:
             session.open()
+        except ReadinessTimeout:
+            self._unregister_session(session)
+            try:
+                session.close()
+            except Exception:  # pragma: no cover - best-effort teardown
+                logger.debug("Error closing ClaudeSession after open failure", exc_info=True)
+            # A missed SessionStart most often means an operator wiped our hooks
+            # from settings.json (config drift). Re-check on failure and, if so,
+            # surface the actionable message instead of a bare liveness timeout.
+            ok, reason = session_hooks.verify_hooks()
+            if not ok:
+                raise ClaudeSessionError(
+                    "required Claude Code hooks are missing or stale "
+                    f"({reason}) — run `loony-dev setup`",
+                ) from None
+            raise
         except Exception:
             self._unregister_session(session)
             try:

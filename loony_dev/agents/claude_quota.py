@@ -29,14 +29,19 @@ _TZ_ALIASES: dict[str, str] = {
     "US/Pacific": "America/Los_Angeles",
 }
 
+# Phrases that genuinely indicate a Claude *usage-limit* error, not merely
+# content that *discusses* quotas. The old broad substrings ("quota", "rate
+# limit", "429", "resource_exhausted", "too many requests") matched normal prose
+# and code — so any task whose text simply talks about rate limits (e.g. issue
+# #178 itself) was misread as a rate-limit hit and the agent self-disabled for
+# 30 minutes. These phrases are specific to Claude's actual usage-limit message.
 _QUOTA_PATTERNS = [
-    "rate limit",
-    "quota",
-    "too many requests",
-    "429",
-    "resource_exhausted",
     "usage limit reached",
     "hit your limit",
+    "reached your usage limit",
+    "approaching your usage limit",
+    "claude usage limit",
+    "usage limit will reset",
 ]
 
 _SESSION_NOT_FOUND_PATTERNS = (
@@ -142,8 +147,23 @@ class ClaudeQuotaMixin:
 
     @staticmethod
     def _is_quota_error(output: str) -> bool:
+        """Return True only for a *genuine* Claude usage-limit error.
+
+        A naive substring match against broad terms like "quota" or "rate limit"
+        produced false positives on any task whose text merely *discusses*
+        quotas (issue #178). We instead require a specific usage-limit phrase, or
+        a usage-limit phrase paired with a parseable reset time. Topical prose
+        and code that talk about rate limits no longer trip self-disable.
+        """
         lower = output.lower()
-        return any(p in lower for p in _QUOTA_PATTERNS)
+        if any(p in lower for p in _QUOTA_PATTERNS):
+            return True
+        # A parseable reset time is only a quota signal when paired with the word
+        # "limit" — Claude's real message always says e.g. "your limit will reset
+        # at …". The reset time alone is too generic (could be ambient text).
+        if "limit" in lower and _RESET_RE.search(output) is not None:
+            return True
+        return False
 
     @staticmethod
     def _parse_reset_time(output: str) -> datetime | None:

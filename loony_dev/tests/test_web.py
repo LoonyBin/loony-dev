@@ -1200,7 +1200,7 @@ class SessionInterruptReproducerTestCase(unittest.TestCase):
 
         session = ClaudeSession(
             self.cwd, session_id="repro-163", binary=str(stub),
-            startup_timeout_seconds=10.0, debounce=0.2, control_socket=sock_path,
+            backstop_seconds=20.0, debounce=0.2, control_socket=sock_path,
             env={"STUB_LONGTURN_SECS": "20"},
         )
         session.open()
