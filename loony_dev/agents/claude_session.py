@@ -3,14 +3,26 @@
 Instead of spawning a fresh ``claude -p`` subprocess per turn (see
 :mod:`loony_dev.agents.claude_quota`), this drives a *single* interactive
 ``claude`` process over a pseudo-terminal.  The bot owns the PTY master and
-writes keystrokes (bracketed-paste prompts, ESC to interrupt); turn boundaries
-and outputs are read from the session JSONL transcript at
-``<claude-config>/projects/<cwd-slug>/<session-id>.jsonl`` — no screen scraping.
+writes keystrokes (bracketed-paste prompts, ESC to interrupt).
 
-This module is the foundation for the persistent-PTY worker rework (issue
-#161).  It deliberately does **not** touch ``CodingAgent`` — migrating the
-multi-phase ``execute_issue`` flow onto :class:`ClaudeSession` is a separate
-issue.
+Lifecycle transitions (startup readiness, turn completion, interrupt, tool
+calls) are driven by **Claude Code hook events** delivered over a per-session
+Unix-domain control socket (issue #178), not by polling/parsing the JSONL
+transcript:
+
+* ``SessionStart`` → readiness signal (replaces the startup-grace poll).
+* ``Stop`` → turn completion, carrying the assistant text and an interrupt flag.
+* ``PreToolUse`` / ``PostToolUse`` → tool-activity events for the dashboard
+  observe path (consumed by :class:`~loony_dev.agents.session_bridge.SessionBridge`).
+
+The event listener is bound **before** ``pty.fork()`` so a ``SessionStart``
+firing immediately after launch always has a socket to connect to. A long
+*backstop* timeout on ``open`` / ``send_turn`` is a liveness net only (for a CLI
+that crashed before firing a hook) — not the primary signal.
+
+A :class:`SessionEventSource` seam keeps the legacy JSONL path selectable for
+one release via the ``[worker] session_events`` config (default ``"hooks"``);
+see :mod:`loony_dev.agents.session_hooks` for the hook install/verify/executable.
 """
 from __future__ import annotations
 
@@ -28,9 +40,11 @@ import termios
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from loony_dev.agents import session_hooks
 from loony_dev.agents.claude_quota import ClaudeQuotaMixin
 
 logger = logging.getLogger(__name__)
@@ -53,20 +67,19 @@ _ESC = b"\x1b"
 _DEFAULT_COLS = 120
 _DEFAULT_ROWS = 40
 
-# How long (s) to keep polling the JSONL after the terminal entry appears, so
-# trailing tool/system/file-history-snapshot flushes are captured in full.
+# How long (s) to keep reading the JSONL after the terminal entry appears, so
+# trailing tool/system/file-history-snapshot flushes are captured in full. Used
+# by the legacy :class:`JsonlEventSource` path only.
 _DEFAULT_DEBOUNCE = 1.0
 _POLL_INTERVAL = 0.1
-# STOPGAP grace (s) before the first turn is sent. Interactive ``claude`` does
-# not write the session JSONL transcript until the first turn is submitted, so
-# we cannot use "transcript exists" as a startup readiness signal (it would
-# never fire pre-input). Instead we give the child this long to reach its
-# interactive prompt, then proceed; the first turn creates the transcript and
-# the tailer picks it up. Callers MUST pre-trust the cwd (see
-# ``trust_directory``) or interactive ``claude`` blocks on the folder-trust
-# dialog. The durable fix is hook-driven readiness (#178). Override via the
-# ``claude_session_startup_timeout_seconds`` key under ``[worker]``.
-_DEFAULT_STARTUP_TIMEOUT = 10.0
+# Backstop (s) for ``open`` (await ``SessionStart``) and ``send_turn`` (await
+# ``Stop``). This is a *liveness net only* — the authoritative signal is the
+# hook event; the backstop merely stops a crashed CLI (one that exits before
+# firing the hook) from hanging the worker forever. It must therefore be large.
+# Override via the ``claude_session_backstop_seconds`` key under ``[worker]``.
+# Callers MUST pre-trust the cwd (see ``trust_directory``) or interactive
+# ``claude`` blocks on the folder-trust dialog and never fires ``SessionStart``.
+_DEFAULT_BACKSTOP = 600.0
 # Gap between writing the bracketed-paste block and the Enter that submits it.
 # Sending them in one write lets the trailing CR be absorbed as a literal
 # newline inside the (multi-line) input rather than submitting the turn.
@@ -95,17 +108,38 @@ _CONTROL_RECV_BYTES = 256
 # One-line command the control socket understands.
 _CONTROL_INTERRUPT = "interrupt"
 
+# Event-listener (inbound hook channel) tunables. Hooks connect to the
+# per-session socket, write one event line, and disconnect, so connections are
+# short-lived; the accept timeout lets the loop notice ``_closed`` on shutdown.
+_EVENT_BACKLOG = 16
+_EVENT_ACCEPT_TIMEOUT = 0.5
+_EVENT_RECV_TIMEOUT = 2.0
+_EVENT_RECV_BYTES = 64 * 1024
+
+# Selectable inbound event source (migration seam, #178). "hooks" is the new
+# hook-driven control-channel path; "jsonl" is the legacy poll/parse fallback.
+SESSION_EVENTS_HOOKS = "hooks"
+SESSION_EVENTS_JSONL = "jsonl"
+
 
 class ClaudeSessionError(Exception):
     """Base class for errors raised by :class:`ClaudeSession`."""
 
 
 class ReadinessTimeout(ClaudeSessionError):
-    """Raised when the session JSONL never appears within the readiness window."""
+    """Raised when no ``SessionStart`` event arrives within the backstop window.
+
+    The backstop is a liveness net only — this signals the CLI likely died
+    before firing the hook, not a slow-but-healthy startup.
+    """
 
 
 class TurnTimeout(ClaudeSessionError):
-    """Raised when a ``send_turn`` does not reach a terminal entry in time."""
+    """Raised when no ``Stop`` event arrives within the backstop window.
+
+    Like :class:`ReadinessTimeout`, the backstop is a liveness net: it means the
+    CLI fired no ``Stop`` hook in time and is probably dead, not merely slow.
+    """
 
 
 class TurnInterrupted(ClaudeSessionError):
@@ -113,9 +147,11 @@ class TurnInterrupted(ClaudeSessionError):
 
 
 class QuotaExceededError(ClaudeSessionError):
-    """Raised from ``send_turn`` when the JSONL surface shows a quota error.
+    """Raised from ``send_turn`` when a genuine Claude usage-limit error appears.
 
-    Carries the offending text in ``output`` so callers can reuse
+    Detected by a bounded post-``Stop`` transcript read (the ``Stop`` event is
+    the authoritative *signal*; the read pulls the assistant content the signal
+    refers to). Carries the offending text in ``output`` so callers can reuse
     :meth:`ClaudeQuotaMixin._handle_quota_error` to parse the reset time.
     """
 
@@ -291,13 +327,312 @@ class _JsonlTailer:
         return entries
 
 
+class SessionEventSource:
+    """Strategy for how a :class:`ClaudeSession` learns of lifecycle events.
+
+    Two implementations exist for the #178 migration: :class:`HookEventSource`
+    (the new hook-driven control channel) and :class:`JsonlEventSource` (the
+    legacy poll/parse fallback, kept selectable for one release). Each owns the
+    "wait for readiness" and "wait for turn completion" semantics; the session
+    delegates ``open`` / ``send_turn`` to it.
+    """
+
+    def bind(self, session: "ClaudeSession") -> None:
+        """Set up any resources needed *before* the child is forked."""
+
+    def started(self, session: "ClaudeSession") -> None:
+        """Notify that the child has been forked (parent side)."""
+
+    def await_ready(self, session: "ClaudeSession", *, backstop: float) -> None:
+        """Block until the session is ready, or raise :class:`ReadinessTimeout`."""
+        raise NotImplementedError
+
+    def run_turn(
+        self, session: "ClaudeSession", prompt: str, *, backstop: float,
+    ) -> "TurnResult":
+        """Inject *prompt* and block until the turn completes."""
+        raise NotImplementedError
+
+    def close(self) -> None:
+        """Release any resources (idempotent)."""
+
+
+class HookEventSource(SessionEventSource):
+    """Hook-driven event source (#178).
+
+    Binds a per-session Unix-domain stream socket *before* the child is forked,
+    so a ``SessionStart`` hook firing immediately after launch always has a
+    listener. A background thread accepts short-lived hook connections, decodes
+    one event line per connection, and routes it:
+
+    * ``session_start`` → sets the readiness :class:`threading.Event`;
+    * ``stop`` → enqueued on the turn-completion queue;
+    * ``pre_tool`` / ``post_tool`` → fanned out to tool observers.
+
+    The ``Stop`` event carries the assistant text (``last_assistant_message``)
+    and an interrupt flag derived (inside the hook) from the transcript tail, so
+    ``run_turn`` needs no JSONL parse for the *signal*. It still does a bounded
+    post-``Stop`` transcript read to detect a genuine quota/usage-limit error
+    (the addendum's chosen approach) and to backfill ``text`` if the payload
+    omitted it.
+    """
+
+    def __init__(self) -> None:
+        self._sock: socket.socket | None = None
+        self._thread: threading.Thread | None = None
+        self._path: Path | None = None
+        self._ready = threading.Event()
+        self._stops: "queue.Queue[dict]" = queue.Queue()
+        self._closed = threading.Event()
+        self._session: ClaudeSession | None = None
+
+    # -- lifecycle ------------------------------------------------------
+
+    def bind(self, session: "ClaudeSession") -> None:
+        self._session = session
+        path = session_hooks.channel_path(session.session_id)
+        self._path = path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_socket():
+            path.unlink()
+        elif path.exists():
+            raise ClaudeSessionError(
+                f"event-channel path {path} exists and is not a socket",
+            )
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(str(path))
+        sock.listen(_EVENT_BACKLOG)
+        sock.settimeout(_EVENT_ACCEPT_TIMEOUT)
+        self._sock = sock
+        self._thread = threading.Thread(
+            target=self._accept_loop,
+            name=f"claude-events-{session.session_id[:8]}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _accept_loop(self) -> None:
+        sock = self._sock
+        if sock is None:
+            return
+        while not self._closed.is_set():
+            try:
+                conn, _ = sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            with conn:
+                try:
+                    conn.settimeout(_EVENT_RECV_TIMEOUT)
+                    data = conn.recv(_EVENT_RECV_BYTES)
+                except OSError:
+                    continue
+            self._dispatch(data)
+
+    def _dispatch(self, data: bytes) -> None:
+        # One connection may carry one line; split defensively in case a hook
+        # batches more than one.
+        for raw in data.split(b"\n"):
+            event = session_hooks.decode_event(raw)
+            if event is None:
+                continue
+            kind = event.get("event")
+            if kind == session_hooks.EVENT_SESSION_START:
+                self._ready.set()
+            elif kind == session_hooks.EVENT_STOP:
+                self._stops.put(event)
+            elif kind in (session_hooks.EVENT_PRE_TOOL, session_hooks.EVENT_POST_TOOL):
+                if self._session is not None:
+                    self._session._notify_tool_observers(event)
+
+    def await_ready(self, session: "ClaudeSession", *, backstop: float) -> None:
+        deadline = time.monotonic() + backstop
+        while True:
+            if self._ready.wait(timeout=min(_POLL_INTERVAL, backstop)):
+                return
+            if session._closed.is_set():
+                raise ClaudeSessionError("session process exited during startup")
+            if time.monotonic() >= deadline:
+                raise ReadinessTimeout(
+                    f"no SessionStart hook within {backstop:.0f}s for session "
+                    f"{session.session_id} — CLI process likely dead",
+                )
+
+    def run_turn(
+        self, session: "ClaudeSession", prompt: str, *, backstop: float,
+    ) -> "TurnResult":
+        # Drain stale Stop events so a previous turn's completion is not
+        # mistaken for this one (mirrors the JSONL tailer's discard at turn
+        # start; correlation is by sequencing under the per-turn lock).
+        self._drain_stops()
+        session._inject_prompt(prompt)
+
+        deadline = time.monotonic() + backstop
+        while True:
+            try:
+                event = self._stops.get(timeout=min(_POLL_INTERVAL, backstop))
+                break
+            except queue.Empty:
+                if session._closed.is_set():
+                    # The PTY closed. A Stop may have raced in just before EOF
+                    # (turn completed, then the process exited) — honour it
+                    # rather than reporting a spurious mid-turn exit.
+                    try:
+                        event = self._stops.get_nowait()
+                        break
+                    except queue.Empty:
+                        raise ClaudeSessionError("session process exited mid-turn")
+                if time.monotonic() >= deadline:
+                    raise TurnTimeout(
+                        f"no Stop hook within {backstop:.0f}s for session "
+                        f"{session.session_id} — CLI process likely dead",
+                    )
+
+        was_interrupted = bool(event.get("interrupted"))
+        text = event.get("text") or ""
+        transcript_path = event.get("transcript_path")
+
+        # Bounded post-Stop transcript read: detect a genuine usage-limit error
+        # (the addendum's chosen quota path) and backfill assistant text when the
+        # Stop payload omitted ``last_assistant_message`` (e.g. a tool-only turn).
+        quota_text = session._scan_transcript_after_stop(transcript_path, want_text=not text)
+        if quota_text is not None and quota_text.quota_output is not None:
+            raise QuotaExceededError(quota_text.quota_output)
+        if not text and quota_text is not None and quota_text.assistant_text:
+            text = quota_text.assistant_text
+
+        # The real ``Stop`` hook carries no ``stop_reason`` (only
+        # ``stop_hook_active``); a Stop firing without an interrupt *means* the
+        # turn ended normally, so default to "end_turn". An interrupt is derived
+        # from the transcript tail (inside the hook) → "interrupted".
+        if was_interrupted:
+            stop_reason: str | None = "interrupted"
+        else:
+            stop_reason = event.get("stop_reason") or "end_turn"
+        return TurnResult(
+            text=text,
+            stop_reason=stop_reason,
+            was_interrupted=was_interrupted,
+            entries_added=0,
+        )
+
+    def _drain_stops(self) -> None:
+        try:
+            while True:
+                self._stops.get_nowait()
+        except queue.Empty:
+            return
+
+    def close(self) -> None:
+        self._closed.set()
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+        if self._path is not None:
+            try:
+                self._path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+class JsonlEventSource(SessionEventSource):
+    """Legacy poll/parse event source (pre-#178), kept selectable for one release.
+
+    Wraps the original ``_await_readiness`` grace poll and JSONL tailing
+    verbatim. Selected via ``[worker] session_events = "jsonl"``; scheduled for
+    deletion once the hook path has soaked.
+    """
+
+    def __init__(self, debounce: float) -> None:
+        self._debounce = debounce
+        self._tailer: _JsonlTailer | None = None
+
+    def bind(self, session: "ClaudeSession") -> None:
+        self._tailer = _JsonlTailer(session.jsonl_path)
+
+    def await_ready(self, session: "ClaudeSession", *, backstop: float) -> None:
+        # Legacy grace: the JSONL is not written until the first turn, so we wait
+        # only up to a short grace (capped by the backstop) for a pre-existing
+        # transcript, then proceed — the first turn creates it. Use a modest
+        # cap so a healthy fresh session is not delayed by the large backstop.
+        grace = min(backstop, 10.0)
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            if session.jsonl_path.exists():
+                return
+            if session._closed.is_set():
+                raise ClaudeSessionError("session process exited during startup")
+            time.sleep(_POLL_INTERVAL)
+
+    def run_turn(
+        self, session: "ClaudeSession", prompt: str, *, backstop: float,
+    ) -> "TurnResult":
+        tailer = self._tailer
+        if tailer is None:  # pragma: no cover - bind always runs first
+            raise ClaudeSessionError("jsonl source not bound")
+        tailer.read_new()  # discard pre-turn entries
+        session._inject_prompt(prompt)
+
+        added: list[dict] = []
+        terminal: dict | None = None
+        deadline = time.monotonic() + backstop
+        while time.monotonic() < deadline:
+            for entry in tailer.read_new():
+                added.append(entry)
+                session._check_quota(entry)
+                if terminal is None and (
+                    _is_terminal_assistant(entry) or _is_interrupt(entry)
+                ):
+                    terminal = entry
+            if terminal is not None:
+                break
+            if session._closed.is_set():
+                raise ClaudeSessionError("session process exited mid-turn")
+            time.sleep(_POLL_INTERVAL)
+        else:
+            raise TurnTimeout(
+                f"No terminal entry within {backstop:.0f}s for session "
+                f"{session.session_id}",
+            )
+
+        time.sleep(self._debounce)
+        for entry in tailer.read_new():
+            added.append(entry)
+            session._check_quota(entry)
+
+        was_interrupted = _is_interrupt(terminal)
+        stop_reason = session._stop_reason(terminal, was_interrupted)
+        text = session._assistant_text(added)
+        return TurnResult(
+            text=text,
+            stop_reason=stop_reason,
+            was_interrupted=was_interrupted,
+            entries_added=len(added),
+        )
+
+
+@dataclass
+class _TranscriptScan:
+    """Result of a bounded post-``Stop`` transcript read."""
+
+    quota_output: str | None
+    assistant_text: str
+
+
 class ClaudeSession:
     """A single, persistent interactive ``claude`` process over a PTY.
 
     The process is started once with :meth:`open` and reused across turns;
-    :meth:`send_turn` injects a prompt and blocks until the transcript shows a
-    terminal entry.  :meth:`interrupt` sends ESC to abort an in-flight turn
-    without killing the process.
+    :meth:`send_turn` injects a prompt and blocks until a ``Stop`` hook event
+    arrives.  :meth:`interrupt` sends ESC to abort an in-flight turn without
+    killing the process.
     """
 
     def __init__(
@@ -313,7 +648,8 @@ class ClaudeSession:
         cols: int = _DEFAULT_COLS,
         rows: int = _DEFAULT_ROWS,
         debounce: float = _DEFAULT_DEBOUNCE,
-        startup_timeout_seconds: float = _DEFAULT_STARTUP_TIMEOUT,
+        backstop_seconds: float = _DEFAULT_BACKSTOP,
+        session_events: str = SESSION_EVENTS_HOOKS,
         ring_bytes: int = _DEFAULT_RING_BYTES,
     ) -> None:
         self.cwd = Path(cwd)
@@ -324,16 +660,28 @@ class ClaudeSession:
         self._cols = cols
         self._rows = rows
         self._debounce = debounce
-        self._startup_timeout = startup_timeout_seconds
+        self._backstop = backstop_seconds
+        self._session_events = session_events
         self._ring_bytes = ring_bytes
 
         self._jsonl_path = jsonl_path_for(self.cwd, self.session_id)
         self._log_path = log_file if log_file is not None else self._default_log_path()
         self._control_socket_path = Path(control_socket) if control_socket is not None else None
 
+        # The inbound event source (migration seam, #178). Defaults to the
+        # hook-driven control channel; the legacy JSONL path is selectable.
+        if session_events == SESSION_EVENTS_JSONL:
+            self._event_source: SessionEventSource = JsonlEventSource(debounce)
+        else:
+            self._event_source = HookEventSource()
+
         self._pid: int | None = None
         self._master_fd: int | None = None
-        self._tailer = _JsonlTailer(self._jsonl_path)
+
+        # Tool-activity observers (dashboard observe path). Each callback receives
+        # the decoded ``pre_tool`` / ``post_tool`` event dict.
+        self._tool_observers: list[Callable[[dict], None]] = []
+        self._tool_observers_lock = threading.Lock()
 
         # One bot turn at a time per session; a future human-attach channel will
         # respect the same lock.
@@ -399,7 +747,12 @@ class ClaudeSession:
     # ------------------------------------------------------------------
 
     def open(self) -> None:
-        """Fork ``claude`` onto a PTY and wait until the transcript exists."""
+        """Fork ``claude`` onto a PTY and wait for the ``SessionStart`` event.
+
+        The event listener is bound **before** ``pty.fork()`` so a hook firing
+        immediately after launch always has a socket to connect to. Readiness is
+        the ``SessionStart`` hook event; the backstop is a liveness net only.
+        """
         if self._pid is not None:
             raise ClaudeSessionError("session already open")
 
@@ -410,6 +763,10 @@ class ClaudeSession:
             except OSError as exc:
                 logger.debug("Could not open session log %s: %s", self._log_path, exc)
                 self._log_fh = None
+
+        # Bind the inbound event source BEFORE forking the child (mirrors the
+        # control-listener pattern) so an immediate SessionStart is never missed.
+        self._event_source.bind(self)
 
         cmd = [
             self._binary,
@@ -443,44 +800,22 @@ class ClaudeSession:
         if self._control_socket_path is not None:
             self._start_control_listener()
 
-        self._await_readiness()
+        self._event_source.started(self)
+        self._event_source.await_ready(self, backstop=self._backstop)
         logger.info(
-            "ClaudeSession ready (pid=%d, session=%s, jsonl=%s)",
-            self._pid, self.session_id, self._jsonl_path,
-        )
-
-    def _await_readiness(self) -> None:
-        """Give the forked ``claude`` a grace period to reach its interactive
-        prompt, then return so the first turn can be sent.
-
-        STOPGAP: interactive ``claude`` does not create the session JSONL until
-        the first turn is submitted, so we cannot wait for the transcript here
-        (it would never appear pre-input). We poll for it up to the grace window
-        — a fast path for the rare case a transcript already exists (resumed
-        sessions, tests) — but proceed anyway once the grace elapses; the first
-        ``send_turn`` creates the transcript and the tailer picks it up. The
-        cwd must be pre-trusted (see :func:`trust_directory`). Aborts early if
-        the process dies. Durable fix: hook-driven readiness (#178).
-        """
-        deadline = time.monotonic() + self._startup_timeout
-        while time.monotonic() < deadline:
-            if self._jsonl_path.exists():
-                return
-            if self._closed.is_set():
-                raise ClaudeSessionError("session process exited during startup")
-            time.sleep(_POLL_INTERVAL)
-        logger.debug(
-            "ClaudeSession %s: startup grace (%.0fs) elapsed without a transcript; "
-            "proceeding to first turn (it will create the transcript)",
-            self.session_id, self._startup_timeout,
+            "ClaudeSession ready (pid=%d, session=%s, events=%s)",
+            self._pid, self.session_id, self._session_events,
         )
 
     def send_turn(self, prompt: str, *, timeout: float) -> TurnResult:
-        """Inject *prompt* and block until the turn reaches a terminal entry.
+        """Inject *prompt* and block until the turn's ``Stop`` event arrives.
 
         Returns a :class:`TurnResult`.  Raises :class:`QuotaExceededError` if a
-        quota message appears, or :class:`TurnTimeout` if no terminal entry is
-        seen within *timeout* seconds.
+        genuine usage-limit error is detected, or :class:`TurnTimeout` if no
+        ``Stop`` event arrives within *timeout* seconds (a liveness backstop).
+
+        *timeout* is the backstop window for this turn; the authoritative signal
+        is the ``Stop`` hook event, not the timeout.
         """
         if self._pid is None:
             raise ClaudeSessionError("session not open")
@@ -491,55 +826,10 @@ class ClaudeSession:
             with self._turn_state_lock:
                 self._turn_in_progress = True
             try:
-                return self._run_turn(prompt, timeout=timeout)
+                return self._event_source.run_turn(self, prompt, backstop=timeout)
             finally:
                 with self._turn_state_lock:
                     self._turn_in_progress = False
-
-    def _run_turn(self, prompt: str, *, timeout: float) -> TurnResult:
-        # Consume any entries already on disk so they are not mistaken for
-        # this turn's output.
-        self._tailer.read_new()
-
-        self._inject_prompt(prompt)
-
-        added: list[dict] = []
-        terminal: dict | None = None
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            for entry in self._tailer.read_new():
-                added.append(entry)
-                self._check_quota(entry)
-                if terminal is None and (
-                    _is_terminal_assistant(entry) or _is_interrupt(entry)
-                ):
-                    terminal = entry
-            if terminal is not None:
-                break
-            if self._closed.is_set():
-                raise ClaudeSessionError("session process exited mid-turn")
-            time.sleep(_POLL_INTERVAL)
-        else:
-            raise TurnTimeout(
-                f"No terminal entry within {timeout:.0f}s for session {self.session_id}",
-            )
-
-        # Debounce: let trailing tool/system/snapshot entries flush, then
-        # fold them into the result.
-        time.sleep(self._debounce)
-        for entry in self._tailer.read_new():
-            added.append(entry)
-            self._check_quota(entry)
-
-        was_interrupted = _is_interrupt(terminal)
-        stop_reason = self._stop_reason(terminal, was_interrupted)
-        text = self._assistant_text(added)
-        return TurnResult(
-            text=text,
-            stop_reason=stop_reason,
-            was_interrupted=was_interrupted,
-            entries_added=len(added),
-        )
 
     def interrupt(self) -> bool:
         """Send ESC to abort an in-flight turn (process survives).
@@ -572,6 +862,7 @@ class ClaudeSession:
             self._reap(grace=5.0)
         self._closed.set()
         self._stop_control_listener()
+        self._event_source.close()
         if self._master_fd is not None:
             try:
                 os.close(self._master_fd)
@@ -616,6 +907,38 @@ class ClaudeSession:
         """Release a subscriber registered via :meth:`attach_stream`."""
         with self._subscribers_lock:
             self._subscribers.discard(sub)
+
+    # ------------------------------------------------------------------
+    # Tool-activity observers (dashboard observe path, #178)
+    # ------------------------------------------------------------------
+
+    def add_tool_observer(self, callback: Callable[[dict], None]) -> None:
+        """Subscribe *callback* to ``pre_tool`` / ``post_tool`` hook events.
+
+        Each call receives the decoded event dict (keys: ``event``, ``tool``,
+        ``session_id``). Used by :class:`SessionBridge` to surface authoritative
+        tool activity to the dashboard. No-op for the JSONL source (no tool
+        events). Pair with :meth:`remove_tool_observer`.
+        """
+        with self._tool_observers_lock:
+            self._tool_observers.append(callback)
+
+    def remove_tool_observer(self, callback: Callable[[dict], None]) -> None:
+        """Unsubscribe a callback registered via :meth:`add_tool_observer`."""
+        with self._tool_observers_lock:
+            try:
+                self._tool_observers.remove(callback)
+            except ValueError:
+                pass
+
+    def _notify_tool_observers(self, event: dict) -> None:
+        with self._tool_observers_lock:
+            observers = list(self._tool_observers)
+        for cb in observers:
+            try:
+                cb(event)
+            except Exception:  # pragma: no cover - an observer must not break the listener
+                logger.debug("tool observer raised", exc_info=True)
 
     def operator_write(self, data: bytes) -> str:
         """Route operator keystrokes from an attached dashboard to the PTY.
@@ -814,9 +1137,65 @@ class ClaudeSession:
 
     @staticmethod
     def _check_quota(entry: dict) -> None:
+        """Raise :class:`QuotaExceededError` if *entry* is a genuine quota error.
+
+        Scoped to ``assistant`` / ``system`` entries: a genuine usage-limit
+        message is surfaced by Claude itself, never inside the *user* prompt
+        (which may merely discuss quotas — issue #178). :meth:`_is_quota_error`
+        is also strict (real usage-limit signal only), so a turn whose content
+        only *talks about* rate limits is not misread as a rate-limit hit.
+        """
+        if entry.get("type") not in ("assistant", "system"):
+            return
         text = _entry_text(entry)
         if text and ClaudeQuotaMixin._is_quota_error(text):
             raise QuotaExceededError(text)
+
+    def _scan_transcript_after_stop(
+        self, transcript_path: str | None, *, want_text: bool,
+    ) -> _TranscriptScan | None:
+        """One-shot transcript read triggered by a ``Stop`` event.
+
+        The ``Stop`` event is the authoritative *signal*; this pulls the content
+        it refers to. Returns a :class:`_TranscriptScan` with:
+
+        * ``quota_output`` — the offending text if a genuine usage-limit error is
+          present (the addendum's chosen quota path: a bounded post-``Stop``
+          read, not polling), else ``None``;
+        * ``assistant_text`` — the concatenated assistant text, used to backfill
+          ``TurnResult.text`` when the Stop payload omitted it.
+
+        Returns ``None`` if the transcript cannot be read. This is *not* polling:
+        it reads the file once, after the Stop signal has already fired.
+        """
+        path = Path(transcript_path) if transcript_path else self._jsonl_path
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        assistant_parts: list[str] = []
+        quota_output: str | None = None
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            etype = entry.get("type")
+            if etype in ("assistant", "system"):
+                text = _entry_text(entry)
+                if text and quota_output is None and ClaudeQuotaMixin._is_quota_error(text):
+                    quota_output = text
+            if want_text and etype == "assistant":
+                text = _entry_text(entry)
+                if text:
+                    assistant_parts.append(text)
+        return _TranscriptScan(
+            quota_output=quota_output,
+            assistant_text="\n".join(assistant_parts),
+        )
 
     @staticmethod
     def _stop_reason(terminal: dict, was_interrupted: bool) -> str | None:

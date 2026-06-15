@@ -36,23 +36,57 @@ class _DummyPlainAgent(Agent):
 # -- Tests ----------------------------------------------------------------
 
 class TestIsQuotaError(unittest.TestCase):
-    """ClaudeQuotaMixin._is_quota_error should recognise various rate-limit messages."""
+    """``_is_quota_error`` must fire only on a *genuine* usage-limit error.
+
+    A naive substring match flagged any task whose text merely *discussed*
+    quotas — e.g. issue #178, which is about replacing rate-limit handling — as a
+    rate-limit hit, self-disabling the agent for 30 minutes (#178). Detection is
+    now scoped to specific usage-limit phrasing.
+    """
+
+    # -- genuine usage-limit messages (must fire) --------------------------
 
     def test_hit_your_limit(self) -> None:
         self.assertTrue(ClaudeQuotaMixin._is_quota_error(
             "You've hit your limit · resets 7:30pm (Asia/Calcutta)"))
 
-    def test_rate_limit(self) -> None:
-        self.assertTrue(ClaudeQuotaMixin._is_quota_error("Error: rate limit exceeded"))
-
-    def test_429(self) -> None:
-        self.assertTrue(ClaudeQuotaMixin._is_quota_error("HTTP 429 Too Many Requests"))
-
     def test_usage_limit_reached(self) -> None:
         self.assertTrue(ClaudeQuotaMixin._is_quota_error("usage limit reached, try again later"))
 
-    def test_resource_exhausted(self) -> None:
-        self.assertTrue(ClaudeQuotaMixin._is_quota_error("resource_exhausted"))
+    def test_claude_usage_limit_with_reset_time(self) -> None:
+        self.assertTrue(ClaudeQuotaMixin._is_quota_error(
+            "Claude usage limit reached. Your limit will reset at 2pm (America/New_York)"))
+
+    def test_limit_phrase_with_reset_time(self) -> None:
+        # "limit" + a parseable reset time is a genuine signal even without an
+        # exact canned phrase.
+        self.assertTrue(ClaudeQuotaMixin._is_quota_error(
+            "Your limit will reset at 9am (Europe/London)"))
+
+    # -- topical content that merely DISCUSSES limits (must NOT fire, #178) -
+
+    def test_178_style_prose_is_not_quota(self) -> None:
+        """The exact false-positive class from #178: prose about rate limits."""
+        text = (
+            "This issue replaces the JSONL polling that detects a rate limit / "
+            "quota error. We tail the transcript for a 429 or resource_exhausted "
+            "status and parse 'too many requests'. The quota patterns must be "
+            "tightened so topical content is not misread as a usage-limit hit."
+        )
+        self.assertFalse(ClaudeQuotaMixin._is_quota_error(text))
+
+    def test_bare_rate_limit_phrase_is_not_quota(self) -> None:
+        self.assertFalse(ClaudeQuotaMixin._is_quota_error("Error: rate limit exceeded"))
+
+    def test_bare_429_is_not_quota(self) -> None:
+        self.assertFalse(ClaudeQuotaMixin._is_quota_error("HTTP 429 Too Many Requests"))
+
+    def test_bare_resource_exhausted_is_not_quota(self) -> None:
+        self.assertFalse(ClaudeQuotaMixin._is_quota_error("resource_exhausted"))
+
+    def test_word_quota_alone_is_not_quota(self) -> None:
+        self.assertFalse(ClaudeQuotaMixin._is_quota_error(
+            "Let's add a quota config so the limit is configurable."))
 
     def test_normal_output(self) -> None:
         self.assertFalse(ClaudeQuotaMixin._is_quota_error("Here is the code you requested"))

@@ -37,6 +37,7 @@ from loony_dev.agents.claude_session import (
     OPERATOR_REFUSED,
     ClaudeSession,
 )
+from loony_dev.agents.session_hooks import EVENT_POST_TOOL, EVENT_PRE_TOOL
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,18 @@ def _mic_message(session: ClaudeSession, *, refused: bool = False) -> dict:
     if refused:
         msg["refused"] = True
     return msg
+
+
+def _tool_message(event: dict) -> dict:
+    """Build a ``tool`` control frame from a ``pre_tool`` / ``post_tool`` event.
+
+    ``phase`` is ``"start"`` for ``pre_tool`` and ``"end"`` for ``post_tool``;
+    ``tool`` is the tool name (e.g. ``"Bash"``). This is the authoritative
+    tool-activity signal for the dashboard observe path (#178), independent of
+    the coarse mic/turn state.
+    """
+    phase = "start" if event.get("event") == EVENT_PRE_TOOL else "end"
+    return {"type": "tool", "phase": phase, "tool": event.get("tool")}
 
 
 class _FrameReader:
@@ -143,14 +156,32 @@ class SessionBridge:
         server.bind(self._socket_path)
         server.listen(8)
         self._server = server
+        # Authoritative tool-activity observe path (#178): the session fans out
+        # pre/post tool hook events; we rebroadcast each as a ``tool`` control
+        # frame to every attached dashboard client.
+        self._session.add_tool_observer(self._on_tool_event)
         self._accept_thread = threading.Thread(
             target=self._accept_loop, name="session-bridge-accept", daemon=True,
         )
         self._accept_thread.start()
 
+    def _on_tool_event(self, event: dict) -> None:
+        """Tool observer: broadcast a ``tool`` control frame to all clients."""
+        if event.get("event") not in (EVENT_PRE_TOOL, EVENT_POST_TOOL):
+            return
+        frame = _control(_tool_message(event))
+        with self._conns_lock:
+            conns = list(self._conns)
+        for conn in conns:
+            try:
+                _send(conn, frame)
+            except OSError:
+                pass  # a vanished client is cleaned up by its own pump
+
     def close(self) -> None:
         """Stop serving, drop connections, and unlink the socket (idempotent)."""
         self._stop.set()
+        self._session.remove_tool_observer(self._on_tool_event)
         if self._server is not None:
             try:
                 self._server.close()

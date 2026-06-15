@@ -185,7 +185,7 @@ class _StubSession(unittest.TestCase):
         env = {"CLAUDE_CONFIG_DIR": str(self.config_dir), **self.extra_env}
         self.enterContext(mock.patch.dict(os.environ, env))
         self.session = ClaudeSession(
-            self.cwd, binary=str(_STUB), startup_timeout_seconds=10.0, debounce=0.2,
+            self.cwd, binary=str(_STUB), backstop_seconds=20.0, debounce=0.2,
         )
         self.session.open()
         self.addCleanup(self.session.close)
@@ -342,6 +342,38 @@ class SessionBridgeTestCase(_StubSession):
         # Every disconnect must release its subscriber handle.
         _wait_until(lambda: len(self.session._subscribers) == 0, timeout=5.0)
 
+    def test_tool_events_reach_client_as_control_frames(self) -> None:
+        """(#178) PreToolUse/PostToolUse hook events surface as ``tool`` frames.
+
+        The stub emits a pre_tool + post_tool event around each turn; the bridge
+        rebroadcasts them as authoritative ``tool`` control frames for the
+        dashboard observe path.
+        """
+        client, frames = self._connect()
+        frames.recv_control_until(lambda m: m.get("type") == "mic")
+
+        # A normal (non-LONGTURN) turn completes and emits the tool events.
+        result: dict = {}
+
+        def run() -> None:
+            result["turn"] = self.session.send_turn("do some work", timeout=20.0)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        try:
+            start = frames.recv_control_until(
+                lambda m: m.get("type") == "tool" and m.get("phase") == "start",
+                timeout=10.0,
+            )
+            self.assertEqual(start["tool"], "Bash")
+            end = frames.recv_control_until(
+                lambda m: m.get("type") == "tool" and m.get("phase") == "end",
+                timeout=10.0,
+            )
+            self.assertEqual(end["tool"], "Bash")
+        finally:
+            t.join(timeout=10.0)
+
 
 # ---------------------------------------------------------------------------
 # Web endpoints: inject + task-sessions + attach websocket proxy
@@ -403,7 +435,7 @@ class AttachWebSocketTestCase(unittest.TestCase):
             os.environ, {"CLAUDE_CONFIG_DIR": str(self.config_dir), "STUB_LONGTURN_SECS": "20"},
         ))
         self.session = ClaudeSession(
-            self.cwd, binary=str(_STUB), startup_timeout_seconds=10.0, debounce=0.2,
+            self.cwd, binary=str(_STUB), backstop_seconds=20.0, debounce=0.2,
         )
         self.session.open()
         self.addCleanup(self.session.close)

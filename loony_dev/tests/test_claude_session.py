@@ -20,6 +20,7 @@ from unittest import mock
 from loony_dev.agents.claude_session import (
     ClaudeSession,
     QuotaExceededError,
+    ReadinessTimeout,
     TurnResult,
     _entry_text,
     _is_interrupt,
@@ -125,7 +126,7 @@ class _StubSessionTest(unittest.TestCase):
         self.session = ClaudeSession(
             self.cwd,
             binary=str(_STUB),
-            startup_timeout_seconds=10.0,
+            backstop_seconds=20.0,
             debounce=0.2,
         )
 
@@ -202,7 +203,7 @@ class TestControlSocketInterrupt(_StubSessionTest):
         self.session.close()
         self.sock_path = Path(self.enterContext(_tmpdir())) / "ctl.sock"
         self.session = ClaudeSession(
-            self.cwd, binary=str(_STUB), startup_timeout_seconds=10.0, debounce=0.2,
+            self.cwd, binary=str(_STUB), backstop_seconds=20.0, debounce=0.2,
             control_socket=self.sock_path,
         )
 
@@ -259,34 +260,38 @@ class TestControlSocketInterrupt(_StubSessionTest):
         self.assertFalse(self.sock_path.exists())
 
 
-class TestStartupGraceProceeds(_StubSessionTest):
-    """STOPGAP (#178): interactive ``claude`` writes no transcript until the
-    first turn, so ``open`` must PROCEED after the startup grace even when no
-    JSONL appears — not raise. The first ``send_turn`` creates the transcript.
-    The grace window is bounded by ``startup_timeout_seconds``.
+class TestOpenBlocksOnSessionStart(_StubSessionTest):
+    """(#178) ``open`` blocks on the ``SessionStart`` hook event; the backstop is
+    a liveness net only. When the CLI never fires ``SessionStart`` (here: a stub
+    that exits without signalling), ``open`` raises :class:`ReadinessTimeout`
+    rather than hanging forever or proceeding blind.
     """
 
-    extra_env = {"STUB_NO_JSONL": "1"}
+    extra_env = {"STUB_NO_SESSION_START": "1"}
 
     def setUp(self) -> None:
         super().setUp()
         self.session.close()
+        # A short backstop so the liveness-timeout path is fast to exercise.
         self.session = ClaudeSession(
-            self.cwd, binary=str(_STUB), startup_timeout_seconds=0.3, debounce=0.2,
+            self.cwd, binary=str(_STUB), backstop_seconds=0.5, debounce=0.2,
         )
 
-    def test_open_proceeds_without_transcript(self) -> None:
+    def test_open_times_out_when_no_session_start(self) -> None:
+        with self.assertRaises(ReadinessTimeout):
+            self.session.open()
+
+
+class TestOpenReadyOnSessionStart(_StubSessionTest):
+    """``open`` returns promptly once the ``SessionStart`` event arrives — it does
+    not wait out the (large) backstop on a healthy session."""
+
+    def test_open_returns_fast(self) -> None:
         start = time.monotonic()
-        self.session.open()  # must not raise
-        try:
-            elapsed = time.monotonic() - start
-            # Waited ~the grace window, then proceeded (bounded well under the
-            # old 120s default).
-            self.assertGreaterEqual(elapsed, 0.3)
-            self.assertLess(elapsed, 10.0)
-            self.assertFalse(self.session.jsonl_path.exists())
-        finally:
-            self.session.close()
+        self.session.open()  # backstop is 20s, but SessionStart fires immediately
+        elapsed = time.monotonic() - start
+        self.assertLess(elapsed, 10.0)
+        self.assertTrue(self.session.is_open)
 
 
 class TestTrustDirectory(unittest.TestCase):
@@ -360,7 +365,7 @@ class TestRealClaudeIntegration(unittest.TestCase):
     def test_persistent_session_four_events(self) -> None:
         cwd = Path(self.enterContext(_tmpdir()))
         self.enterContext(_trusted_dir(cwd))
-        session = ClaudeSession(cwd, startup_timeout_seconds=15.0)
+        session = ClaudeSession(cwd, backstop_seconds=120.0)
         session.open()
         try:
             pid = session.pid
