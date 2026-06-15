@@ -453,6 +453,90 @@ button.action:hover,
 .kv dd { margin: 0; word-break: break-word; }
 .join-link { display: inline-block; margin-top: var(--sp-2); text-decoration: none; }
 
+/* ---- Sessions view --------------------------------------------------- */
+.session-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+  gap: var(--sp-4);
+}
+.session-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.session-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+.session-repo { font-weight: 600; word-break: break-all; }
+
+.session-badge {
+  font-size: var(--fs-0);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-radius: 999px;
+  padding: var(--sp-1) var(--sp-3);
+  white-space: nowrap;
+}
+.session-badge-live { color: var(--primary-contrast); background: var(--running); }
+.session-badge-offline { color: var(--primary-contrast); background: var(--stale); }
+.session-badge-unknown { color: var(--primary-contrast); background: var(--unknown); }
+
+.session-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--fs-1);
+}
+.session-meta-row { display: flex; justify-content: space-between; gap: var(--sp-3); }
+.session-meta-key { color: var(--text-muted); }
+.session-meta-val { word-break: break-all; text-align: right; }
+.session-meta-val.mono { font-family: var(--font-mono); }
+.session-meta-row.session-stale .session-meta-val { color: var(--unknown); font-weight: 600; }
+
+/* Large, thumb-friendly join button. */
+.session-open {
+  display: block;
+  text-align: center;
+  text-decoration: none;
+  font-weight: 600;
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.session-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.session-qr-img {
+  width: 100%;
+  max-width: 12rem;
+  height: auto;
+  background: #fff; /* QR needs a light quiet zone even in dark mode */
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  /* The GIF is rendered 1:1; keep edges crisp when CSS scales it up. */
+  image-rendering: pixelated;
+}
+.session-qr-hint { margin: 0; }
+
+.session-note {
+  margin: 0;
+  font-size: var(--fs-2);
+  color: var(--text-muted);
+  font-style: italic;
+}
+.session-note-offline { color: var(--danger); font-style: normal; }
+
 /* ---- Skills & Commands editor --------------------------------------- */
 .editor-grid {
   display: grid;

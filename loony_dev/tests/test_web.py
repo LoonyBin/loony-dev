@@ -218,9 +218,23 @@ class WebAppTestCase(unittest.TestCase):
 
     def test_static_assets_reachable(self) -> None:
         # The app shell loads its stylesheet and ES modules from /static.
-        for path in ("/static/app.css", "/static/js/app.js", "/static/js/attach.js"):
+        for path in (
+            "/static/app.css",
+            "/static/js/app.js",
+            "/static/js/sessions.js",
+            "/static/js/attach.js",
+        ):
             resp = self.client.get(path)
             self.assertEqual(resp.status_code, 200, path)
+
+    def test_index_wires_sessions_view(self) -> None:
+        # The Sessions view renders join URL + QR cards (#157): the shell must
+        # load the client-side QR library and expose the card-grid container the
+        # sessions module renders into.
+        body = self.client.get("/").text
+        self.assertIn('qrcode-generator', body)
+        self.assertIn('id="sessions"', body)
+        self.assertIn('class="session-grid"', body)
 
     def test_workers_endpoint(self) -> None:
         resp = self.client.get("/api/workers")
