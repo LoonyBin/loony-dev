@@ -1,22 +1,14 @@
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from loony_dev.models import RateLimitedError, truncate_for_log
-from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, Task
+from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, Task, _slugify
 from loony_dev.tasks.planning_task import PLAN_MARKER, PLAN_MARKER_PREFIX
 
 _MAX_HOOK_OUTPUT_CHARS = 500
-_SLUG_MAX_LENGTH = 50
-
-
-def _slugify(text: str) -> str:
-    text = text.lower()
-    text = re.sub(r"[^a-z0-9]+", "-", text)
-    return text.strip("-")[:_SLUG_MAX_LENGTH].rstrip("-")
 
 
 def _sanitize_hook_output(output: str) -> str:

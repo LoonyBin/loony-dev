@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from loony_dev.github import Repo
+    from loony_dev.github import PullRequest, Repo
     from loony_dev.models import TaskResult
 
 
@@ -23,6 +23,29 @@ CI_FAILURE_MARKER = "<!-- loony-ci-failure -->"
 IN_ERROR_MARKER = "<!-- loony-in-error -->"
 
 _LAST_SEEN_RE = re.compile(r"last-seen=([^\s>]+)")
+
+_SLUG_MAX_LENGTH = 50
+
+
+def _slugify(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    return text.strip("-")[:_SLUG_MAX_LENGTH].rstrip("-")
+
+
+def issue_or_pr_keys(pr: PullRequest) -> tuple[str, str]:
+    """Return ``(session_key, worktree_key)`` for a PR-side task.
+
+    When the PR resolves to an originating issue (``PullRequest.issue_number``),
+    all of its phases — review, CI fix, conflict resolution — share the issue's
+    ``issue:N`` session and ``issue-N`` worktree, so they reuse one cwd and one
+    Claude session across the whole cycle. Externally-opened PRs with no
+    originating issue fall back to a per-PR ``pr:P`` / ``pr-P`` pair.
+    """
+    n = pr.issue_number
+    if n is not None:
+        return f"issue:{n}", f"issue-{n}"
+    return f"pr:{pr.number}", f"pr-{pr.number}"
 
 
 def encode_marker(prefix: str, last_seen: str) -> str:

@@ -137,9 +137,13 @@ class TestFindWorkOverlap(unittest.TestCase):
         self.agent.can_handle.return_value = True
         self.orch = _make_orchestrator(self.tmp, self.git, [self.agent], max_concurrent=3)
 
-    def test_shared_target_branch_yields_one(self) -> None:
-        a = _make_task(worktree_key="k1", target_branch="feature/x")
-        b = _make_task(worktree_key="k2", target_branch="feature/x")
+    def test_shared_worktree_key_yields_one(self) -> None:
+        # After key unification (#181) the dedupe identity is worktree-key-first,
+        # and the invariant *same branch ⇒ same worktree_key* means two tasks that
+        # share a branch also share a worktree_key. Two phases of one issue (e.g.
+        # review + CI fix on the same PR) collapse to one identity → one dispatch.
+        a = _make_task(worktree_key="issue-5", target_branch="issue-5/slug")
+        b = _make_task(worktree_key="issue-5", target_branch="issue-5/slug")
         with patch("loony_dev.orchestrator.TASK_CLASSES", [_fake_task_class([a, b])]):
             batch = self.orch._find_work(limit=2, claimed=set())
         self.assertEqual(len(batch), 1)
@@ -155,7 +159,7 @@ class TestFindWorkOverlap(unittest.TestCase):
         a = _make_task(worktree_key="k1", target_branch="feature/x")
         b = _make_task(worktree_key="k2", target_branch="feature/y")
         with patch("loony_dev.orchestrator.TASK_CLASSES", [_fake_task_class([a, b])]):
-            batch = self.orch._find_work(limit=2, claimed={"feature/x"})
+            batch = self.orch._find_work(limit=2, claimed={"k1"})
         self.assertEqual(len(batch), 1)
         self.assertEqual(batch[0][0], b)
 

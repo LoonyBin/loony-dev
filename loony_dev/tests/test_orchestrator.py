@@ -126,17 +126,39 @@ class TestWorktreeLifecycle(unittest.TestCase):
         )
         self.git.remove_worktree.assert_called_once_with(expected_path)
 
-    def test_planning_task_forks_throwaway_branch_from_default(self) -> None:
-        # A task with a worktree_key but no target_branch (e.g. PlanningTask)
-        # must NOT reuse the default branch — the base checkout already holds it.
-        task = self._make_task(worktree_key="issue-5-plan", target_branch=None)
+    def test_worktree_only_task_forks_throwaway_branch_from_default(self) -> None:
+        # A worktree task with neither a target_branch nor a feature branch must
+        # NOT reuse the default branch directly — the base checkout already holds
+        # it — so it forks a throwaway branch named after the worktree key.
+        task = self._make_task(worktree_key="aux-5", target_branch=None)
+        self.agent.execute.return_value = TaskResult(success=True, output="", summary="aux")
+
+        self.orch.dispatch(self.agent, task)
+
+        expected_path = self.tmp / ".worktrees" / "owner" / "repo" / "aux-5"
+        self.git.create_worktree.assert_called_once_with(
+            branch="aux-5", path=expected_path, base="main",
+        )
+
+    def test_planning_task_uses_feature_branch_from_default(self) -> None:
+        # PlanningTask (#181) owns the issue's feature branch and creates it from
+        # the default branch in the shared issue-N worktree — same as IssueTask.
+        from loony_dev.tasks.planning_task import PlanningTask
+
+        issue = MagicMock()
+        issue.number = 5
+        issue.title = "Add feature"
+        task = PlanningTask(issue, None, [])
+        task.on_start = MagicMock()
+        task.on_complete = MagicMock()
+        task.on_failure = MagicMock()
         self.agent.execute.return_value = TaskResult(success=True, output="", summary="plan")
 
         self.orch.dispatch(self.agent, task)
 
-        expected_path = self.tmp / ".worktrees" / "owner" / "repo" / "issue-5-plan"
+        expected_path = self.tmp / ".worktrees" / "owner" / "repo" / "issue-5"
         self.git.create_worktree.assert_called_once_with(
-            branch="issue-5-plan", path=expected_path, base="main",
+            branch="issue-5/add-feature", path=expected_path, base="main",
         )
 
 

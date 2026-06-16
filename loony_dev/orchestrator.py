@@ -171,14 +171,20 @@ class Orchestrator:
 
     @staticmethod
     def _task_identity(task: Task) -> str:
-        """A task's dedupe identity: target_branch when set, else worktree_key.
+        """A task's dedupe identity: worktree_key when set, else target_branch.
 
         Two tasks sharing this identity contend for the same branch/worktree and
         must never run concurrently (git refuses the same branch in two
-        worktrees). ``id(task)`` is the last-resort fallback for tasks with
+        worktrees). ``worktree_key`` is primary because key unification (#181)
+        holds the invariant *same branch ⇒ same worktree_key*: every phase of an
+        issue (plan, implement, review, CI fix, conflict) shares ``issue-N``, and
+        external PRs share ``pr-P``. Keying on the worktree therefore collapses
+        all same-issue tasks to one identity so the ``issue-N`` path can never be
+        double-checked-out. ``target_branch`` covers no-worktree tasks that still
+        pin a branch, and ``id(task)`` is the last-resort fallback for tasks with
         neither, which never overlap anyway.
         """
-        return task.target_branch or task.worktree_key or f"task-{id(task)}"
+        return task.worktree_key or task.target_branch or f"task-{id(task)}"
 
     def _tick(self) -> None:
         self.repo.clear_tick_cache()
@@ -342,14 +348,18 @@ class Orchestrator:
         default branch, so no worktree may reuse the default branch directly.
 
         - PR tasks operate on an existing branch (``target``); fork from it.
-        - IssueTask creates its feature branch from the default branch.
-        - Everything else (e.g. PlanningTask, which only reads code) forks a
-          throwaway branch named after ``key`` from the default branch. It is
-          never pushed and is discarded with the worktree.
+        - PlanningTask and IssueTask both own the issue's feature branch
+          (``issue-N/<slug>``) and create it from the default branch. Planning
+          establishes the branch; implementation reuses it. Sharing the branch
+          (and the ``issue-N`` worktree) keeps planning -> implementation a
+          single cwd with no cross-worktree session reuse (#181).
+        - Everything else (a worktree task with neither a target branch nor a
+          feature branch) forks a throwaway branch named after ``key`` from the
+          default branch. It is never pushed and is discarded with the worktree.
         """
         if target:
             return target, None
-        if isinstance(task, IssueTask):
+        if isinstance(task, (PlanningTask, IssueTask)):
             return task.branch_name, self.git.default_branch
         return key, self.git.default_branch
 

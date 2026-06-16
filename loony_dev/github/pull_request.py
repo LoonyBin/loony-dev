@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import time
 from typing import TYPE_CHECKING
@@ -28,6 +29,7 @@ class PullRequest(GitHubItem):
         number: int,
         branch: str = "",
         title: Content | str = "",
+        body: Content | str = "",
         author: str = "",
         head_sha: str = "",
         mergeable: str | None = None,
@@ -42,6 +44,7 @@ class PullRequest(GitHubItem):
         super().__init__(number=number, _repo=_repo)
         self.branch = branch
         self.title = title if isinstance(title, Content) else Content(title)
+        self.body = body if isinstance(body, Content) else Content(body)
         self.author = author
         self.head_sha = head_sha
         self.mergeable = mergeable
@@ -59,7 +62,7 @@ class PullRequest(GitHubItem):
         """Fetch a single PR by number."""
         data = repo.client.gh_json(
             "pr", "view", str(number),
-            "--json", "number,headRefName,headRefOid,title,author,comments,reviews,labels,mergeable,updatedAt,assignees",
+            "--json", "number,headRefName,headRefOid,title,body,author,comments,reviews,labels,mergeable,updatedAt,assignees",
         )
         return cls._from_api(data, repo)
 
@@ -77,7 +80,7 @@ class PullRequest(GitHubItem):
         data = repo.client.gh_json(
             "pr", "list",
             "--state", "open",
-            "--json", "number,headRefName,headRefOid,title,author,comments,reviews,labels,mergeable,updatedAt,assignees",
+            "--json", "number,headRefName,headRefOid,title,body,author,comments,reviews,labels,mergeable,updatedAt,assignees",
         )
         result = [cls._from_api(item, repo) for item in data]
         logger.debug("PullRequest.list_open() returned %d open PR(s)", len(result))
@@ -119,6 +122,7 @@ class PullRequest(GitHubItem):
             number=pr_number,
             branch=data.get("headRefName", ""),
             title=Content(data.get("title", "")),
+            body=Content(data.get("body", "")),
             author=data.get("author", {}).get("login", ""),
             head_sha=data.get("headRefOid", ""),
             mergeable=data.get("mergeable"),
@@ -139,6 +143,29 @@ class PullRequest(GitHubItem):
     def is_assigned_to(self, username: str) -> bool:
         """Return True if *username* is listed as an assignee."""
         return any(a.get("login", "") == username for a in self.assignees)
+
+    @property
+    def issue_number(self) -> int | None:
+        """The originating issue number for this PR, or None.
+
+        Resolved in priority order, so that bot PRs (whose every branch is
+        ``issue-<N>/<slug>``) unify cleanly onto the issue's worktree/session
+        while externally-opened PRs without an issue fall back to ``None``:
+
+        1. **Branch** ``issue-<N>/...`` — the primary signal.
+        2. **Body** ``closes/fixes/resolves #N`` — the bot writes ``Closes #N``.
+        3. **Title** ``... (#N)`` — the bot PR title format ``{title} (#{number})``.
+        """
+        m = re.match(r"^issue-(\d+)/", self.branch)
+        if m:
+            return int(m.group(1))
+        m = re.search(r"(?i)\b(?:closes|fixes|resolves)\s+#(\d+)\b", str(self.body))
+        if m:
+            return int(m.group(1))
+        m = re.search(r"\(#(\d+)\)\s*$", str(self.title))
+        if m:
+            return int(m.group(1))
+        return None
 
     @property
     def inline_comments(self) -> list[Comment]:

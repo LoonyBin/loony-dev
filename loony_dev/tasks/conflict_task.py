@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from loony_dev.models import RateLimitedError
-from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, Task
+from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, Task, issue_or_pr_keys
 
 if TYPE_CHECKING:
     from loony_dev.github import PullRequest, Repo
@@ -50,11 +50,7 @@ class ConflictResolutionTask(Task):
 
     @property
     def session_key(self) -> str:
-        # Must stay 1:1 with ``worktree_key``: the Claude transcript JSONL path
-        # is derived from (cwd, session_id), so reusing a session id across two
-        # worktrees makes the readiness wait time out. Distinct from the PR
-        # review / CI session keys for the same PR for the same reason.
-        return f"pr:{self.pr.number}:conflicts"
+        return issue_or_pr_keys(self.pr)[0]
 
     @property
     def target_branch(self) -> str:
@@ -62,7 +58,7 @@ class ConflictResolutionTask(Task):
 
     @property
     def worktree_key(self) -> str:
-        return f"pr-{self.pr.number}-conflicts"
+        return issue_or_pr_keys(self.pr)[1]
 
     def describe(self) -> str:
         return (
