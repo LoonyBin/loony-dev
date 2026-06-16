@@ -654,6 +654,80 @@ button.action:hover,
   resize: vertical;
 }
 
+/* JSONL-driven observe conversation (#202). A scrollable transcript of typed
+   blocks rendered from the session's on-disk JSONL — no live terminal. */
+.observe-status { font-size: var(--fs-1); }
+.observe-status-live { color: var(--running); }
+.observe-status-off { color: var(--stale); }
+
+.observe-conv {
+  flex: 1 1 auto;
+  min-height: 360px;
+  height: 60vh;
+  overflow-y: auto;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.obs {
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.obs-label {
+  font-size: var(--fs-0);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: var(--sp-1);
+}
+.obs-body {
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.obs-user { border-left: 3px solid var(--primary); }
+.obs-assistant { border-left: 3px solid var(--running); }
+.obs-thinking { background: var(--surface-2); }
+.obs-thinking summary {
+  cursor: pointer;
+  font-size: var(--fs-0);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.obs-tool { border-left: 3px solid var(--unknown); }
+.obs-tool-args,
+.obs-tool-out {
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: var(--sp-1) 0 0;
+  padding: var(--sp-2);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  max-height: 220px;
+  overflow: auto;
+}
+.obs-tool-err { color: var(--danger); }
+.obs-stop,
+.obs-interrupt {
+  text-align: center;
+  font-size: var(--fs-0);
+  color: var(--text-muted);
+  border: 0;
+  background: none;
+  padding: var(--sp-1);
+}
+.obs-interrupt { color: var(--danger); }
+
 /* Keyboard-visible focus for modal controls (mouse clicks stay quiet via
    :focus-visible). High-contrast outline so focus is obvious on either theme. */
 .modal a:focus-visible,
@@ -663,7 +737,8 @@ button.action:hover,
 .modal textarea:focus-visible,
 #steer-text:focus-visible,
 .attach-mic:focus-visible,
-.attach-term:focus-visible {
+.attach-term:focus-visible,
+.observe-conv:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
 }

@@ -32,7 +32,6 @@ import logging
 import os
 import pty
 import queue
-import re
 import signal
 import socket
 import struct
@@ -44,19 +43,19 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from loony_dev import session as session_module
+from loony_dev import session_transcript
 from loony_dev.agents import session_hooks
 from loony_dev.agents.claude_quota import ClaudeQuotaMixin
 
 logger = logging.getLogger(__name__)
 
-# Assistant ``stop_reason`` values that mark a normally-completed turn.  Other
-# values (notably ``tool_use``) are mid-turn and must not be treated as done.
-TERMINAL_STOP_REASONS = frozenset({"end_turn", "stop_sequence"})
-
-# Canonical text Claude records (as a ``user`` JSONL entry) when a turn is
-# interrupted with ESC.  Matched as a prefix because Claude appends context
-# (e.g. "[Request interrupted by user for tool use]").
-INTERRUPT_PREFIX = "[Request interrupted by user"
+# The JSONL entry-shape constants and predicates have a single source of truth
+# in :mod:`loony_dev.session_transcript` (pure, import-cheap for the web layer,
+# #202). They are re-exported here under their historical names so this module's
+# internals — and the tests that import them — are unchanged.
+TERMINAL_STOP_REASONS = session_transcript.TERMINAL_STOP_REASONS
+INTERRUPT_PREFIX = session_transcript.INTERRUPT_PREFIX
 
 # Bracketed-paste control sequences — let us inject a multi-line prompt as a
 # single paste event rather than line-by-line keystrokes.
@@ -177,25 +176,12 @@ class TurnResult:
     entries_added: int
 
 
-def _project_slug(cwd: Path) -> str:
-    """Return Claude's transcript-directory slug for *cwd*.
-
-    Claude replaces every non-alphanumeric character of the absolute working
-    directory with ``-`` (e.g. ``/home/u/loony-dev`` →
-    ``-home-u-loony-dev``).
-    """
-    return re.sub(r"[^a-zA-Z0-9]", "-", os.path.abspath(str(cwd)))
-
-
-def _claude_config_dir() -> Path:
-    """Return the Claude config root (honours ``CLAUDE_CONFIG_DIR``)."""
-    override = os.environ.get("CLAUDE_CONFIG_DIR")
-    return Path(override) if override else Path.home() / ".claude"
-
-
-def jsonl_path_for(cwd: Path, session_id: str) -> Path:
-    """Compute the JSONL transcript path for *session_id* run in *cwd*."""
-    return _claude_config_dir() / "projects" / _project_slug(cwd) / f"{session_id}.jsonl"
+# Transcript-path helpers now live in :mod:`loony_dev.session` (so the web layer
+# can compute a JSONL path without importing this PTY-heavy module, #202). They
+# are re-exported here under their historical names for backward compatibility.
+_project_slug = session_module.project_slug
+_claude_config_dir = session_module.claude_config_dir
+jsonl_path_for = session_module.jsonl_path_for
 
 
 def _claude_json_path() -> Path:
@@ -256,41 +242,10 @@ def trust_directory(cwd: Path) -> bool:
     return False
 
 
-def _entry_text(entry: dict) -> str:
-    """Extract all human-readable text from a JSONL *entry*.
-
-    Handles the two content shapes seen in transcripts: a plain string, or a
-    list of typed blocks (``text`` / ``thinking`` carry text; ``tool_use`` etc.
-    are skipped).
-    """
-    message = entry.get("message")
-    if not isinstance(message, dict):
-        return ""
-    content = message.get("content")
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    parts: list[str] = []
-    for block in content:
-        if isinstance(block, dict) and isinstance(block.get("text"), str):
-            parts.append(block["text"])
-    return "\n".join(parts)
-
-
-def _is_terminal_assistant(entry: dict) -> bool:
-    if entry.get("type") != "assistant":
-        return False
-    message = entry.get("message")
-    if not isinstance(message, dict):
-        return False
-    return message.get("stop_reason") in TERMINAL_STOP_REASONS
-
-
-def _is_interrupt(entry: dict) -> bool:
-    if entry.get("type") != "user":
-        return False
-    return _entry_text(entry).lstrip().startswith(INTERRUPT_PREFIX)
+# Entry-shape predicates re-exported from the single source of truth (#202).
+_entry_text = session_transcript.entry_text
+_is_terminal_assistant = session_transcript.is_terminal_assistant
+_is_interrupt = session_transcript.is_interrupt
 
 
 class _JsonlTailer:

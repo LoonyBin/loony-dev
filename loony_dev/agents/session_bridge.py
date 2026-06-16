@@ -356,6 +356,9 @@ def publish_session(
         pid=pid if pid is not None else os.getpid(),
         started_at=started_at or datetime.now(timezone.utc).isoformat(),
         socket=str(sock),
+        # Record the cwd too so the dashboard can locate the JSONL transcript
+        # for the observe surface even while a live PTY bridge is present (#202).
+        cwd=str(session.cwd),
     )
     return bridge
 

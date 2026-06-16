@@ -20,6 +20,7 @@ import * as repoDetail from "./repoDetail.js";
 import * as logs from "./logs.js";
 import * as entries from "./entries.js";
 import * as attach from "./attach.js";
+import * as observe from "./observe.js";
 
 // Backstop reconnect delay for the rare case where EventSource lands in the
 // terminal CLOSED state (the browser only auto-retries from CONNECTING).
@@ -122,6 +123,7 @@ function start() {
   entries.init();
   logs.init();
   attach.init();
+  observe.init();
   repoDetail.init();
   connect();
 }

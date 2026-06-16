@@ -96,14 +96,23 @@ class AsyncLogWatcher:
             out.append(line.rstrip("\n"))
         return out
 
-    async def lines(self, *, backlog: int = DEFAULT_BACKLOG) -> AsyncIterator[str]:
-        """Async-iterate the backlog, then new lines appended to the file."""
+    async def lines(self, *, backlog: int | None = DEFAULT_BACKLOG) -> AsyncIterator[str]:
+        """Async-iterate the backlog, then new lines appended to the file.
+
+        *backlog* is the number of pre-existing lines to replay first: ``0``
+        replays none (live-only), a positive int replays the last N, and
+        ``None`` replays the **entire** file (used by the JSONL observe tailer,
+        which needs the full history so a reconnecting client renders an
+        identical conversation, #202).
+        """
         try:
             await self._open_when_available()
-            # Drain the existing content into a bounded deque for the backlog;
-            # this leaves the handle at EOF so live tailing continues seamlessly.
-            if backlog > 0:
-                tail: deque[str] = deque(self._file, maxlen=backlog)
+            # Drain the existing content into a deque for the backlog; this
+            # leaves the handle at EOF so live tailing continues seamlessly. A
+            # ``None`` maxlen keeps every line (full history).
+            if backlog is None or backlog > 0:
+                maxlen = None if backlog is None else backlog
+                tail: deque[str] = deque(self._file, maxlen=maxlen)
                 for line in tail:
                     yield line.rstrip("\n")
             else:
@@ -151,7 +160,7 @@ class AsyncLogWatcher:
 async def tail_lines(
     log_path: Path | str,
     *,
-    backlog: int = DEFAULT_BACKLOG,
+    backlog: int | None = DEFAULT_BACKLOG,
     poll_interval: float = POLL_INTERVAL,
 ) -> AsyncIterator[str]:
     """Emit the last *backlog* lines, then stream new lines as they are appended.
