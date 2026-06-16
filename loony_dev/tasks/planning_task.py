@@ -33,6 +33,59 @@ _REVISION_NOTE_FALLBACK_RE = re.compile(
 )
 
 
+def planning_action(issue: Issue, repo: Repo) -> PlanningTask | None:
+    """Pure predicate: a planning task for *issue* if it needs a plan, else None.
+
+    Returns ``None`` when the plan is already approved (``ready-for-development``
+    present): the next action is implementation, and the stale
+    ``ready-for-planning`` label is reconciled at :meth:`IssueTask.on_start` —
+    not mutated here, so this stays a pure read.
+    """
+    if "ready-for-planning" not in issue.labels:
+        return None
+    if issue.has_other_assignee(repo.bot_name):
+        logger.debug(
+            "Issue #%d is assigned to %s — skipping (not our issue)",
+            issue.number, issue.assignees,
+        )
+        return None
+    if "in-error" in issue.labels:
+        logger.debug("Issue #%d is in-error — skipping", issue.number)
+        return None
+    if "ready-for-development" in issue.labels:
+        logger.debug(
+            "Issue #%d has 'ready-for-development' — plan approved, no planning task",
+            issue.number,
+        )
+        return None
+
+    comments = issue.comments
+    existing_plan, existing_plan_comment_id, new_comments = PlanningTask._analyze_planning_comments(
+        comments, repo.bot_name
+    )
+    if existing_plan is not None:
+        logger.debug(
+            "Issue #%d: existing plan found (%d chars), %d new comment(s) since last plan",
+            issue.number, len(existing_plan), len(new_comments),
+        )
+    else:
+        logger.debug("Issue #%d: no existing plan — will create initial plan", issue.number)
+
+    if existing_plan is None:
+        return PlanningTask(issue, existing_plan, new_comments)
+    if new_comments:
+        authorized_new = [c for c in new_comments if repo.is_authorized(c.author)]
+        if authorized_new:
+            return PlanningTask(issue, existing_plan, authorized_new, existing_plan_comment_id)
+        logger.debug(
+            "Issue #%d: %d new comment(s) but none from authorized users — skipping",
+            issue.number, len(new_comments),
+        )
+        return None
+    logger.debug("Issue #%d: plan exists and no new feedback — skipping", issue.number)
+    return None
+
+
 def _split_revision_note(summary: str) -> tuple[str, str]:
     """Split agent output into (plan, revision_note) on the revision-note delimiter.
 
@@ -81,50 +134,9 @@ class PlanningTask(Task):
 
         for issue in Issue.list(label="ready-for-planning", repo=repo):
             logger.debug("Examining issue #%d: %s (labels=%s)", issue.number, issue.title, issue.labels)
-            if issue.has_other_assignee(repo.bot_name):
-                logger.debug(
-                    "Issue #%d is assigned to %s — skipping (not our issue)",
-                    issue.number, issue.assignees,
-                )
-                continue
-            if "in-error" in issue.labels:
-                logger.debug("Issue #%d is in-error — skipping", issue.number)
-                continue
-            if "ready-for-development" in issue.labels:
-                logger.debug(
-                    "Issue #%d has 'ready-for-development' — plan approved, removing 'ready-for-planning'",
-                    issue.number,
-                )
-                issue.remove_label("ready-for-planning")
-                continue
-            comments = issue.comments
-            existing_plan, existing_plan_comment_id, new_comments = PlanningTask._analyze_planning_comments(
-                comments, repo.bot_name
-            )
-            if existing_plan is not None:
-                logger.debug(
-                    "Issue #%d: existing plan found (%d chars), %d new comment(s) since last plan",
-                    issue.number, len(existing_plan), len(new_comments),
-                )
-            else:
-                logger.debug("Issue #%d: no existing plan — will create initial plan", issue.number)
-
-            if existing_plan is None:
-                yield PlanningTask(issue, existing_plan, new_comments)
-            elif new_comments:
-                authorized_new = [
-                    c for c in new_comments
-                    if repo.is_authorized(c.author)
-                ]
-                if authorized_new:
-                    yield PlanningTask(issue, existing_plan, authorized_new, existing_plan_comment_id)
-                else:
-                    logger.debug(
-                        "Issue #%d: %d new comment(s) but none from authorized users — skipping",
-                        issue.number, len(new_comments),
-                    )
-            else:
-                logger.debug("Issue #%d: plan exists and no new feedback — skipping", issue.number)
+            task = planning_action(issue, repo)
+            if task is not None:
+                yield task
 
     @staticmethod
     def _analyze_planning_comments(

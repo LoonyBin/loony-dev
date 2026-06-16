@@ -15,6 +15,45 @@ if TYPE_CHECKING:
     from loony_dev.models import TaskResult
 
 
+def ci_already_handled(pr: PullRequest, bot_name: str) -> bool:
+    """True if the bot already posted a CI-failure marker after the latest push.
+
+    Idempotency for the CI rung: a marker comment whose timestamp is at or after
+    the PR's ``updatedAt`` (the most recent push) means this failure has been
+    addressed and must not be re-dispatched.
+    """
+    for comment in pr.comments:
+        if CI_FAILURE_MARKER not in comment.body:
+            continue
+        if comment.author != bot_name:
+            continue
+        comment_time = parse_datetime(comment.created_at)
+        if comment_time and pr.updated_at and comment_time >= pr.updated_at:
+            return True
+    return False
+
+
+def ci_failure_action(pr: PullRequest, bot_name: str) -> CIFailureTask | None:
+    """Pure predicate: a CI-fix task for *pr* if it has unhandled failures, else None."""
+    if not pr.is_assigned_to(bot_name):
+        return None
+    if "in-progress" in pr.labels:
+        return None
+    if "in-error" in pr.labels:
+        return None
+    if not pr.head_sha:
+        return None
+
+    failed = pr.check_runs
+    if not failed:
+        return None
+
+    if ci_already_handled(pr, bot_name):
+        return None
+
+    return CIFailureTask(pr=pr, failed_checks=failed)
+
+
 class CIFailureTask(Task):
     task_type = "fix_ci"
     priority = 15
@@ -34,36 +73,9 @@ class CIFailureTask(Task):
         from loony_dev.github import PullRequest
 
         for pr in PullRequest.list_open(repo=repo):
-            if not pr.is_assigned_to(repo.bot_name):
-                continue
-            if "in-progress" in pr.labels:
-                continue
-            if "in-error" in pr.labels:
-                continue
-            if not pr.head_sha:
-                continue
-
-            failed = pr.check_runs
-            if not failed:
-                continue
-
-            # Idempotency: skip if the bot already posted a CI failure marker
-            # comment after the most recent push (updatedAt).
-            already_handled = False
-            for comment in pr.comments:
-                if CI_FAILURE_MARKER not in comment.body:
-                    continue
-                if comment.author != repo.bot_name:
-                    continue
-                comment_time = parse_datetime(comment.created_at)
-                if comment_time and pr.updated_at and comment_time >= pr.updated_at:
-                    already_handled = True
-                    break
-
-            if already_handled:
-                continue
-
-            yield CIFailureTask(pr=pr, failed_checks=failed)
+            task = ci_failure_action(pr, repo.bot_name)
+            if task is not None:
+                yield task
 
     # ------------------------------------------------------------------
     # Task interface

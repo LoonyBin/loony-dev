@@ -24,6 +24,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def issue_action(issue: Issue, repo: Repo) -> IssueTask | None:
+    """Pure predicate: an implementation task for *issue* if it is ready, else None."""
+    if "ready-for-development" not in issue.labels:
+        return None
+    if issue.has_other_assignee(repo.bot_name):
+        logger.debug(
+            "Issue #%d is assigned to %s — skipping (not our issue)",
+            issue.number, issue.assignees,
+        )
+        return None
+    if "in-error" in issue.labels:
+        logger.debug("Issue #%d is in-error — skipping", issue.number)
+        return None
+    comments = issue.comments
+    plan = IssueTask._find_plan(comments, repo.bot_name)
+    if plan is not None:
+        logger.debug("Issue #%d has an approved plan (%d chars)", issue.number, len(plan))
+    else:
+        logger.debug("Issue #%d has no approved plan — will implement from issue body", issue.number)
+    return IssueTask(issue, plan=plan)
+
+
 class IssueTask(Task):
     task_type = "implement_issue"
     priority = 40
@@ -46,22 +68,9 @@ class IssueTask(Task):
 
         for issue in Issue.list(label="ready-for-development", repo=repo):
             logger.debug("Examining issue #%d: %s", issue.number, issue.title)
-            if issue.has_other_assignee(repo.bot_name):
-                logger.debug(
-                    "Issue #%d is assigned to %s — skipping (not our issue)",
-                    issue.number, issue.assignees,
-                )
-                continue
-            if "in-error" in issue.labels:
-                logger.debug("Issue #%d is in-error — skipping", issue.number)
-                continue
-            comments = issue.comments
-            plan = IssueTask._find_plan(comments, repo.bot_name)
-            if plan is not None:
-                logger.debug("Issue #%d has an approved plan (%d chars)", issue.number, len(plan))
-            else:
-                logger.debug("Issue #%d has no approved plan — will implement from issue body", issue.number)
-            yield IssueTask(issue, plan=plan)
+            task = issue_action(issue, repo)
+            if task is not None:
+                yield task
 
     @staticmethod
     def _find_plan(comments: list[Comment], bot_name: str) -> str | None:
@@ -144,6 +153,14 @@ class IssueTask(Task):
 
     def on_start(self, repo: Repo) -> None:
         logger.debug("Issue #%d: removing 'ready-for-development', adding 'in-progress'", self.issue.number)
+        # Reconcile a stale 'ready-for-planning' label: an approved issue can
+        # still carry it from the planning phase (it is kept while awaiting
+        # approval). The transition to implementation is the right point to drop
+        # it — moved here from the old planning-discovery side effect (#197) so
+        # pipeline discovery stays a pure read.
+        if "ready-for-planning" in self.issue.labels:
+            logger.debug("Issue #%d: removing stale 'ready-for-planning' label", self.issue.number)
+            self.issue.remove_label("ready-for-planning")
         self.issue.remove_label("ready-for-development")
         self.issue.add_label("in-progress")
         self.issue.assign()

@@ -34,8 +34,10 @@ from loony_dev.commands import install_commands
 logger = logging.getLogger(__name__)
 
 # Task classes ordered by priority (lowest number = highest priority).
-# The orchestrator iterates these in order, stopping as soon as it finds
-# a task that some configured agent can handle.
+# Since #197 the orchestrator sources work from pipelines (one ``next_task`` per
+# pipeline, see ``loony_dev/pipeline.py``) rather than scanning these directly;
+# this registry is retained as the canonical priority list and a test seam for
+# the per-class ``discover()`` paths.
 TASK_CLASSES = sorted(
     [StuckItemCleanupTask, ConflictResolutionTask, CIFailureTask, PRReviewTask, PlanningTask, IssueTask],
     key=lambda tc: tc.priority,
@@ -229,43 +231,67 @@ class Orchestrator:
         if exc is not None:
             logger.error("Task worker raised unexpectedly: %s", exc, exc_info=exc)
 
+    def _gather_candidates(self) -> list[Task]:
+        """Source of work: one task per pipeline via ``Pipeline.next_task`` (#197).
+
+        Enumerates pipelines once (issue + PR facets grouped by branch key) and
+        collects each pipeline's single highest-priority actionable task. This
+        replaces the six independent ``Task.discover()`` scans; the scheduler in
+        ``_find_work`` — priority arbitration, the ``_free_slots`` cap, and the
+        ``_task_identity`` in-flight dedupe — is unchanged.
+        """
+        from loony_dev.pipeline import Pipeline
+
+        candidates: list[Task] = []
+        for pipeline in Pipeline.discover(self.repo):
+            task = pipeline.next_task(self.repo)
+            if task is not None:
+                logger.debug(
+                    "Pipeline %s -> task '%s'", pipeline.pipeline_key, task.task_type,
+                )
+                candidates.append(task)
+        return candidates
+
     def _find_work(self, limit: int, claimed: set[str]) -> list[tuple[Task, Agent]]:
         """Gather up to *limit* non-overlapping (task, agent) pairs by priority.
 
-        Tasks whose dedupe identity (see ``_task_identity``) is already in
-        *claimed* — either in flight or selected earlier this gather — are
+        Candidates come from ``_gather_candidates`` (one per pipeline). They are
+        arbitrated in the global priority order (lowest ``priority`` number
+        first); tasks whose dedupe identity (see ``_task_identity``) is already
+        in *claimed* — either in flight or selected earlier this gather — are
         skipped, so no two dispatched tasks contend for the same branch/worktree.
         """
+        candidates = self._gather_candidates()
+        # Stable sort by priority preserves pipeline enumeration order within a
+        # priority tier, so the global ordering matches the old class-by-class
+        # scan (which emitted every priority-5 task before any priority-10, …).
+        candidates.sort(key=lambda t: t.priority)
+
         seen = set(claimed)
         results: list[tuple[Task, Agent]] = []
-        for task_class in TASK_CLASSES:
-            logger.debug("Checking %s for work...", task_class.__name__)
-            found_in_class = 0
-            for task in task_class.discover(self.repo):
-                found_in_class += 1
-                identity = self._task_identity(task)
-                if identity in seen:
+        for task in candidates:
+            identity = self._task_identity(task)
+            if identity in seen:
+                logger.debug(
+                    "Task '%s' (id=%s) overlaps in-flight/selected work — skipping",
+                    task.task_type, identity,
+                )
+                continue
+            for agent in self.agents:
+                if agent.can_handle(task):
                     logger.debug(
-                        "Task '%s' (id=%s) overlaps in-flight/selected work — skipping",
-                        task.task_type, identity,
+                        "Selected agent '%s' for task '%s' (type=%s)",
+                        agent.name, task, task.task_type,
                     )
-                    continue
-                for agent in self.agents:
-                    if agent.can_handle(task):
-                        logger.debug(
-                            "Selected agent '%s' for task '%s' (type=%s)",
-                            agent.name, task, task.task_type,
-                        )
-                        seen.add(identity)
-                        results.append((task, agent))
-                        break
-                else:
-                    logger.debug(
-                        "No agent can handle task type '%s' — skipping", task.task_type,
-                    )
-                if len(results) >= limit:
-                    return results
-            logger.debug("%s yielded %d candidate(s)", task_class.__name__, found_in_class)
+                    seen.add(identity)
+                    results.append((task, agent))
+                    break
+            else:
+                logger.debug(
+                    "No agent can handle task type '%s' — skipping", task.task_type,
+                )
+            if len(results) >= limit:
+                return results
         return results
 
     def dispatch(self, agent: Agent, task: Task) -> None:
