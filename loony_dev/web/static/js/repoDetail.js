@@ -147,16 +147,22 @@ function renderSession(repo, state) {
 }
 
 // Repos switcher: recompute the discovered-repo set locally from the snapshot
-// (workers + worktrees) — never reach into #187's store internals. Each row
-// switches repo via the existing goRepo(); the active repo is flagged.
+// (workers + worktrees + sessions) — never reach into #187's store internals.
+// Sessions are included so a repo with a live session but no worker/worktree
+// still appears; the current repo is seeded so a deep-link to a session-only
+// repo isn't dropped. Each row switches repo via goRepo(); the active is flagged.
 function renderReposList(repo, state) {
   const box = document.getElementById("repo-repos-list");
   if (!box) return;
   box.innerHTML = "";
   const repos = [...new Set([
-    ...((state ? state.workers : []) || []).map((w) => w.repo).filter(Boolean),
-    ...((state ? state.worktrees : []) || []).map((w) => w.repo).filter(Boolean),
-  ])].sort((a, b) => a.localeCompare(b));
+    repo,
+    ...((state ? state.workers : []) || []).map((w) => w.repo),
+    ...((state ? state.worktrees : []) || []).map((w) => w.repo),
+    ...((state ? state.sessions : []) || []).map((s) => s.repo),
+  ])]
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
 
   if (!repos.length) {
     box.appendChild(muted("No repos discovered."));
