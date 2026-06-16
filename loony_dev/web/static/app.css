@@ -839,11 +839,6 @@ button.action:hover,
 .back-link .material-symbols-outlined { font-size: 1.1rem; }
 .back-link:hover { text-decoration: underline; }
 
-.detail-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-  gap: var(--sp-4);
-}
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -864,6 +859,134 @@ button.action:hover,
 .kv dt { color: var(--text-muted); }
 .kv dd { margin: 0; word-break: break-word; }
 .join-link { display: inline-block; margin-top: var(--sp-2); text-decoration: none; }
+
+/* ---- Repo-detail Live screen (#189) ---------------------------------- */
+/* Header: title on the left, right-aligned quick-actions bar. */
+.live-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+.live-head h2 { margin: 0; }
+.quick-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+/* Three-region body: a flexible center column + a fixed ~284px sidebar. */
+.live-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 284px;
+  gap: var(--sp-4);
+  align-items: start;
+  margin-top: var(--sp-4);
+}
+
+.live-session { display: flex; flex-direction: column; gap: var(--sp-3); }
+.live-session-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+.live-session-repo { margin: var(--sp-1) 0 0; word-break: break-all; }
+.live-session-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--fs-1);
+}
+.live-meta-row { display: flex; justify-content: space-between; gap: var(--sp-3); }
+.live-meta-val { word-break: break-all; text-align: right; }
+.live-meta-val.mono { font-family: var(--font-mono); }
+/* The embedded #157 card already carries its own card chrome; flatten it when
+   nested inside the panel so we don't double up borders/shadow. */
+.live-session .session-card-compact {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+/* Sidebar: a stack of panels. */
+.live-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+.live-panel { display: flex; flex-direction: column; gap: var(--sp-3); }
+.live-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+.live-panel-head h3 { margin: 0; }
+
+/* Repos switcher rows. */
+.repos-switch { display: flex; flex-direction: column; gap: var(--sp-1); }
+.repo-switch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font: inherit;
+  font-size: var(--fs-1);
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: var(--sp-1) var(--sp-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.repo-switch-row:hover { background: var(--surface-2); }
+.repo-switch-row.active {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.repo-switch-name { word-break: break-all; }
+
+/* Repo-context metric cards + commit rows. */
+.context-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-2);
+}
+.context-stats .stat { padding: var(--sp-3); }
+.commit-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-1);
+  margin-bottom: var(--sp-2);
+}
+
+/* Worker rows in the sidebar. */
+.worker-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.worker-row + .worker-row { margin-top: var(--sp-2); }
+.worker-mid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+  flex: 1;
+}
+.worker-name { font-size: var(--fs-1); word-break: break-all; }
+.worker-age { font-size: var(--fs-0); white-space: nowrap; }
+
+/* Collapse to a single column at the existing mobile breakpoint. */
+@media (max-width: 720px) {
+  .live-grid { grid-template-columns: 1fr; }
+}
 
 /* ---- Sessions view --------------------------------------------------- */
 .session-grid {
