@@ -15,7 +15,7 @@
 
 import * as overview from "./overview.js";
 import * as sessions from "./sessions.js";
-import * as repos from "./repos.js";
+import * as fleet from "./fleet.js";
 import * as repoDetail from "./repoDetail.js";
 import * as issueDetail from "./issueDetail.js";
 import * as logs from "./logs.js";
@@ -62,9 +62,10 @@ function applySnapshot(snapshot) {
 
   sessions.render(sess);
   attach.render(taskSessions);
-  // Overview is now a roll-up of per-repo cards (#158); worker / worktree detail
-  // lives in the per-repo drill-down rather than dedicated Overview tables.
-  repos.render(workers, worktrees, stuck);
+  // The Overview body is now the Fleet worklist (#188): a cross-repo stat strip
+  // + board/kanban built by joining the snapshot collections on the pipeline
+  // key. Worker / worktree detail still lives in the per-repo drill-down.
+  fleet.render(snapshot);
   repoDetail.update(snapshot);
   issueDetail.update(snapshot);
 
@@ -127,6 +128,7 @@ function start() {
   attach.init();
   observe.init();
   repoDetail.init();
+  fleet.init();
   issueDetail.init();
   connect();
 }
