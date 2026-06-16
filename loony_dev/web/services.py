@@ -85,6 +85,12 @@ class TaskSessionView:
     ``attachable`` reflects whether the PTY-bridge Unix socket is currently
     present, so the frontend can disable the Attach button for a session whose
     worker has gone away but left a stale ``session.json``.
+
+    ``observable`` reflects whether the session can be rendered from its on-disk
+    JSONL transcript (issue #202) — true whenever both ``cwd`` and ``session_id``
+    are known, independent of whether a live PTY exists. This is what the
+    frontend uses to pick the JSONL-driven observe surface as the default, with
+    the raw-bytes attach terminal reserved for the live "drive" case.
     """
 
     task_key: str
@@ -93,6 +99,8 @@ class TaskSessionView:
     status: str | None
     started_at: str | None
     attachable: bool
+    observable: bool = False
+    cwd: str | None = None
 
 
 @dataclass(frozen=True)
@@ -308,6 +316,7 @@ def list_task_sessions(base_dir: Path) -> list[TaskSessionView]:
     views: list[TaskSessionView] = []
     for session in session_registry.iter_sessions(base_dir):
         attachable = bool(session.socket) and Path(session.socket).exists()
+        observable = bool(session.cwd) and bool(session.session_id)
         views.append(
             TaskSessionView(
                 task_key=session.task_key,
@@ -316,6 +325,8 @@ def list_task_sessions(base_dir: Path) -> list[TaskSessionView]:
                 status=session.status,
                 started_at=session.started_at,
                 attachable=attachable,
+                observable=observable,
+                cwd=session.cwd,
             )
         )
     return views
@@ -483,6 +494,24 @@ def stop_drive(base_dir: Path, pipeline_key: str, *, repo: str | None = None) ->
         base_dir, resolved_repo, pipeline_key, holder=pipeline_lease.HOLDER_DRIVE,
     )
     return {"pipeline_key": pipeline_key, "repo": resolved_repo, "stopped": stopped}
+
+
+def observe_jsonl_path(base_dir: Path, task_key: str) -> Path | None:
+    """Return the JSONL transcript path the observe surface should tail (#202).
+
+    Resolves *task_key* against the registry and computes
+    ``jsonl_path_for(cwd, session_id)`` from its recorded ``cwd`` + ``session_id``
+    (see :mod:`loony_dev.session`). Returns ``None`` when no session matches or
+    the entry predates #202 (no ``cwd``/``session_id``), so it isn't observable.
+    The path may not exist yet (a registered session whose first turn has not
+    written the transcript); the tailer waits for it to appear.
+    """
+    from loony_dev.session import jsonl_path_for
+
+    session = session_registry.find_session(base_dir, task_key)
+    if session is None or not session.cwd or not session.session_id:
+        return None
+    return jsonl_path_for(Path(session.cwd), session.session_id)
 
 
 def inject_turn(base_dir: Path, task_key: str, prompt: str) -> dict:

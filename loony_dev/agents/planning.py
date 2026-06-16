@@ -41,6 +41,7 @@ class PlanningAgent(ClaudeQuotaMixin, Agent):
         logger.debug("Running planning Claude CLI (cwd=%s, session=%s)", work_dir, session_id)
         logger.debug("Planning turn: %s", prompt)
 
+        self._register_observe_session(task, work_dir, session_id)
         try:
             from loony_dev.agents.coding import _turn_timeout
 
@@ -48,6 +49,7 @@ class PlanningAgent(ClaudeQuotaMixin, Agent):
                 prompt, cwd=work_dir, session_id=session_id, timeout=_turn_timeout(),
             )
         finally:
+            self._mark_observe_session(task, "idle")
             cleanup_context_dir(task.worktree_key)
 
         logger.debug("Planning Claude CLI exited with code %d", returncode)

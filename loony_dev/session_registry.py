@@ -63,6 +63,11 @@ class TaskSession:
     worktree_path: str | None = None
     pipeline_key: str | None = None
     branch: str | None = None
+    # The working directory the session's ``claude`` turns ran in. Combined with
+    # ``session_id`` it locates the on-disk JSONL transcript the dashboard tails
+    # for the JSONL-driven observe surface (issue #202). ``None`` for legacy
+    # entries written before #202.
+    cwd: str | None = None
 
 
 def task_slug(task_key: str) -> str:
@@ -107,6 +112,7 @@ def write_session_file(
     worktree_path: str | None = None,
     pipeline_key: str | None = None,
     branch: str | None = None,
+    cwd: str | None = None,
 ) -> Path:
     """Atomically write the canonical ``session.json`` for a task session.
 
@@ -115,6 +121,8 @@ def write_session_file(
     *worktree_path* / *pipeline_key* / *branch* carry the on-demand-interrogation
     plumbing (issue #199); they are omitted from the payload when ``None`` so an
     older reader (or the bridge path that does not set them) round-trips cleanly.
+    *cwd* (optional) is the working directory the session's turns ran in, used
+    with *session_id* to locate the JSONL transcript for observe (#202).
     """
     sess_dir = Path(sess_dir)
     sess_dir.mkdir(parents=True, exist_ok=True)
@@ -126,6 +134,7 @@ def write_session_file(
         "pid": pid,
         "status": status,
         "started_at": started_at,
+        "cwd": cwd,
     }
     if worktree_path is not None:
         payload["worktree_path"] = str(worktree_path)
@@ -138,6 +147,75 @@ def write_session_file(
     tmp.write_text(json.dumps(payload, indent=2))
     os.replace(tmp, path)
     return path
+
+
+def register_task_session(
+    base_dir: Path,
+    repo: str,
+    task_key: str,
+    *,
+    session_id: str,
+    cwd: str | Path,
+    pid: int | None = None,
+    started_at: str | None = None,
+    status: str = "running",
+) -> Path:
+    """Record an on-disk registry entry for a ``claude -p`` task session (#202).
+
+    The ``-p`` agents (``CodingAgent`` / ``PlanningAgent``) drive one-shot
+    ``claude -p --resume`` turns with no long-lived PTY, so there is no
+    :class:`~loony_dev.agents.session_bridge.SessionBridge` to call
+    :func:`~loony_dev.agents.session_bridge.publish_session`. This is the ``-p``
+    analogue: it writes ``session.json`` (with ``cwd`` so the dashboard can
+    locate the JSONL transcript) but **no** attach socket — there is no live PTY
+    to bridge; the session is observed from its transcript instead.
+
+    Idempotent for a given (repo, task_key): re-registering overwrites the entry
+    (e.g. to refresh ``status`` across a task's lifecycle).
+    """
+    owner, name = repo.split("/", 1)
+    sess_dir = session_dir(base_dir, owner, name, task_key)
+    return write_session_file(
+        sess_dir,
+        task_key=task_key,
+        repo=repo,
+        session_id=session_id,
+        pid=pid if pid is not None else os.getpid(),
+        started_at=started_at or datetime.now(timezone.utc).isoformat(),
+        status=status,
+        # No PTY bridge for a ``-p`` session: leave the socket absent so the
+        # dashboard marks it non-attachable but still observable.
+        socket="",
+        cwd=str(cwd),
+    )
+
+
+def set_task_session_status(
+    base_dir: Path, repo: str, task_key: str, status: str
+) -> None:
+    """Update the ``status`` of an existing ``-p`` task session, if present.
+
+    Best-effort: a missing/unreadable entry is left alone (the session may not
+    have been registered, or a concurrent writer removed it). Preserves every
+    other field — notably ``cwd`` and ``session_id`` — so the entry stays
+    observable after the turn ends (a parked session, #202).
+    """
+    owner, name = repo.split("/", 1)
+    sess_dir = session_dir(base_dir, owner, name, task_key)
+    session = read_session(sess_dir)
+    if session is None:
+        return
+    write_session_file(
+        sess_dir,
+        task_key=session.task_key,
+        repo=session.repo or repo,
+        session_id=session.session_id or "",
+        pid=session.pid,
+        started_at=session.started_at or "",
+        status=status,
+        socket=session.socket if session.socket is not None else "",
+        cwd=session.cwd,
+    )
 
 
 def read_session(sess_dir: Path) -> TaskSession | None:
@@ -169,6 +247,7 @@ def read_session(sess_dir: Path) -> TaskSession | None:
         worktree_path=_str_or_none(data.get("worktree_path")),
         pipeline_key=_str_or_none(data.get("pipeline_key")),
         branch=_str_or_none(data.get("branch")),
+        cwd=_str_or_none(data.get("cwd")),
     )
 
 

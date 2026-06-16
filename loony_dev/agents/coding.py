@@ -126,6 +126,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                 summary=f"Failed to start Claude session: {exc}",
             )
 
+        self._register_observe_session(task, work_dir, session.session_id)
         try:
             turn, failure = self._run_turn(
                 session, prompt, timeout=_turn_timeout(), phase="execution",
@@ -135,6 +136,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             output = turn.text
         finally:
             self._close_session(session)
+            self._mark_observe_session(task, "idle")
             cleanup_context_dir(task.worktree_key)
 
         if output:
@@ -195,6 +197,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                 summary=f"Failed to start Claude session: {exc}",
             )
 
+        self._register_observe_session(task, work_dir, session.session_id)
         try:
             # ── Phase 1: Implement ──────────────────────────────────────────
             logger.info("Issue #%d: phase 1 — implementing", task.issue.number)
@@ -352,6 +355,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             return TaskResult(success=True, output=implement_output, summary=summary, post_summary=True)
         finally:
             self._close_session(session)
+            self._mark_observe_session(task, "idle")
             cleanup_context_dir(task.worktree_key)
 
     # ------------------------------------------------------------------

@@ -369,6 +369,9 @@ def publish_session(
         worktree_path=str(worktree_path) if worktree_path is not None else None,
         pipeline_key=pipeline_key,
         branch=branch,
+        # Record the cwd too so the dashboard can locate the JSONL transcript
+        # for the observe surface even while a live PTY bridge is present (#202).
+        cwd=str(session.cwd),
     )
     return bridge
 

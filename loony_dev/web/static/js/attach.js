@@ -12,69 +12,10 @@
 
 import { cell, setRows } from "./dom.js";
 import { apiText } from "./api.js";
+import { openModalA11y, closeModalA11y } from "./modal.js";
+import { openObserve } from "./observe.js";
 
 let active = null; // { ws, term, taskKey, resizeHandler } for the open terminal
-
-// --- Modal accessibility helpers (focus trap + ESC + focus restore) --------
-
-const FOCUSABLE =
-  'a[href], button:not([disabled]), textarea:not([disabled]), ' +
-  'input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-function focusables(modal) {
-  return Array.from(modal.querySelectorAll(FOCUSABLE))
-    .filter((el) => el.offsetParent !== null || el === document.activeElement);
-}
-
-function trapTab(modal, e) {
-  if (e.key !== "Tab") return;
-  const items = focusables(modal);
-  if (!items.length) return;
-  const first = items[0];
-  const last = items[items.length - 1];
-  if (e.shiftKey && document.activeElement === first) {
-    e.preventDefault();
-    last.focus();
-  } else if (!e.shiftKey && document.activeElement === last) {
-    e.preventDefault();
-    first.focus();
-  }
-}
-
-// Open a modal accessibly: remember the opener, install an ESC + focus-trap
-// keydown handler, and move focus inside. closeFn runs on ESC, unless
-// opts.closeOnEscape is false — the attach terminal reserves ESC to interrupt
-// the active bot turn, so it must not double as a modal-close key.
-function openModalA11y(modal, closeFn, focusTarget, opts = {}) {
-  const closeOnEscape = opts.closeOnEscape ?? true;
-  // Drop any stale handler (e.g. a re-open without an intervening close) so we
-  // never leave a dangling keydown listener bound.
-  if (modal._a11y) {
-    modal.removeEventListener("keydown", modal._a11y.keyHandler);
-    modal._a11y = null;
-  }
-  const opener = document.activeElement;
-  const keyHandler = (e) => {
-    if (e.key === "Escape" && closeOnEscape) { e.preventDefault(); closeFn(); return; }
-    trapTab(modal, e);
-  };
-  modal.addEventListener("keydown", keyHandler);
-  modal._a11y = { opener, keyHandler };
-  const target = focusTarget || focusables(modal)[0];
-  if (target) { try { target.focus(); } catch (_) { /* not focusable */ } }
-}
-
-// Tear down the handler installed by openModalA11y and restore focus to the
-// element that opened the modal.
-function closeModalA11y(modal) {
-  const st = modal && modal._a11y;
-  if (!st) return;
-  modal.removeEventListener("keydown", st.keyHandler);
-  modal._a11y = null;
-  if (st.opener && typeof st.opener.focus === "function") {
-    try { st.opener.focus(); } catch (_) { /* opener gone */ }
-  }
-}
 
 // Write to the terminal defensively: async ws handlers can fire after the
 // terminal has been disposed, which would otherwise throw.
@@ -189,6 +130,21 @@ function renderTaskSession(s) {
   const actions = document.createElement("td");
   actions.dataset.label = "Action";
 
+  // Observe is the default surface: it renders the conversation from the JSONL
+  // transcript with no live process required, so it works for parked sessions
+  // between turns as well as active ones (#202).
+  const observe = document.createElement("button");
+  observe.type = "button";
+  observe.className = "action";
+  observe.textContent = "Observe";
+  observe.disabled = !s.observable;
+  observe.title = s.observable
+    ? "Render the conversation from the session transcript"
+    : "No transcript recorded for this session yet";
+  observe.addEventListener("click", () => openObserve(s.task_key));
+  actions.appendChild(observe);
+
+  // Attach is the live "drive" terminal — only when a PTY bridge is present.
   const attach = document.createElement("button");
   attach.type = "button";
   attach.className = "action";
