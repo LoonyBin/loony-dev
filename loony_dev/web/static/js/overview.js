@@ -1,8 +1,9 @@
 "use strict";
 
 // Overview view: a global stuck-process banner/table. Worker and worktree
-// detail moved into the per-repo drill-down (#158); the Overview is now a
-// roll-up of repo cards (see repos.js) plus this cross-repo stuck signal.
+// detail moved into the per-repo drill-down (#158); the Overview body is now
+// the Fleet worklist (see fleet.js) and this cross-repo stuck signal sits
+// above it.
 
 import { cell, setRows, formatAge, icon } from "./dom.js";
 
