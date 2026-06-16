@@ -565,7 +565,6 @@ main {
 :root[data-density="compact"] .data-table th,
 :root[data-density="compact"] .data-table td { padding: var(--sp-1) var(--sp-2); }
 :root[data-density="compact"] .card,
-:root[data-density="compact"] .repo-card,
 :root[data-density="compact"] .session-card,
 :root[data-density="compact"] .stat { padding: var(--sp-3); }
 
@@ -774,51 +773,262 @@ button.action:hover,
 }
 .muted { color: var(--text-muted); font-size: var(--fs-1); }
 
-/* ---- Repos roll-up (Overview) ---------------------------------------- */
-.repo-grid {
+/* ---- Fleet worklist (#188) ------------------------------------------- */
+/* Composition layer only: every chip/pill/tag/avatar/stat reuses the #186
+   design-system primitives; the rules below are layout + the Fleet-specific
+   treatments (worker-pool dot grid, badge-filter active ring, kanban columns,
+   repo sidebar, empty states). */
+
+/* Stat strip: cards align to the top so the double-height worker-pool card
+   (which carries the dot grid) extends below its neighbours. */
+.fleet-stats {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
-  gap: var(--sp-4);
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: var(--sp-3);
+  align-items: start;
+  margin-bottom: var(--sp-4);
 }
-.repo-card {
+.stat-value.stat-deferred { color: var(--text-muted); font-weight: 600; }
+
+/* Worker-pool card: busy/total headline over a dot grid (busy = progress hue,
+   idle = gated hue), so pool utilisation reads at a glance. */
+.stat-pool .pool-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin-top: var(--sp-2);
+}
+.pool-dot {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  flex: none;
+}
+.pool-dot.busy { background: var(--state-progress); }
+.pool-dot.idle { background: var(--state-gated); opacity: 0.5; }
+.pool-empty { font-size: var(--fs-1); color: var(--text-muted); }
+
+/* Toolbar: Board↔Kanban toggle on the left, badge filters on the right. */
+.fleet-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+.fleet-badges { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+
+/* Badge filter: each keeps its own Material Symbol icon; active = accent ring
+   + soft fill (the #186 selected treatment). */
+.fbadge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font: inherit;
+  font-size: var(--fs-1);
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: var(--sp-1) var(--sp-3);
+  cursor: pointer;
+}
+.fbadge:hover { color: var(--text); }
+.fbadge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fbadge .material-symbols-outlined { font-size: 1.1rem; }
+.fbadge.active {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.fbadge-count {
+  font-variant-numeric: var(--num);
+  font-size: var(--fs-0);
+  padding: 0 var(--sp-1);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+}
+.fbadge.active .fbadge-count { background: var(--surface); color: var(--accent-ink); }
+
+/* Active-filter chips + live count. */
+.fleet-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+  min-height: 1.5rem;
+}
+.fleet-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-1);
+  font-weight: 600;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: var(--sp-1) var(--sp-2);
+}
+.fleet-chip-x {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+}
+.fleet-chip-x:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fleet-chip-x .material-symbols-outlined { font-size: 1rem; }
+.fleet-count { font-size: var(--fs-1); color: var(--text-muted); margin-left: auto; }
+
+/* Body: worklist + right-hand repo sidebar (~284px). Sidebar collapses below
+   the worklist on narrow viewports (see responsive block below). */
+.fleet-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 284px;
+  gap: var(--sp-4);
+  align-items: start;
+}
+.fleet-main { min-width: 0; }
+
+/* Board rows are deep-link targets: whole-row click + keyboard focusable. */
+.fleet-row { cursor: pointer; }
+.fleet-row:hover td { background: var(--surface-2); }
+.fleet-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.fleet-num { font-weight: 700; font-variant-numeric: var(--num); }
+.fleet-title-cell { font-weight: 600; }
+
+/* Kanban: a horizontally scrolling row of lifecycle columns. */
+.fleet-kanban {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(13rem, 1fr);
+  gap: var(--sp-3);
+  overflow-x: auto;
+  padding-bottom: var(--sp-2);
+}
+.fleet-col {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.fleet-col-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+.fleet-col-title {
+  font-size: var(--fs-0);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--track-eyebrow);
+  color: var(--text-muted);
+}
+.fleet-col-count {
+  font-size: var(--fs-0);
+  font-variant-numeric: var(--num);
+  color: var(--text-muted);
+  background: var(--surface);
+  border-radius: 999px;
+  padding: 0 var(--sp-2);
+}
+.fleet-col-body { display: flex; flex-direction: column; gap: var(--sp-2); }
+.fleet-col-empty { color: var(--text-muted); font-size: var(--fs-1); margin: 0; text-align: center; }
+.fleet-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  padding: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+}
+.fleet-card:hover { border-color: var(--accent); }
+.fleet-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fleet-card-head { display: flex; align-items: center; justify-content: space-between; }
+.fleet-card-title { font-weight: 600; }
+.fleet-card-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-1);
+  color: var(--text-muted);
+}
+.fleet-card-repo { word-break: break-all; }
+
+/* Repo filter sidebar. */
+.fleet-repos {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  padding: var(--sp-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-  /* The whole card is a button: reset the native chrome, keep it tappable. */
-  width: 100%;
-  text-align: left;
-  font: inherit;
-  color: var(--text);
-  cursor: pointer;
+  padding: var(--sp-3);
 }
-.repo-card:hover { border-color: var(--primary); }
-.repo-card:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
-.repo-card .repo-name { font-weight: 600; word-break: break-all; }
-.repo-card .repo-meta {
+.fleet-repos-head {
   display: flex;
-  gap: var(--sp-4);
-  flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-1);
+}
+.fleet-clear {
+  font: inherit;
+  font-size: var(--fs-1);
+  border: none;
+  background: none;
+  color: var(--accent-ink);
+  cursor: pointer;
+  padding: 0;
+}
+.fleet-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fleet-repo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  font: inherit;
+  font-size: var(--fs-2);
+  color: var(--text);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: var(--sp-1) var(--sp-2);
+  cursor: pointer;
+  text-align: left;
+}
+.fleet-repo:hover { background: var(--surface-2); }
+.fleet-repo:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fleet-repo.active { background: var(--accent-soft); color: var(--accent-ink); }
+.fleet-repo-name { word-break: break-all; }
+.fleet-repo-count {
+  font-variant-numeric: var(--num);
   font-size: var(--fs-1);
   color: var(--text-muted);
 }
-.stuck-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  color: #fff;
-  background: var(--danger-strong);
-  border-radius: 999px;
-  padding: 0 var(--sp-2);
-  font-weight: 600;
-  font-variant-numeric: var(--num);
+.fleet-repo.active .fleet-repo-count { color: var(--accent-ink); }
+
+/* Sidebar drops under the worklist on narrow viewports. */
+@media (max-width: 860px) {
+  .fleet-body { grid-template-columns: minmax(0, 1fr); }
 }
-.stuck-badge .material-symbols-outlined { font-size: 1rem; }
 
 /* ---- Repo detail (#158) ---------------------------------------------- */
 .repo-detail h2 { word-break: break-all; }
