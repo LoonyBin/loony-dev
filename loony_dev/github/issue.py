@@ -191,10 +191,17 @@ class Issue(GitHubItem):
 
         A lightweight lifecycle read (just ``state``) used by the worktree
         reclaimer (#198) to release a pipeline that has no PR once its
-        originating issue is closed.
+        originating issue is closed. Raises ``ValueError`` on a malformed or
+        unexpected payload rather than defaulting to "open" — a silent default
+        would hide a read failure and leave a completed pipeline unreclaimed.
         """
         data = repo.client.gh_json("issue", "view", str(number), "--json", "state")
-        return isinstance(data, dict) and str(data.get("state", "")).upper() == "CLOSED"
+        if not isinstance(data, dict) or "state" not in data:
+            raise ValueError(f"Unexpected issue lifecycle payload for #{number}: {data!r}")
+        state = str(data["state"]).upper()
+        if state not in {"OPEN", "CLOSED"}:
+            raise ValueError(f"Unexpected issue state for #{number}: {state!r}")
+        return state == "CLOSED"
 
     @classmethod
     def list(cls, *, label: str, repo: Repo) -> list[Issue]:
