@@ -115,6 +115,57 @@ def create_api_router(
         except services.SessionNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @router.post("/pipelines/{pipeline_key}/interrogate")
+    async def interrogate_pipeline(pipeline_key: str, request: Request) -> dict:
+        """Start on-demand interrogation of a parked pipeline (issue #199).
+
+        Body is JSON ``{"mode": "observe"|"drive", "repo"?: "owner/repo"}``.
+        ``drive`` resumes the session into a fresh PTY and returns the attach URL
+        (``409`` when an automated task holds the pipeline lease); ``observe`` is
+        read-only and takes no lease. ``repo`` is optional — resolved from the
+        recorded session when omitted, required for a pipeline with no record yet.
+        """
+        try:
+            body = await request.json()
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=400, detail="body must be JSON") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="body must be a JSON object")
+        mode = body.get("mode")
+        if mode not in (services.INTERROGATE_OBSERVE, services.INTERROGATE_DRIVE):
+            raise HTTPException(
+                status_code=400,
+                detail="'mode' must be 'observe' or 'drive'",
+            )
+        repo = body.get("repo")
+        if repo is not None and not isinstance(repo, str):
+            raise HTTPException(status_code=400, detail="'repo' must be a string or null")
+        try:
+            return await asyncio.to_thread(
+                services.interrogate_pipeline, base_dir, pipeline_key, mode, repo=repo,
+            )
+        except services.SessionNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except services.PipelineBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.post("/pipelines/{pipeline_key}/release")
+    async def release_pipeline(pipeline_key: str, request: Request) -> dict:
+        """Tear down a live drive session and release its pipeline lease (#199)."""
+        try:
+            body = await request.json()
+        except (ValueError, json.JSONDecodeError):
+            body = {}
+        repo = body.get("repo") if isinstance(body, dict) else None
+        if repo is not None and not isinstance(repo, str):
+            raise HTTPException(status_code=400, detail="'repo' must be a string or null")
+        try:
+            return await asyncio.to_thread(
+                services.stop_drive, base_dir, pipeline_key, repo=repo,
+            )
+        except services.SessionNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @router.websocket("/sessions/{task_key}/attach")
     async def attach_session(websocket: WebSocket, task_key: str) -> None:
         """Bridge a websocket to the worker-owned ``ClaudeSession`` PTY socket.

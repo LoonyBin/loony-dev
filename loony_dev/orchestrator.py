@@ -30,6 +30,8 @@ if TYPE_CHECKING:
 from loony_dev.agents.coding import CodingAgent
 from loony_dev.agents.claude_session import trust_directory
 from loony_dev.commands import install_commands
+from loony_dev import pipeline_lease, session_registry
+from loony_dev.session import session_id_for
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +54,21 @@ class Orchestrator:
         agents: list[Agent],
         interval: int | None = None,
         max_concurrent_tasks: int | None = None,
+        base_dir: Path | None = None,
     ) -> None:
         from loony_dev import config
         self.repo = repo
         self.git = git
         self.agents = agents
+        # Where the per-pipeline session registry and lease files live (shared
+        # with the web process, issue #199). Defaults to the configured base dir,
+        # falling back to the checkout root when unset (e.g. tests that build no
+        # full config) so registry/lease state stays under the repo tree.
+        if base_dir is not None:
+            self.base_dir = Path(base_dir)
+        else:
+            configured = config.settings.get("base_dir")
+            self.base_dir = Path(configured).resolve() if configured else Path(git.work_dir)
         self.interval = interval if interval is not None else config.settings.get("interval", 60)
         resolved_max = (
             max_concurrent_tasks
@@ -146,6 +158,14 @@ class Orchestrator:
                             logger.exception(
                                 "Failed to roll back GitHub state for %s", task.task_type,
                             )
+                        # _run_task never ran, so release the pipeline lease taken
+                        # at dispatch here instead of in its finally (issue #199).
+                        pkey = task.worktree_key
+                        if pkey is not None:
+                            pipeline_lease.release_pipeline_lease(
+                                self.base_dir, self.repo.name, pkey,
+                                holder=pipeline_lease.HOLDER_BOT,
+                            )
                     else:
                         # Running/finished: the worker owns the terminal callback.
                         # Interrupt the Claude subprocess so execute() returns
@@ -164,12 +184,23 @@ class Orchestrator:
             return self.max_concurrent - len(self._inflight)
 
     def _claimed_keys(self) -> set[str]:
-        """Dedupe identities of in-flight tasks, so the gather avoids overlap."""
+        """Dedupe identities of in-flight tasks, so the gather avoids overlap.
+
+        Unions the in-memory in-flight identities with pipeline keys currently
+        held by a human **drive** session (issue #199). A drive runs in the web
+        process, invisible to ``_inflight``, so its on-disk lease is the only
+        cross-process signal that keeps the scheduler from dispatching an
+        automated task onto a pipeline a human is interrogating.
+        """
         with self._inflight_lock:
             inflight = list(self._inflight.values())
         claimed: set[str] = set()
         for task, _agent in inflight:
             claimed.add(self._task_identity(task))
+        try:
+            claimed |= pipeline_lease.active_drive_pipeline_keys(self.base_dir, self.repo.name)
+        except Exception:
+            logger.debug("Could not read drive pipeline leases", exc_info=True)
         return claimed
 
     @staticmethod
@@ -206,6 +237,19 @@ class Orchestrator:
 
         for task, agent in batch:
             logger.info("Dispatching task: %s", task.task_type)
+            # Take the cross-process pipeline lease *before* mutating GitHub, so a
+            # human drive that raced in since the gather (issue #199) refuses the
+            # bot cleanly without leaving a dangling in-progress label. Released in
+            # ``_run_task``'s finally. Tasks with no pipeline (no worktree_key)
+            # need no lease — nothing can interrogate them.
+            pkey = task.worktree_key
+            if pkey is not None and not pipeline_lease.acquire_pipeline_lease(
+                self.base_dir, self.repo.name, pkey, holder=pipeline_lease.HOLDER_BOT,
+            ):
+                logger.info(
+                    "Pipeline %s is held by an active drive session — skipping dispatch", pkey,
+                )
+                continue
             try:
                 # The lease: mutate GitHub state synchronously in the tick thread
                 # so the next gather/discover no longer sees this task. This is
@@ -213,6 +257,10 @@ class Orchestrator:
                 task.on_start(self.repo)
             except Exception:
                 logger.exception("on_start failed for %s — skipping dispatch", task.task_type)
+                if pkey is not None:
+                    pipeline_lease.release_pipeline_lease(
+                        self.base_dir, self.repo.name, pkey, holder=pipeline_lease.HOLDER_BOT,
+                    )
                 continue
 
             future = self._pool.submit(self._run_task, agent, task)
@@ -346,6 +394,14 @@ class Orchestrator:
                     # paths are always untrusted; without this, session startup
                     # hangs and every task times out. See #178.
                     trust_directory(worktree_path)
+                    # Record (session_id → worktree_path) so a parked pipeline can
+                    # be resumed on demand into a fresh PTY (issue #199). This is
+                    # the exact cwd the upcoming turn writes its transcript to, so
+                    # a later resume lands in the same cwd and the JSONL is found
+                    # (guards the #177 cross-worktree class). Real turns run via
+                    # ``claude -p``, not the bridge, so it is recorded here rather
+                    # than relying on ``publish_session`` firing.
+                    self._record_pipeline_session(task, key, worktree_path, branch)
                     # Install the bundled slash commands into the worktree's
                     # .claude/commands/ so agent turns can invoke them (#166).
                     # Each worktree is a separate working tree, so the base
@@ -376,9 +432,42 @@ class Orchestrator:
         except Exception as e:
             task.on_failure(self.repo, e)
         finally:
+            # Release the pipeline lease taken at dispatch (issue #199) so the
+            # next gather — and any human drive — can claim the pipeline again.
+            pkey = task.worktree_key
+            if pkey is not None:
+                pipeline_lease.release_pipeline_lease(
+                    self.base_dir, self.repo.name, pkey, holder=pipeline_lease.HOLDER_BOT,
+                )
             # Worktree removal mutates the base checkout's worktree list too.
             with self._git_lock:
                 self._remove_worktree(worktree_path)
+
+    def _record_pipeline_session(
+        self, task: Task, key: str, worktree_path: Path, branch: str,
+    ) -> None:
+        """Record this pipeline's ``(session_id → worktree_path)`` mapping.
+
+        Best-effort: a registry write failure must never abort the task. The
+        session id is the deterministic id the agent uses for ``--resume``
+        continuity (``session_id_for(repo, session_key)``); ``key`` doubles as the
+        pipeline key (``issue-N``) and the task key the registry is filed under.
+        """
+        session_key = task.session_key
+        if session_key is None:
+            return
+        try:
+            session_registry.record_session_worktree(
+                self.base_dir,
+                self.repo.name,
+                pipeline_key=key,
+                task_key=key,
+                session_id=session_id_for(self.repo.name, session_key),
+                worktree_path=str(worktree_path),
+                branch=branch,
+            )
+        except Exception:
+            logger.debug("Could not record pipeline session for %s", key, exc_info=True)
 
     def _worktree_branch_and_base(
         self, task: Task, key: str, target: str | None,

@@ -22,7 +22,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from loony_dev import session_registry
+from loony_dev import pipeline_lease, session_registry
+from loony_dev.agents import session_resume
 from loony_dev.git import GitRepo
 
 WORKER_LOG_NAME = "loony-worker.log"
@@ -338,6 +339,161 @@ def find_task_session(base_dir: Path, task_key: str) -> session_registry.TaskSes
     from *task_key*), so the value is safe to pass straight from a URL segment.
     """
     return session_registry.find_session(base_dir, task_key)
+
+
+# ---------------------------------------------------------------------------
+# On-demand pipeline interrogation (issue #199)
+#
+# A parked pipeline (waiting on plan approval, CI, or review) has no live
+# process, but its Claude session is a durable on-disk artifact, so it can be
+# resumed on demand. Two modes:
+#   * observe — read-only; tails the recorded transcript (or reuses a live attach
+#     socket). No lease.
+#   * drive   — resumes the session into a fresh PTY and serves it for attach.
+#     Holds the per-pipeline lease so a bot task and a human drive never co-run
+#     on one pipeline (the lease is cross-process; the scheduler honours it via
+#     ``Orchestrator._claimed_keys``).
+# ---------------------------------------------------------------------------
+
+INTERROGATE_OBSERVE = "observe"
+INTERROGATE_DRIVE = "drive"
+
+# Live drive sessions this web process owns, keyed by ``(repo, pipeline_key)``.
+# A drive holds a real PTY for the duration of the attach, so — unlike the rest
+# of this module — it is genuine in-memory state; it is torn down (and its lease
+# released) via :func:`stop_drive`.
+_DRIVE_SESSIONS: dict[tuple[str, str], "session_resume.ResumedSession"] = {}
+
+
+class PipelineBusyError(Exception):
+    """Raised when a drive is requested for a pipeline an automated task holds."""
+
+
+def _git_for_repo(base_dir: Path, repo: str) -> GitRepo:
+    """Return a :class:`GitRepo` for ``repo``'s base checkout under *base_dir*."""
+    if not isinstance(repo, str) or "/" not in repo:
+        raise SessionNotFoundError(f"invalid repo {repo!r}: expected 'owner/repo'")
+    owner, name = repo.split("/", 1)
+    return GitRepo(work_dir=base_dir / owner / name)
+
+
+def _resolve_pipeline_repo(base_dir: Path, pipeline_key: str, repo: str | None) -> str:
+    """Determine the ``owner/repo`` a *pipeline_key* belongs to.
+
+    Prefers an explicit *repo* (disambiguates a key shared across repos and lets
+    a pre-feature pipeline with no record still be addressed); otherwise resolves
+    it from the recorded session. Raises :class:`SessionNotFoundError` when
+    neither is available.
+    """
+    if repo:
+        return repo
+    for session in session_registry.iter_sessions(base_dir):
+        if session.pipeline_key == pipeline_key and session.repo:
+            return session.repo
+    raise SessionNotFoundError(
+        f"no recorded session for pipeline {pipeline_key!r}; pass an explicit repo",
+    )
+
+
+def interrogate_pipeline(
+    base_dir: Path,
+    pipeline_key: str,
+    mode: str,
+    *,
+    repo: str | None = None,
+    resume_fn=None,
+) -> dict:
+    """Start an observe or drive interrogation of a parked pipeline.
+
+    *resume_fn* is injectable for tests; it defaults to
+    :func:`loony_dev.agents.session_resume.resume_session`. Returns a small status
+    dict; for drive it includes the ``attach_url`` the dashboard connects to
+    (reusing the existing ``WS /api/sessions/{task_key}/attach`` proxy).
+
+    Raises :class:`SessionNotFoundError` (unknown pipeline) or
+    :class:`PipelineBusyError` (drive requested while a bot task holds the lease).
+    """
+    resolved_repo = _resolve_pipeline_repo(base_dir, pipeline_key, repo)
+
+    if mode == INTERROGATE_OBSERVE:
+        return _observe_pipeline(base_dir, resolved_repo, pipeline_key)
+    if mode == INTERROGATE_DRIVE:
+        return _drive_pipeline(base_dir, resolved_repo, pipeline_key, resume_fn)
+    raise ValueError(f"mode must be {INTERROGATE_OBSERVE!r} or {INTERROGATE_DRIVE!r}")
+
+
+def _observe_pipeline(base_dir: Path, repo: str, pipeline_key: str) -> dict:
+    """Read-only observe: no lease, no process. Reuse a live attach if present."""
+    git = _git_for_repo(base_dir, repo)
+    transcript = session_resume.observe_transcript_path(base_dir, git, repo, pipeline_key)
+    record = session_registry.find_pipeline_session(base_dir, repo, pipeline_key)
+    # If a task is actively running, its bridge socket exists — observe can reuse
+    # the live attach socket (read-only, the bot holds the mic) instead of tailing.
+    attach_url = None
+    if record is not None and record.socket and Path(record.socket).exists():
+        attach_url = f"/api/sessions/{record.task_key}/attach"
+    return {
+        "mode": INTERROGATE_OBSERVE,
+        "pipeline_key": pipeline_key,
+        "repo": repo,
+        "lease": False,
+        "transcript": str(transcript),
+        "attach_url": attach_url,
+    }
+
+
+def _drive_pipeline(base_dir: Path, repo: str, pipeline_key: str, resume_fn) -> dict:
+    """Drive: take the pipeline lease, resume into a PTY, return the attach URL."""
+    resume_fn = session_resume.resume_session if resume_fn is None else resume_fn
+    if not pipeline_lease.acquire_pipeline_lease(
+        base_dir, repo, pipeline_key, holder=pipeline_lease.HOLDER_DRIVE,
+    ):
+        held = pipeline_lease.read_pipeline_lease(base_dir, repo, pipeline_key)
+        holder = held.holder if held else "another task"
+        raise PipelineBusyError(
+            f"pipeline {pipeline_key!r} is held by {holder}; cannot drive",
+        )
+    try:
+        git = _git_for_repo(base_dir, repo)
+        resumed = resume_fn(base_dir, git, repo, pipeline_key)
+        # Track the live session and build the response *inside* the try so a
+        # failure storing the session (or reading its coordinates) still releases
+        # the lease — otherwise the pipeline would wedge holding a useless lease.
+        _DRIVE_SESSIONS[(repo, pipeline_key)] = resumed
+        return {
+            "mode": INTERROGATE_DRIVE,
+            "pipeline_key": pipeline_key,
+            "repo": repo,
+            "lease": True,
+            "attach_url": f"/api/sessions/{resumed.coordinates.task_key}/attach",
+        }
+    except Exception:
+        # Resume failed — never leave the lease dangling, or the pipeline wedges.
+        pipeline_lease.release_pipeline_lease(
+            base_dir, repo, pipeline_key, holder=pipeline_lease.HOLDER_DRIVE,
+        )
+        raise
+
+
+def stop_drive(base_dir: Path, pipeline_key: str, *, repo: str | None = None) -> dict:
+    """Tear down a live drive session and release its pipeline lease.
+
+    Idempotent: stopping a pipeline with no live drive still releases any lease
+    this process holds and reports ``stopped: False``.
+    """
+    resolved_repo = _resolve_pipeline_repo(base_dir, pipeline_key, repo)
+    resumed = _DRIVE_SESSIONS.pop((resolved_repo, pipeline_key), None)
+    stopped = False
+    if resumed is not None:
+        try:
+            resumed.close()
+        except Exception:
+            pass
+        stopped = True
+    pipeline_lease.release_pipeline_lease(
+        base_dir, resolved_repo, pipeline_key, holder=pipeline_lease.HOLDER_DRIVE,
+    )
+    return {"pipeline_key": pipeline_key, "repo": resolved_repo, "stopped": stopped}
 
 
 def observe_jsonl_path(base_dir: Path, task_key: str) -> Path | None:

@@ -54,6 +54,15 @@ class TaskSession:
     started_at: str | None
     status: str | None
     dir: Path
+    # On-demand interrogation plumbing (issue #199). ``worktree_path`` is the
+    # exact cwd the session last wrote its transcript to — resuming a session id
+    # in any *other* cwd makes the JSONL invisible (the #177 cross-worktree bug).
+    # ``pipeline_key`` is the per-issue mutual-exclusion identity (``issue-N``),
+    # and ``branch`` is the feature branch the worktree is checked out on, so a
+    # torn-down worktree can be recreated at the canonical path before resuming.
+    worktree_path: str | None = None
+    pipeline_key: str | None = None
+    branch: str | None = None
     # The working directory the session's ``claude`` turns ran in. Combined with
     # ``session_id`` it locates the on-disk JSONL transcript the dashboard tails
     # for the JSONL-driven observe surface (issue #202). ``None`` for legacy
@@ -100,12 +109,18 @@ def write_session_file(
     started_at: str,
     status: str = "running",
     socket: str | None = None,
+    worktree_path: str | None = None,
+    pipeline_key: str | None = None,
+    branch: str | None = None,
     cwd: str | None = None,
 ) -> Path:
     """Atomically write the canonical ``session.json`` for a task session.
 
     Writes to a temp file and renames so a reader never observes a partial file.
     *socket* defaults to the conventional ``attach.sock`` inside *sess_dir*.
+    *worktree_path* / *pipeline_key* / *branch* carry the on-demand-interrogation
+    plumbing (issue #199); they are omitted from the payload when ``None`` so an
+    older reader (or the bridge path that does not set them) round-trips cleanly.
     *cwd* (optional) is the working directory the session's turns ran in, used
     with *session_id* to locate the JSONL transcript for observe (#202).
     """
@@ -121,6 +136,12 @@ def write_session_file(
         "started_at": started_at,
         "cwd": cwd,
     }
+    if worktree_path is not None:
+        payload["worktree_path"] = str(worktree_path)
+    if pipeline_key is not None:
+        payload["pipeline_key"] = pipeline_key
+    if branch is not None:
+        payload["branch"] = branch
     path = sess_dir / SESSION_FILE_NAME
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2))
@@ -223,6 +244,9 @@ def read_session(sess_dir: Path) -> TaskSession | None:
         started_at=_str_or_none(data.get("started_at")),
         status=_str_or_none(data.get("status")),
         dir=sess_dir,
+        worktree_path=_str_or_none(data.get("worktree_path")),
+        pipeline_key=_str_or_none(data.get("pipeline_key")),
+        branch=_str_or_none(data.get("branch")),
         cwd=_str_or_none(data.get("cwd")),
     )
 
@@ -259,6 +283,65 @@ def find_session(base_dir: Path, task_key: str) -> TaskSession | None:
         if session.task_key == task_key:
             return session
     return None
+
+
+def find_pipeline_session(base_dir: Path, repo: str, pipeline_key: str) -> TaskSession | None:
+    """Return the recorded session for ``repo``'s *pipeline_key*, or ``None``.
+
+    On-demand interrogation (issue #199) addresses a *parked* pipeline by its
+    per-issue key (``issue-N``), not a task key. Like :func:`find_session` this
+    matches the value *stored* in ``session.json`` (never builds a path from the
+    raw argument), so a caller may pass a URL segment straight through without
+    risking path traversal. The repo is matched too so two repos that happen to
+    share a pipeline key never cross over.
+    """
+    for session in iter_sessions(base_dir):
+        if session.pipeline_key == pipeline_key and session.repo == repo:
+            return session
+    return None
+
+
+def record_session_worktree(
+    base_dir: Path,
+    repo: str,
+    *,
+    pipeline_key: str,
+    task_key: str,
+    session_id: str,
+    worktree_path: str | os.PathLike,
+    branch: str | None = None,
+    status: str = "parked",
+) -> Path:
+    """Record the ``(session_id → worktree_path)`` mapping for a pipeline.
+
+    This is the durable map :mod:`loony_dev.agents.session_resume` reads to resume
+    a parked pipeline into a fresh PTY. Unlike :func:`write_session_file` it does
+    not assume a live :class:`~loony_dev.agents.session_bridge.SessionBridge`: real
+    turns run via ``claude -p`` (not the persistent PTY), so the worktree path is
+    recorded at the point a turn is about to write the transcript, independent of
+    the bridge. An existing live entry's ``socket``/``pid``/``status`` is preserved
+    so this never downgrades a session that a bridge is actively serving.
+    """
+    owner, name = repo.split("/", 1)
+    sess_dir = session_dir(base_dir, owner, name, task_key)
+    existing = read_session(sess_dir)
+    return write_session_file(
+        sess_dir,
+        task_key=task_key,
+        repo=repo,
+        session_id=session_id,
+        pid=existing.pid if existing is not None else None,
+        started_at=(
+            existing.started_at
+            if existing is not None and existing.started_at
+            else datetime.now(timezone.utc).isoformat()
+        ),
+        status=existing.status if existing is not None and existing.status else status,
+        socket=existing.socket if existing is not None else None,
+        worktree_path=str(worktree_path),
+        pipeline_key=pipeline_key,
+        branch=branch if branch is not None else (existing.branch if existing else None),
+    )
 
 
 def remove_session_dir(sess_dir: Path) -> None:

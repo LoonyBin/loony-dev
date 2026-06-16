@@ -162,6 +162,68 @@ class TestWorktreeLifecycle(unittest.TestCase):
         )
 
 
+class TestPipelineLeaseExclusion(unittest.TestCase):
+    """A human drive and a bot task must never co-run on one pipeline (#199)."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.tmp = Path(self._tmpdir.name)
+        self.git = _make_git(self.tmp)
+        self.agent = MagicMock()
+        self.orch = Orchestrator(
+            repo=_make_repo(), git=self.git, agents=[self.agent],
+            interval=60, base_dir=self.tmp,
+        )
+        self.git.reset_mock()
+
+    def test_claimed_keys_unions_active_drive_leases(self) -> None:
+        from loony_dev import pipeline_lease
+        pipeline_lease.acquire_pipeline_lease(
+            self.tmp, "owner/repo", "issue-7", holder=pipeline_lease.HOLDER_DRIVE,
+        )
+        self.assertIn("issue-7", self.orch._claimed_keys())
+
+    def test_dispatch_skips_pipeline_a_drive_holds(self) -> None:
+        from loony_dev import pipeline_lease
+        pipeline_lease.acquire_pipeline_lease(
+            self.tmp, "owner/repo", "issue-7", holder=pipeline_lease.HOLDER_DRIVE,
+        )
+        task = MagicMock()
+        task.worktree_key = "issue-7"
+        task.target_branch = None
+        task.task_type = "issue"
+        # Force the gather to surface the task; the bot lease acquire must still
+        # fail (the drive holds it), so on_start is never called.
+        self.orch._find_work = MagicMock(return_value=[(task, self.agent)])
+        self.orch._tick()
+        task.on_start.assert_not_called()
+
+    def test_bot_lease_released_lets_drive_acquire(self) -> None:
+        from loony_dev import pipeline_lease
+        # Bot holds the lease while a task runs…
+        self.assertTrue(
+            pipeline_lease.acquire_pipeline_lease(
+                self.tmp, "owner/repo", "issue-7", holder=pipeline_lease.HOLDER_BOT,
+            )
+        )
+        # …so a drive cannot start.
+        self.assertFalse(
+            pipeline_lease.acquire_pipeline_lease(
+                self.tmp, "owner/repo", "issue-7", holder=pipeline_lease.HOLDER_DRIVE,
+            )
+        )
+        # Once the bot releases (as _run_task's finally does), the drive can.
+        pipeline_lease.release_pipeline_lease(
+            self.tmp, "owner/repo", "issue-7", holder=pipeline_lease.HOLDER_BOT,
+        )
+        self.assertTrue(
+            pipeline_lease.acquire_pipeline_lease(
+                self.tmp, "owner/repo", "issue-7", holder=pipeline_lease.HOLDER_DRIVE,
+            )
+        )
+
+
 class TestStartupSweep(unittest.TestCase):
 
     def test_removes_preexisting_worktrees_under_root(self) -> None:
