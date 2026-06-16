@@ -2,11 +2,11 @@
 
 Covers:
 
-* the hook install/verify contract (:mod:`loony_dev.agents.session_hooks`),
+* the per-session ``--settings`` payload (:mod:`loony_dev.agents.session_hooks`),
 * the hook executable (:func:`run_hook`) routing a payload to the right socket,
 * multi-session isolation (two sessions do not cross-signal),
 * the legacy ``session_events="jsonl"`` fallback path,
-* the worker bootstrap refusing to start when hooks are missing.
+* the ``setup`` command reporting the per-session hook configuration.
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import socket
+import sys
 import tempfile
 import threading
 import time
@@ -41,73 +42,32 @@ def _wait_until(predicate, *, timeout: float) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Install / verify
+# Per-session --settings payload
 # ---------------------------------------------------------------------------
 
-class TestInstallVerify(unittest.TestCase):
-    def setUp(self) -> None:
-        self.cfg = Path(_tmpdir())
-        self.addCleanup(shutil.rmtree, self.cfg, ignore_errors=True)
+class TestSessionSettings(unittest.TestCase):
+    """The hooks are passed per-session via ``--settings``, never installed globally."""
 
-    def _settings(self) -> dict:
-        return json.loads((self.cfg / "settings.json").read_text())
+    def test_settings_cover_all_required_hooks(self) -> None:
+        settings = session_hooks.session_settings()
+        self.assertEqual(set(settings["hooks"]), set(session_hooks.HOOK_EVENT_NAMES))
 
-    def test_install_creates_all_required_hooks(self) -> None:
-        self.assertTrue(session_hooks.install_hooks(self.cfg))
-        ok, reason = session_hooks.verify_hooks(self.cfg)
-        self.assertTrue(ok, reason)
-        hooks = self._settings()["hooks"]
-        self.assertEqual(set(hooks), set(session_hooks.HOOK_EVENT_NAMES))
+    def test_settings_json_round_trips(self) -> None:
+        settings = json.loads(session_hooks.session_settings_json())
+        self.assertEqual(settings, session_hooks.session_settings())
 
-    def test_install_is_idempotent(self) -> None:
-        self.assertTrue(session_hooks.install_hooks(self.cfg))
-        # Second run changes nothing.
-        self.assertFalse(session_hooks.install_hooks(self.cfg))
+    def test_hook_command_is_path_independent(self) -> None:
+        # The hook runs through the current interpreter (``python -m loony_dev``)
+        # so it resolves even when ``loony-dev`` is not on PATH (e.g. a venv).
+        cmd = session_hooks.hook_command("Stop")
+        self.assertIn("-m loony_dev hook Stop", cmd)
+        self.assertIn(sys.executable, cmd)
+        self.assertNotIn("loony-dev hook", cmd)
 
-    def test_install_preserves_hand_authored_hooks(self) -> None:
-        custom = {
-            "hooks": {
-                "Stop": [{"hooks": [{"type": "command", "command": "my-own-stop-hook"}]}],
-                "PreCompact": [{"hooks": [{"type": "command", "command": "my-compact"}]}],
-            },
-            "model": "opus",
-        }
-        (self.cfg / "settings.json").write_text(json.dumps(custom))
-
-        self.assertTrue(session_hooks.install_hooks(self.cfg))
-        data = self._settings()
-        # Unrelated keys/hooks untouched.
-        self.assertEqual(data["model"], "opus")
-        self.assertIn("PreCompact", data["hooks"])
-        # The user's own Stop hook is preserved alongside ours.
-        stop_cmds = [
-            s["command"]
-            for entry in data["hooks"]["Stop"]
-            for s in entry["hooks"]
-        ]
-        self.assertIn("my-own-stop-hook", stop_cmds)
-        self.assertIn(session_hooks.hook_command("Stop"), stop_cmds)
-
-    def test_verify_false_when_missing(self) -> None:
-        ok, reason = session_hooks.verify_hooks(self.cfg)
-        self.assertFalse(ok)
-        self.assertIn("does not exist", reason)
-
-    def test_verify_false_when_stale(self) -> None:
-        session_hooks.install_hooks(self.cfg)
-        data = self._settings()
-        # Simulate an operator wiping our Stop hook.
-        data["hooks"]["Stop"] = [{"hooks": [{"type": "command", "command": "something-else"}]}]
-        (self.cfg / "settings.json").write_text(json.dumps(data))
-        ok, reason = session_hooks.verify_hooks(self.cfg)
-        self.assertFalse(ok)
-        self.assertIn("Stop", reason)
-
-    def test_install_idempotent_after_preserving_user_hooks(self) -> None:
-        custom = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "mine"}]}]}}
-        (self.cfg / "settings.json").write_text(json.dumps(custom))
-        self.assertTrue(session_hooks.install_hooks(self.cfg))
-        self.assertFalse(session_hooks.install_hooks(self.cfg))
+    def test_tool_hooks_carry_wildcard_matcher(self) -> None:
+        hooks = session_hooks.desired_settings_hooks()
+        for event in ("PreToolUse", "PostToolUse"):
+            self.assertEqual(hooks[event][0]["matcher"], "*")
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +242,7 @@ class TestLegacyJsonlSource(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# CLI: setup installs hooks; worker refuses to start when hooks are missing
+# CLI: setup reports the per-session hook configuration (no global install)
 # ---------------------------------------------------------------------------
 
 class TestSetupCommand(unittest.TestCase):
@@ -291,43 +251,63 @@ class TestSetupCommand(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.cfg, ignore_errors=True)
         self.enterContext(mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(self.cfg)}))
 
-    def test_setup_installs_and_verifies(self) -> None:
+    def test_setup_reports_per_session_hooks(self) -> None:
         from click.testing import CliRunner
 
         from loony_dev.cli import cli
 
         result = CliRunner().invoke(cli, ["setup"])
         self.assertEqual(result.exit_code, 0, result.output)
-        ok, _ = session_hooks.verify_hooks(self.cfg)
-        self.assertTrue(ok)
-        # Re-running reports already-up-to-date.
-        result2 = CliRunner().invoke(cli, ["setup"])
-        self.assertEqual(result2.exit_code, 0, result2.output)
-        self.assertIn("up to date", result2.output)
+        # Per-session model: no global settings.json is written.
+        self.assertFalse((self.cfg / "settings.json").exists())
+        self.assertIn("per-session", result.output)
+        self.assertIn("-m loony_dev hook", result.output)
 
 
-class TestWorkerRefusesWithoutHooks(unittest.TestCase):
+# ---------------------------------------------------------------------------
+# Session launch wires hooks via --settings, scoped to loony-managed sessions
+# ---------------------------------------------------------------------------
+
+class TestSessionPassesSettings(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = Path(_tmpdir())
         self.addCleanup(shutil.rmtree, self.cfg, ignore_errors=True)
+        self.enterContext(mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(self.cfg)}))
 
-    def test_worker_refuses_when_verify_fails(self) -> None:
-        from click.testing import CliRunner
+    def _capture_open_cmd(self, **kwargs) -> list[str]:
+        """Run ``ClaudeSession.open()`` far enough to capture the launched argv.
 
-        from loony_dev.cli import cli
+        ``pty.fork`` is faked to return the child pid (0); the child branch then
+        builds the command and reaches the mocked ``os.execvpe``, which records
+        argv and exits. The pre-fork socket bind and ``os.chdir`` are stubbed so
+        the test process keeps its cwd and binds no real socket.
+        """
+        captured: dict[str, list[str]] = {}
 
-        # install_hooks is a no-op (so the file is never written) and verify_hooks
-        # reports failure → the worker must refuse to start with a clear message,
-        # before any GitHub/orchestrator work happens.
-        with mock.patch("loony_dev.agents.session_hooks.install_hooks"), \
-             mock.patch(
-                 "loony_dev.agents.session_hooks.verify_hooks",
-                 return_value=(False, "missing hook for Stop"),
-             ), \
-             mock.patch("loony_dev.cli.install_commands", return_value=[]):
-            result = CliRunner().invoke(cli, ["worker", "--repo", "acme/widgets"])
-        self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("loony-dev setup", result.output)
+        def fake_execvpe(binary: str, cmd: list[str], env: dict) -> None:
+            captured["cmd"] = cmd
+            raise SystemExit(0)
+
+        cwd = Path(_tmpdir())
+        self.addCleanup(shutil.rmtree, cwd, ignore_errors=True)
+        sess = ClaudeSession(cwd, binary="claude", **kwargs)
+        with mock.patch.object(sess._event_source, "bind"), \
+             mock.patch("os.chdir"), \
+             mock.patch("os.execvpe", side_effect=fake_execvpe), \
+             mock.patch("pty.fork", return_value=(0, 0)), \
+             self.assertRaises(SystemExit):
+            sess.open()
+        return captured["cmd"]
+
+    def test_hook_session_command_includes_settings(self) -> None:
+        cmd = self._capture_open_cmd(session_id="sid-settings")
+        self.assertIn("--settings", cmd)
+        settings = json.loads(cmd[cmd.index("--settings") + 1])
+        self.assertEqual(set(settings["hooks"]), set(session_hooks.HOOK_EVENT_NAMES))
+
+    def test_jsonl_session_omits_settings(self) -> None:
+        cmd = self._capture_open_cmd(session_id="sid-jsonl", session_events="jsonl")
+        self.assertNotIn("--settings", cmd)
 
 
 if __name__ == "__main__":

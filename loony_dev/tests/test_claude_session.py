@@ -22,6 +22,7 @@ from loony_dev.agents.claude_session import (
     QuotaExceededError,
     ReadinessTimeout,
     TurnResult,
+    TurnTimeout,
     _entry_text,
     _is_interrupt,
     _is_terminal_assistant,
@@ -367,6 +368,77 @@ class TestSlashCommandTurnBoundary(_StubSessionTest):
         # Exactly the turn's terminal assistant entry was appended.
         after = _count_entries(self.session.jsonl_path)
         self.assertGreater(after, before)
+
+
+class TestIdleBackstop(_StubSessionTest):
+    """(#166) The turn backstop is an *idle* window, not a total-time cap.
+
+    A short ``backstop`` is used as the per-turn timeout; the stub keeps the
+    transcript growing (HEARTBEAT) for longer than that, proving an actively
+    working turn is never hard-killed mid-work.
+    """
+
+    # Fast heartbeats (gap << backstop) for well over a backstop window.
+    extra_env = {"STUB_HEARTBEAT_GAP": "0.1", "STUB_HEARTBEAT_SECS": "2.0"}
+
+    def test_active_long_turn_survives_past_backstop(self) -> None:
+        self.session.open()
+        start = time.monotonic()
+        # backstop (0.6s) is far shorter than the 2.0s the turn runs; only the
+        # transcript-growth liveness reset keeps it alive.
+        result = self.session.send_turn("please HEARTBEAT for a while", timeout=0.6)
+        elapsed = time.monotonic() - start
+        self.assertIsInstance(result, TurnResult)
+        self.assertEqual(result.stop_reason, "end_turn")
+        self.assertFalse(result.was_interrupted)
+        # It really did outlive a single backstop window (sanity: not an instant
+        # return that would mean the heartbeat never engaged).
+        self.assertGreater(elapsed, 0.6)
+
+
+class TestMissedStopFallback(_StubSessionTest):
+    """A completed turn whose ``Stop`` hook was missed is recovered from the
+    transcript instead of being reported as a timeout."""
+
+    def test_missed_stop_recovers_from_transcript(self) -> None:
+        self.session.open()
+        # The stub writes a terminal assistant entry but never emits ``stop``.
+        result = self.session.send_turn("do MISSEDSTOP now", timeout=0.6)
+        self.assertIsInstance(result, TurnResult)
+        self.assertEqual(result.stop_reason, "end_turn")
+        self.assertFalse(result.was_interrupted)
+        self.assertIn("missed-stop reply", result.text)
+
+
+class TestStalledTurnTimesOut(_StubSessionTest):
+    """A genuinely silent CLI (no transcript growth, no ``Stop``) trips
+    ``TurnTimeout`` — with a *stable* message that omits the session id so the
+    repeated-failure dedup can escalate to ``in-error``."""
+
+    def test_stall_raises_stable_turn_timeout(self) -> None:
+        self.session.open()
+        with self.assertRaises(TurnTimeout) as ctx:
+            self.session.send_turn("please STALL forever", timeout=0.5)
+        message = str(ctx.exception)
+        # The volatile session id must NOT appear, so identical stalls dedup.
+        self.assertNotIn(self.session.session_id, message)
+        # Stable, non-false wording (not the old "CLI process likely dead").
+        self.assertIn("Claude CLI appears stalled", message)
+
+    def test_stall_after_success_does_not_reuse_prior_terminal(self) -> None:
+        """A first turn completes (leaving a terminal entry in the accumulated
+        transcript); a *second* turn then stalls. The fallback must be scoped to
+        the second turn's entries, so it raises ``TurnTimeout`` instead of
+        reusing the first turn's terminal entry as a stale result."""
+        self.session.open()
+        first = self.session.send_turn("hello there", timeout=0.6)
+        self.assertIsInstance(first, TurnResult)
+        self.assertIn("hello there", first.text)
+        # Second turn stalls: no new transcript growth, no Stop. The earlier
+        # terminal entry is still in the file but precedes this turn's offset.
+        with self.assertRaises(TurnTimeout) as ctx:
+            self.session.send_turn("please STALL forever", timeout=0.5)
+        self.assertIn("Claude CLI appears stalled", str(ctx.exception))
 
 
 # ---------------------------------------------------------------------------

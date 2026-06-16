@@ -9,20 +9,27 @@ Guidance for Claude Code working in this repo.
 ## Commands
 
 - Install: `uv pip install -e .`
-- **Setup (required once): `loony-dev setup`** — installs the Claude Code hooks the worker depends on (see "Worker setup" below).
 - Run tests: `uv run pytest`
 - Run a single test: `uv run pytest loony_dev/tests/test_x.py::test_name`
 - Run the orchestrator: `loony-dev` (from a git repo with a GitHub remote)
 
-## Worker setup (Claude Code hooks)
+## How agents run Claude (turn execution)
 
-The persistent `ClaudeSession` (`loony_dev/agents/claude_session.py`) learns its lifecycle transitions — startup readiness, turn completion, interrupt, tool calls — from **Claude Code hook events**, not by polling the JSONL transcript (issue #178).
+**Both agents drive Claude non-interactively via `claude -p`** (`ClaudeQuotaMixin._run_claude_cli` / `_invoke_claude` in `loony_dev/agents/claude_quota.py`): one subprocess per turn, prompt on stdin (no ARG_MAX limit), context carried across turns by `--resume <session-id>` (falling back to `--session-id` to create). `_run_claude_cli` takes a `timeout`; on overrun the CLI **process group** is SIGKILLed and the call returns rc `124`.
 
-- `loony-dev setup` (and the `worker` bootstrap) idempotently merge our `SessionStart` / `Stop` / `PreToolUse` / `PostToolUse` hooks into `~/.claude/settings.json` (honouring `CLAUDE_CONFIG_DIR`), preserving any hand-authored hooks. The hook command is `loony-dev hook <event>`, which `loony_dev/agents/session_hooks.py:run_hook` services.
+- `PlanningAgent.execute` has always used this path.
+- `CodingAgent` uses a thin `_CliSession` (`coding.py`) wrapping `_run_claude_cli` behind the old `open`/`send_turn`/`close` surface (so the multi-phase turn loop and its tests are unchanged). It **replaced** the persistent PTY `ClaudeSession` because driving Claude's interactive TUI over a PTY proved unreliable on recent CLI versions (e.g. 2.1.178): turns intermittently never executed — no hooks, no Stop, no transcript — and the worker stalled for the whole backstop. `claude -p` is the supported automation interface and is reliable.
+- A fresh branch (no prior commits) gets a brand-new random session id (not the deterministic `session_key` id) so its phases stay resumable without inheriting stale context from a reused id.
+
+## Persistent ClaudeSession + hooks (dashboard observe/steer only)
+
+`ClaudeSession` (`loony_dev/agents/claude_session.py`) — the persistent PTY-backed session — is **no longer used to run agent turns**. It is retained for the web dashboard's live observe/steer bridge (#164). It learns its lifecycle transitions — startup readiness, turn completion, interrupt, tool calls — from **Claude Code hook events**, not by polling the JSONL transcript (issue #178).
+
+- Hooks are wired **per-session, not globally**: when `ClaudeSession.open()` launches `claude` it passes `--settings <json>` carrying our `SessionStart` / `Stop` / `PreToolUse` / `PostToolUse` hooks (`session_hooks.session_settings_json`). They therefore apply **only** to loony-managed sessions and never touch a human's own `claude` runs — and there is no global `~/.claude/settings.json` state to install, verify, or drift. `loony-dev setup` is now only an informational backward-compat command.
+- The hook command is `{sys.executable} -m loony_dev hook <event>` (`loony_dev/__main__.py` → `session_hooks.run_hook`), invoked through the **current interpreter** rather than the bare `loony-dev` console script, so it resolves even when loony-dev is installed in a venv that is not on the session's `PATH`.
 - Each hook reads its stdin payload, looks up the session's control socket by `session_id`, and writes one event line. Sockets live at `<claude-config>/_loony/sessions/<session_id>/control.sock`; the session binds the listener **before** forking `claude` so an immediate `SessionStart` is never missed.
-- **The worker refuses to start if the hooks are missing or stale** (`verify_hooks`), printing `run loony-dev setup`. This is the config-drift failure mode: if an operator overwrites `~/.claude/settings.json` and wipes our hooks, re-run `loony-dev setup`.
 - A long *backstop* timeout (`[worker] claude_session_backstop_seconds`, default 600s) on `open`/`send_turn` is a **liveness net only** — it trips when `claude` crashes before firing a hook, never as the primary signal.
-- Migration seam: `[worker] session_events` selects `"hooks"` (default) or the legacy `"jsonl"` poll/parse path (kept for one release, then deleted).
+- Migration seam: `[worker] session_events` selects `"hooks"` (default) or the legacy `"jsonl"` poll/parse path (kept for one release, then deleted). The JSONL path needs no hooks, so it omits the `--settings` payload.
 
 ## Conventions
 

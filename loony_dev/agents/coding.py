@@ -2,18 +2,16 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from loony_dev.agents import session_hooks
 from loony_dev.agents.base import Agent
 from loony_dev.agents.claude_quota import ClaudeQuotaMixin
 from loony_dev.agents.context_file import CommandNotInstalledError, cleanup_context_dir
 from loony_dev.agents.claude_session import (
-    ClaudeSession,
     ClaudeSessionError,
     QuotaExceededError,
-    ReadinessTimeout,
     TurnResult,
 )
 from loony_dev.models import GitError, HookFailureError, TaskResult, truncate_for_log
@@ -24,20 +22,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Per-turn timeout for ``ClaudeSession.send_turn``. A single phase (implement a
-# whole issue, fix a review) can run for many minutes, so this is generous;
-# override via the ``claude_turn_timeout_seconds`` key under ``[worker]``.
+# Per-turn timeout for a single ``claude -p`` invocation. A single phase
+# (implement a whole issue, fix a review) can run for many minutes, so this is
+# generous; override via the ``claude_turn_timeout_seconds`` key under
+# ``[worker]``. Unlike the old PTY session's idle backstop, this is a real
+# wall-clock cap on the subprocess — ``claude -p`` exits when the turn is done.
 _DEFAULT_TURN_TIMEOUT = 30 * 60
-
-# Backstop for ``ClaudeSession.open`` / ``send_turn`` — a *liveness net only*
-# (#178). The authoritative signals are the SessionStart / Stop hook events; this
-# large window merely stops a crashed CLI from hanging the worker. Override via
-# the ``claude_session_backstop_seconds`` key under ``[worker]``.
-_DEFAULT_BACKSTOP = 600
-
-# Default inbound event source: "hooks" (the hook-driven control channel) or
-# "jsonl" (the legacy poll/parse fallback, selectable for one release).
-_DEFAULT_SESSION_EVENTS = "hooks"
 
 
 def _worker_setting(key: str, default: object) -> object:
@@ -51,25 +41,49 @@ def _worker_setting(key: str, default: object) -> object:
 
 
 def _turn_timeout() -> float:
-    """Return the per-turn timeout (seconds) for the persistent session."""
+    """Return the per-turn timeout (seconds) for a single ``claude -p`` call."""
     try:
         return float(_worker_setting("claude_turn_timeout_seconds", _DEFAULT_TURN_TIMEOUT))
     except (TypeError, ValueError):
         return float(_DEFAULT_TURN_TIMEOUT)
 
 
-def _backstop_timeout() -> float:
-    """Return the session backstop (seconds) — a liveness net, not the signal."""
-    try:
-        return float(_worker_setting("claude_session_backstop_seconds", _DEFAULT_BACKSTOP))
-    except (TypeError, ValueError):
-        return float(_DEFAULT_BACKSTOP)
+class _CliSession:
+    """A non-interactive ``claude -p`` execution context with session continuity.
 
+    Replaces the persistent PTY ``ClaudeSession`` for CodingAgent turns: each
+    :meth:`send_turn` shells out to ``claude -p`` (via the agent's
+    :meth:`~ClaudeQuotaMixin._run_claude_cli`, which ``--resume``\\ s the session
+    id so context carries across turns). Driving the interactive TUI over a PTY
+    proved unreliable on recent Claude CLI versions — turns intermittently never
+    executed (no hooks, no Stop, no transcript), so the worker stalled.
 
-def _session_events() -> str:
-    """Return the configured inbound event source ("hooks" or "jsonl")."""
-    value = _worker_setting("session_events", _DEFAULT_SESSION_EVENTS)
-    return str(value) if value else _DEFAULT_SESSION_EVENTS
+    The surface mirrors ``ClaudeSession`` (``send_turn`` raising
+    ``QuotaExceededError`` / ``ClaudeSessionError``; ``close``) so the agent's
+    turn loop — and its tests — are unchanged.
+    """
+
+    def __init__(self, agent: "CodingAgent", cwd: Path, session_id: str) -> None:
+        self._agent = agent
+        self.cwd = cwd
+        self.session_id = session_id
+
+    def send_turn(self, prompt: str, *, timeout: float) -> TurnResult:
+        stdout, stderr, rc = self._agent._run_claude_cli(
+            prompt, cwd=self.cwd, session_id=self.session_id, timeout=timeout,
+        )
+        combined = f"{stdout}\n{stderr}"
+        if self._agent._is_quota_error(combined):
+            raise QuotaExceededError(combined)
+        if rc != 0:
+            detail = (stderr.strip() or stdout.strip() or f"exit code {rc}")[:500]
+            raise ClaudeSessionError(f"claude -p failed (rc={rc}): {detail}")
+        return TurnResult(
+            text=stdout, stop_reason="end_turn", was_interrupted=False, entries_added=0,
+        )
+
+    def close(self) -> None:  # parity with ClaudeSession; nothing to tear down
+        pass
 
 
 class CodingAgent(ClaudeQuotaMixin, Agent):
@@ -97,7 +111,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             return TaskResult(success=False, output=str(exc), summary=str(exc))
 
         logger.debug(
-            "Opening ClaudeSession (cwd=%s, session=%s)", work_dir, session_id,
+            "Coding turn via claude -p (cwd=%s, session=%s)", work_dir, session_id,
         )
         logger.debug("Claude turn: %s", prompt)
 
@@ -341,61 +355,33 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             cleanup_context_dir(task.worktree_key)
 
     # ------------------------------------------------------------------
-    # Persistent session helpers
+    # Session helpers (non-interactive ``claude -p``, see _CliSession)
     # ------------------------------------------------------------------
 
-    def _open_session(self, work_dir: Path, session_id: str | None) -> ClaudeSession:
-        """Open and register a persistent ClaudeSession for the task.
+    def _open_session(self, work_dir: Path, session_id: str | None) -> _CliSession:
+        """Return a :class:`_CliSession` for the task's turns.
 
-        Registration lets :meth:`ClaudeQuotaMixin.terminate` close the session
-        on an orchestrator shutdown signal. The caller owns the session and
-        must release it via :meth:`_close_session`.
+        Each turn runs as a one-shot ``claude -p`` that ``--resume``\\ s the
+        session id, so there is no long-lived process to open. A missing/`None`
+        session id (a fresh branch) gets a brand-new random id so the issue's
+        multiple phases still share one resumable session without inheriting
+        stale context from a deterministic id reused across branches. The
+        per-invocation subprocess is registered (and killed on shutdown) inside
+        :meth:`~ClaudeQuotaMixin._invoke_claude`.
         """
-        session = ClaudeSession(
-            cwd=work_dir,
-            session_id=session_id,
-            backstop_seconds=_backstop_timeout(),
-            session_events=_session_events(),
-        )
-        self._register_session(session)
-        try:
-            session.open()
-        except ReadinessTimeout:
-            self._unregister_session(session)
-            try:
-                session.close()
-            except Exception:  # pragma: no cover - best-effort teardown
-                logger.debug("Error closing ClaudeSession after open failure", exc_info=True)
-            # A missed SessionStart most often means an operator wiped our hooks
-            # from settings.json (config drift). Re-check on failure and, if so,
-            # surface the actionable message instead of a bare liveness timeout.
-            ok, reason = session_hooks.verify_hooks()
-            if not ok:
-                raise ClaudeSessionError(
-                    "required Claude Code hooks are missing or stale "
-                    f"({reason}) — run `loony-dev setup`",
-                ) from None
-            raise
-        except Exception:
-            self._unregister_session(session)
-            try:
-                session.close()
-            except Exception:  # pragma: no cover - best-effort teardown
-                logger.debug("Error closing ClaudeSession after open failure", exc_info=True)
-            raise
-        return session
+        sid = session_id or str(uuid.uuid4())
+        return _CliSession(self, work_dir, sid)
 
-    def _close_session(self, session: ClaudeSession) -> None:
-        """Close *session* and drop it from the registry (best-effort)."""
-        self._unregister_session(session)
+    def _close_session(self, session: _CliSession) -> None:
+        """Best-effort release (no live process to tear down)."""
         try:
             session.close()
         except Exception:  # pragma: no cover - best-effort teardown
-            logger.debug("Error closing ClaudeSession", exc_info=True)
+            logger.debug("Error closing CLI session", exc_info=True)
 
     def _run_turn(
         self,
-        session: ClaudeSession,
+        session: _CliSession,
         prompt: str,
         *,
         timeout: float,

@@ -135,10 +135,17 @@ class ReadinessTimeout(ClaudeSessionError):
 
 
 class TurnTimeout(ClaudeSessionError):
-    """Raised when no ``Stop`` event arrives within the backstop window.
+    """Raised when a turn produces no output for the whole backstop window.
 
-    Like :class:`ReadinessTimeout`, the backstop is a liveness net: it means the
-    CLI fired no ``Stop`` hook in time and is probably dead, not merely slow.
+    The backstop is an *idle/liveness* net, not a total-time cap: it resets on
+    any turn activity (the transcript file growing) and only trips after a full
+    ``backstop`` window with no activity *and* no terminal entry in the
+    transcript — i.e. a genuinely stalled CLI, not a long-but-productive turn.
+
+    The message is intentionally stable (no volatile ``session_id``) so that the
+    repeated-failure → ``in-error`` dedup, which compares normalised failure
+    comment bodies, can match identical stalls and escalate instead of looping.
+    The session id is logged separately via :data:`logger`.
     """
 
 
@@ -466,9 +473,23 @@ class HookEventSource(SessionEventSource):
         # mistaken for this one (mirrors the JSONL tailer's discard at turn
         # start; correlation is by sequencing under the per-turn lock).
         self._drain_stops()
+        # Remember where the transcript ends *before* this turn so the missed-Stop
+        # fallback only inspects entries this turn appended — otherwise a later
+        # stalled turn could reuse a previous turn's terminal entry (the session
+        # is persistent and the transcript accumulates across turns).
+        try:
+            turn_start_offset = session._jsonl_path.stat().st_size
+        except FileNotFoundError:
+            turn_start_offset = 0
         session._inject_prompt(prompt)
 
+        # The backstop is an *idle* window, not a total cap: an actively-working
+        # turn (transcript still growing) keeps resetting the deadline, so it
+        # never times out. The deadline only advances toward expiry while the CLI
+        # is silent. ``_activity_marker`` summarises the transcript's size+mtime;
+        # any change means the turn is alive.
         deadline = time.monotonic() + backstop
+        last_marker = self._activity_marker(session)
         while True:
             try:
                 event = self._stops.get(timeout=min(_POLL_INTERVAL, backstop))
@@ -483,10 +504,38 @@ class HookEventSource(SessionEventSource):
                         break
                     except queue.Empty:
                         raise ClaudeSessionError("session process exited mid-turn")
+                # Liveness check: if the transcript grew since the last poll the
+                # CLI is productive, so push the idle deadline out. Only a fully
+                # silent ``backstop`` window (no growth) lets the deadline lapse.
+                marker = self._activity_marker(session)
+                if marker != last_marker:
+                    last_marker = marker
+                    deadline = time.monotonic() + backstop
+                    continue
                 if time.monotonic() >= deadline:
+                    # No Stop event and no transcript growth for the whole idle
+                    # window. Before declaring failure, fall back to the
+                    # transcript: a *completed* turn whose ``Stop`` hook was
+                    # missed leaves a terminal assistant entry. If we find one,
+                    # synthesise a normal completion; only a truly silent CLI
+                    # (no terminal entry) is a real stall.
+                    fallback = self._fallback_from_transcript(
+                        session, start_offset=turn_start_offset,
+                    )
+                    if fallback is not None:
+                        logger.warning(
+                            "No Stop hook within %.0fs for session %s; recovered a "
+                            "completed turn from the transcript (missed Stop).",
+                            backstop, session.session_id,
+                        )
+                        return fallback
+                    logger.warning(
+                        "Turn stalled: no output for %.0fs and no terminal "
+                        "transcript entry for session %s.",
+                        backstop, session.session_id,
+                    )
                     raise TurnTimeout(
-                        f"no Stop hook within {backstop:.0f}s for session "
-                        f"{session.session_id} — CLI process likely dead",
+                        f"no turn output for {backstop:.0f}s — Claude CLI appears stalled",
                     )
 
         was_interrupted = bool(event.get("interrupted"))
@@ -510,6 +559,86 @@ class HookEventSource(SessionEventSource):
             stop_reason: str | None = "interrupted"
         else:
             stop_reason = event.get("stop_reason") or "end_turn"
+        return TurnResult(
+            text=text,
+            stop_reason=stop_reason,
+            was_interrupted=was_interrupted,
+            entries_added=0,
+        )
+
+    @staticmethod
+    def _activity_marker(session: "ClaudeSession") -> tuple[int, int]:
+        """Return a cheap (size, mtime_ns) marker for the session transcript.
+
+        Any change between two polls means the turn produced output (Claude
+        appends entries continuously while working), so it is alive. Missing
+        file → ``(0, 0)`` so a transcript appearing for the first time counts as
+        activity. Other OS errors propagate rather than being masked as a stall.
+        """
+        try:
+            st = session._jsonl_path.stat()
+        except FileNotFoundError:
+            return (0, 0)
+        return (st.st_size, st.st_mtime_ns)
+
+    def _fallback_from_transcript(
+        self, session: "ClaudeSession", *, start_offset: int,
+    ) -> "TurnResult | None":
+        """Synthesise a completed :class:`TurnResult` from the transcript, or None.
+
+        Used when the idle window lapses without a ``Stop`` event: if the turn
+        actually finished (a terminal assistant entry, or a trailing interrupt
+        marker) but the ``Stop`` hook was missed, we recover a normal completion
+        instead of falsely reporting a stall. Returns ``None`` when no terminal
+        entry exists (a genuine stall mid-turn).
+
+        Only entries appended at/after ``start_offset`` (the transcript size at
+        this turn's start) are inspected, so a stalled turn cannot reuse an
+        earlier turn's terminal entry from the accumulated transcript.
+
+        Mirrors the ``Stop`` path's shape: quota errors still raise
+        :class:`QuotaExceededError`; ``was_interrupted`` is derived from the
+        transcript tail exactly as the hook would; text comes from the assistant
+        entries via :meth:`_assistant_text`. A missing transcript → ``None``
+        (a genuine stall); other OS errors propagate.
+        """
+        path = session._jsonl_path
+        try:
+            raw_bytes = path.read_bytes()
+        except FileNotFoundError:
+            return None
+        raw = raw_bytes[max(0, start_offset):].decode("utf-8", "replace")
+        entries: list[dict] = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+        # Find the last terminal marker: a terminal assistant entry (turn ended
+        # normally) or an interrupt user entry (turn was aborted).
+        terminal: dict | None = None
+        for entry in reversed(entries):
+            if _is_terminal_assistant(entry) or _is_interrupt(entry):
+                terminal = entry
+                break
+        if terminal is None:
+            return None
+
+        # Same quota guard as the Stop path: a usage-limit message in the
+        # transcript must surface as QuotaExceededError, not a plain result.
+        scan = session._scan_transcript_after_stop(str(path), want_text=True)
+        if scan is not None and scan.quota_output is not None:
+            raise QuotaExceededError(scan.quota_output)
+
+        was_interrupted = _is_interrupt(terminal)
+        stop_reason = "interrupted" if was_interrupted else "end_turn"
+        # Text comes from *this turn's* entries only (scoped above), not the
+        # whole-transcript ``scan`` which the quota guard uses.
+        text = session._assistant_text(entries)
         return TurnResult(
             text=text,
             stop_reason=stop_reason,
@@ -773,8 +902,14 @@ class ClaudeSession:
             "--dangerously-skip-permissions",
             "--session-id",
             self.session_id,
-            *self._extra_args,
         ]
+        # Hook-driven sessions carry loony-dev's lifecycle hooks via a
+        # per-session ``--settings`` payload, scoping them to this session only
+        # (never the operator's own ``claude`` runs); the legacy JSONL source
+        # needs no hooks. See :mod:`loony_dev.agents.session_hooks`.
+        if self._session_events != SESSION_EVENTS_JSONL:
+            cmd += ["--settings", session_hooks.session_settings_json()]
+        cmd += self._extra_args
         env = os.environ.copy()
         env.setdefault("TERM", "xterm-256color")
         env.update(self._env_overrides)
