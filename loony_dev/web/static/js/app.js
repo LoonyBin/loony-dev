@@ -17,6 +17,7 @@ import * as overview from "./overview.js";
 import * as sessions from "./sessions.js";
 import * as repos from "./repos.js";
 import * as repoDetail from "./repoDetail.js";
+import * as issueDetail from "./issueDetail.js";
 import * as logs from "./logs.js";
 import * as entries from "./entries.js";
 import * as attach from "./attach.js";
@@ -65,6 +66,7 @@ function applySnapshot(snapshot) {
   // lives in the per-repo drill-down rather than dedicated Overview tables.
   repos.render(workers, worktrees, stuck);
   repoDetail.update(snapshot);
+  issueDetail.update(snapshot);
 
   // Keep the per-repo pickers in sync with discovered repos (cheap, no clobber).
   const next = [...new Set([
@@ -125,6 +127,7 @@ function start() {
   attach.init();
   observe.init();
   repoDetail.init();
+  issueDetail.init();
   connect();
 }
 
