@@ -257,6 +257,24 @@ class WebAppTestCase(unittest.TestCase):
         # The detail module is loaded as part of the app shell's module graph.
         self.assertEqual(self.client.get("/static/js/issueDetail.js").status_code, 200)
 
+    def test_index_declares_responsive_viewport(self) -> None:
+        # The mobile companion pass (#192) needs the responsive viewport meta so
+        # phones lay out at device width instead of a zoomed-out desktop page.
+        body = self.client.get("/").text
+        self.assertIn('name="viewport"', body)
+        self.assertIn("width=device-width", body)
+
+    def test_app_css_ships_mobile_companion_rules(self) -> None:
+        # The responsive layout (#192) is CSS-dominant; assert the structural
+        # hooks ship: a phone breakpoint, safe-area insets for the bottom tab
+        # bar / sticky steer reply, and the full-bleed overlay treatment.
+        css = self.client.get("/static/app.css").text
+        self.assertIn("Mobile companion surfaces (#192)", css)
+        self.assertIn("@media (max-width: 720px)", css)
+        self.assertIn("env(safe-area-inset-bottom)", css)
+        # Full-bleed overlays make the modal card fill the phone screen.
+        self.assertIn("max-height: 100%", css)
+
     def test_task_sessions_endpoint_surfaces_pipeline_key(self) -> None:
         # The Issue ▸ PR detail view (#190) addresses the #199 pipeline routes by
         # pipeline_key, so the read path must surface it (read-only). It rides the
