@@ -258,6 +258,63 @@ class ClaudeQuotaMixin:
             return None
         return session_id_for(self.repo, key)
 
+    # ------------------------------------------------------------------
+    # On-disk observe registry (#202)
+    # ------------------------------------------------------------------
+    # The ``-p`` agents drive one-shot ``claude -p --resume`` turns with no
+    # long-lived PTY, so nothing publishes a ``session.json`` the way the
+    # persistent-PTY ``SessionBridge`` did. The dashboard's JSONL-driven observe
+    # surface needs that on-disk entry — with the ``cwd`` + the *resolved*
+    # session id the turns actually ran under — to discover the transcript to
+    # tail. These helpers write/refresh it; they are strictly best-effort:
+    # registry trouble must never break (or fail) a task.
+
+    def _register_observe_session(
+        self, task: Task, work_dir: Path, session_id: str | None, *, status: str = "running",
+    ) -> None:
+        """Record *task*'s session on disk so the dashboard can observe it.
+
+        *session_id* must be the id the turns actually run under (for a fresh
+        branch this is the random id resolved in ``_open_session``, not the
+        deterministic one), or the JSONL path will not resolve. No-op when the
+        task has no worktree key, no repo, or no resolved session id.
+        """
+        task_key = task.worktree_key
+        if not task_key or not self.repo or not session_id:
+            return
+        try:
+            from loony_dev import config, session_registry
+
+            session_registry.register_task_session(
+                config.settings.base_dir,
+                self.repo,
+                task_key,
+                session_id=session_id,
+                cwd=work_dir,
+                status=status,
+            )
+        except Exception:  # pragma: no cover - registry is best-effort
+            logger.debug("Could not register observe session for %s", task_key, exc_info=True)
+
+    def _mark_observe_session(self, task: Task, status: str) -> None:
+        """Update *task*'s on-disk session status (e.g. ``idle`` when parked).
+
+        Leaves ``cwd``/``session_id`` intact so the session stays observable
+        from its transcript after the turn ends (#202). Best-effort no-op when
+        unregistered or on any error.
+        """
+        task_key = task.worktree_key
+        if not task_key or not self.repo:
+            return
+        try:
+            from loony_dev import config, session_registry
+
+            session_registry.set_task_session_status(
+                config.settings.base_dir, self.repo, task_key, status,
+            )
+        except Exception:  # pragma: no cover - registry is best-effort
+            logger.debug("Could not update observe session for %s", task_key, exc_info=True)
+
     def _command_turn(
         self,
         work_dir: Path,

@@ -27,7 +27,7 @@ from fastapi import Path as PathParam
 from fastapi.responses import StreamingResponse
 
 from loony_dev.agents.session_bridge import FRAME_CONTROL, FRAME_DATA, encode_frame
-from loony_dev.web import entries, services, streaming
+from loony_dev.web import entries, services, streaming, transcript_stream
 
 # Frame header shared with the worker-side bridge: 1-byte type + 4-byte BE length.
 _FRAME_HEADER = struct.Struct(">BI")
@@ -125,6 +125,20 @@ def create_api_router(
         worker side enforces the read-only-while-bot-has-the-mic contract.
         """
         await _attach_session(base_dir, websocket, task_key)
+
+    @router.websocket("/sessions/{task_key}/observe")
+    async def observe_session(websocket: WebSocket, task_key: str) -> None:
+        """Stream a session's conversation from its JSONL transcript (issue #202).
+
+        The JSONL-driven default observe surface: it renders the session from
+        the on-disk transcript alone — no live ``claude`` process required, so a
+        parked session between turns is observable identically to an active one.
+        Sends structured JSON events (``user`` / ``assistant`` / ``thinking`` /
+        ``tool_use`` / ``tool_result`` / ``stop`` / ``interrupt``): the full
+        backlog first, then live updates as the transcript grows. Independent of
+        the raw-bytes ``/attach`` PTY path, which stays for the live drive case.
+        """
+        await _observe_session(base_dir, websocket, task_key)
 
     def _state_snapshot() -> dict:
         """Gather the consolidated dashboard state in one shot.
@@ -385,6 +399,52 @@ async def _attach_session(base_dir: Path, websocket: WebSocket, task_key: str) -
         writer.close()
         with contextlib.suppress(OSError, Exception):
             await writer.wait_closed()
+        with contextlib.suppress(Exception):
+            await websocket.close()
+
+
+async def _observe_session(base_dir: Path, websocket: WebSocket, task_key: str) -> None:
+    """Stream JSONL-derived conversation events for *task_key* (issue #202).
+
+    Resolves the task's transcript path from the registry, accepts the socket,
+    then pumps :func:`transcript_stream.tail_events` (backlog then live) as JSON
+    messages until the client disconnects. The generator is closed in a
+    ``finally`` so its inotify/file descriptors are released on every detach,
+    leaking nothing across reconnects.
+    """
+    jsonl_path = services.observe_jsonl_path(base_dir, task_key)
+    if jsonl_path is None:
+        # Reject before accept with the same distinct code as /attach so the
+        # client can tell "no such observable session" apart from a net failure.
+        await websocket.close(code=4404, reason="no such session")
+        return
+
+    await websocket.accept()
+    gen = transcript_stream.tail_events(jsonl_path)
+
+    async def pump_events() -> None:
+        async for event in gen:
+            await websocket.send_json(event)
+
+    async def watch_disconnect() -> None:
+        # The stream is server→client only; draining inbound messages lets us
+        # notice a client going away promptly (between live events) so the
+        # tailer is torn down instead of lingering until the next append.
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+
+    sender = asyncio.create_task(pump_events())
+    watcher = asyncio.create_task(watch_disconnect())
+    try:
+        await asyncio.wait({sender, watcher}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in (sender, watcher):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        await gen.aclose()
         with contextlib.suppress(Exception):
             await websocket.close()
 

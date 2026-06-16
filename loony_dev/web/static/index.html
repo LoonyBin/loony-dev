@@ -349,6 +349,21 @@
     </div>
   </div>
 
+  <!-- JSONL-driven observe overlay (#202). Renders the session conversation
+       from its transcript — no live process required. Hidden until Observe. -->
+  <div id="observe-modal" class="modal" role="dialog" aria-modal="true"
+       aria-labelledby="observe-title" hidden>
+    <div class="modal-card modal-term">
+      <div class="modal-head">
+        <span id="observe-title" class="modal-title">Observing</span>
+        <span class="spacer"></span>
+        <span id="observe-status" class="observe-status muted"></span>
+        <button id="observe-close" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <div id="observe-conv" class="observe-conv"></div>
+    </div>
+  </div>
+
   <!-- One-shot "send guidance" overlay (the simpler inject path). -->
   <div id="steer-modal" class="modal" role="dialog" aria-modal="true"
        aria-labelledby="steer-title" hidden>
