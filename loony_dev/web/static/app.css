@@ -690,7 +690,7 @@ button.action:hover,
   font-family: var(--font-mono);
   font-size: var(--fs-1);
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: break-word;
 }
 .obs-user { border-left: 3px solid var(--primary); }
 .obs-assistant { border-left: 3px solid var(--running); }
@@ -708,7 +708,7 @@ button.action:hover,
   font-family: var(--font-mono);
   font-size: var(--fs-0);
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: break-word;
   margin: var(--sp-1) 0 0;
   padding: var(--sp-2);
   background: var(--surface-2);
