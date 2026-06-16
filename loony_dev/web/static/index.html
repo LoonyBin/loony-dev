@@ -24,13 +24,28 @@
 
   <link rel="stylesheet" href="/static/app.css" />
 
-  <!-- Apply a pinned theme before first paint to avoid a flash. -->
+  <!-- Apply the pinned shell preferences (theme + the Tweaks panel's accent /
+       density / live-pulse, plus the rail collapse state) before first paint so
+       there is no flash of the default look or rail width. Each maps a
+       localStorage value onto a <html> data-* attribute that app.css keys off;
+       the Alpine store below seeds its reactive fields from the same values so
+       the toggles stay in lockstep. -->
   <script>
     (function () {
+      var d = document.documentElement;
+      function pin(key, attr, allowed) {
+        try {
+          var v = localStorage.getItem(key);
+          if (v && allowed.indexOf(v) !== -1) d.setAttribute(attr, v);
+        } catch (e) { /* localStorage unavailable */ }
+      }
+      pin("loony-theme", "data-theme", ["dark", "light"]);
+      pin("loony-accent", "data-accent", ["blue", "violet", "emerald", "slate"]);
+      pin("loony-density", "data-density", ["comfortable", "compact"]);
+      pin("loony-pulse", "data-pulse", ["on", "off"]);
       try {
-        var t = localStorage.getItem("loony-theme");
-        if (t === "dark" || t === "light") {
-          document.documentElement.setAttribute("data-theme", t);
+        if (localStorage.getItem("loony-rail-collapsed") === "1") {
+          d.setAttribute("data-rail", "collapsed");
         }
       } catch (e) { /* localStorage unavailable */ }
     })();
@@ -72,14 +87,20 @@
   <script>
     document.addEventListener("alpine:init", () => {
       // Nav icons are Material Symbols Outlined ligature names (#186), rendered
-      // through the icon font by the .nav-icon span below.
+      // through the icon font by the .nav-icon span below. Skills & Commands is
+      // deliberately NOT a nav item — it moved into the settings gear flyout
+      // (#187) but stays routable (see VALID below). Each entry may carry an
+      // optional `dot` flag (a "needs attention" marker); Overview's trailing
+      // badge is wired to the live stuck count in the rail markup.
       const NAV = [
         { id: "overview", label: "Overview", icon: "dashboard" },
         { id: "sessions", label: "Sessions", icon: "cable" },
-        { id: "skills", label: "Skills & Commands", icon: "extension" },
         { id: "logs", label: "Logs", icon: "receipt_long" },
       ];
-      const VALID = new Set(NAV.map((n) => n.id));
+      // Routable views are decoupled from the nav list: `skills` is reachable
+      // from the gear flyout but is not a rail item, and the per-repo drill-down
+      // is reached by tapping a card (handled by the `repo/` hash prefix below).
+      const VALID = new Set([...NAV.map((n) => n.id), "skills"]);
       // The per-repo drill-down (#158) is not a nav item — it is reached by
       // tapping a repo and lives at `#repo/<owner>/<name>`. Parse the hash into
       // a {view, repo} pair so the detail route round-trips through the URL.
@@ -94,6 +115,10 @@
       const systemDark = window.matchMedia
         && window.matchMedia("(prefers-color-scheme: dark)").matches;
       const initial = parseHash();
+      const root = document.documentElement;
+      // localStorage helpers that degrade quietly when storage is unavailable.
+      const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+      const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* ignore */ } };
 
       window.Alpine.store("app", {
         nav: NAV,
@@ -104,8 +129,14 @@
         // indicator only appears once the stream actually drops; app.js flips
         // it on EventSource open/error.
         streamConnected: true,
-        theme: document.documentElement.getAttribute("data-theme")
+        theme: root.getAttribute("data-theme")
           || (systemDark ? "dark" : "light"),
+        // Shell preferences, seeded from the data-* attributes the pre-paint
+        // script already applied (so the controls match the rendered look).
+        collapsed: root.getAttribute("data-rail") === "collapsed",
+        accent: root.getAttribute("data-accent") || "blue",
+        density: root.getAttribute("data-density") || "comfortable",
+        pulse: root.getAttribute("data-pulse") !== "off",
         go(view) {
           if (!VALID.has(view)) view = "overview";
           this.view = view;
@@ -125,9 +156,41 @@
           this.repo = s.repo;
         },
         toggleTheme() {
-          this.theme = this.theme === "dark" ? "light" : "dark";
-          document.documentElement.setAttribute("data-theme", this.theme);
-          try { localStorage.setItem("loony-theme", this.theme); } catch (e) { /* ignore */ }
+          this.setTheme(this.theme === "dark" ? "light" : "dark");
+        },
+        // Always persist the chosen theme, even when it already matches the
+        // (OS-derived) current value — otherwise re-picking the active segment
+        // is a no-op and leaves the theme unpinned, so the OS-theme listener
+        // can later override the user's explicit choice.
+        setTheme(theme) {
+          this.theme = theme;
+          root.setAttribute("data-theme", theme);
+          lsSet("loony-theme", theme);
+        },
+        // The brand toggles the rail between expanded and icon-only; the width
+        // lives in --rail-w, keyed off data-rail (mirrored onto <html> like the
+        // theme so the pre-paint script can avoid a width flash on reload).
+        toggleCollapse() {
+          this.collapsed = !this.collapsed;
+          root.setAttribute("data-rail", this.collapsed ? "collapsed" : "expanded");
+          lsSet("loony-rail-collapsed", this.collapsed ? "1" : "0");
+        },
+        // Tweaks panel: each setter writes localStorage and reflects onto a
+        // <html> data-* attribute so app.css does the theming.
+        setAccent(accent) {
+          this.accent = accent;
+          root.setAttribute("data-accent", accent);
+          lsSet("loony-accent", accent);
+        },
+        setDensity(density) {
+          this.density = density;
+          root.setAttribute("data-density", density);
+          lsSet("loony-density", density);
+        },
+        togglePulse() {
+          this.pulse = !this.pulse;
+          root.setAttribute("data-pulse", this.pulse ? "on" : "off");
+          lsSet("loony-pulse", this.pulse ? "on" : "off");
         },
       });
     });
@@ -172,49 +235,203 @@
 </head>
 
 <body x-data x-cloak>
-  <header class="topbar">
-    <span class="brand">loony-dev <span class="brand-sub">dashboard</span></span>
-    <button
-      class="stuck-pill"
-      x-show="$store.app.stuckCount > 0"
-      @click="$store.app.go('overview')"
-    >
-      <span class="material-symbols-outlined" aria-hidden="true">warning</span>
-      <span x-text="`${$store.app.stuckCount} stuck`"></span>
-    </button>
-    <span class="spacer"></span>
-    <span
-      class="stream-status"
-      x-show="!$store.app.streamConnected"
-      x-cloak
-      role="status"
-      aria-live="polite"
-    >
-      <span class="stream-dot" aria-hidden="true"></span>reconnecting…
-    </span>
-    <button
-      class="icon-btn"
-      @click="$store.app.toggleTheme()"
-      :aria-label="$store.app.theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'"
-    >
-      <span class="material-symbols-outlined" aria-hidden="true"
-            x-text="$store.app.theme === 'dark' ? 'light_mode' : 'dark_mode'"></span>
-    </button>
-  </header>
-
-  <div class="layout">
-    <nav class="sidenav" aria-label="Primary">
-      <template x-for="item in $store.app.nav" :key="item.id">
+  <div class="shell">
+    <!-- Full-height left rail (#187): brand/collapse + Tweaks at the top,
+         primary nav in the middle, folded stuck/stream signals + operator
+         identity + settings gear pinned to the footer. Width is --rail-w,
+         keyed off [data-rail]; the brand button toggles collapse. -->
+    <aside class="rail">
+      <div class="rail-head">
+        <!-- The brand toggles the rail collapse (persisted), like a sidebar
+             pin. aria-pressed exposes the collapsed state to assistive tech. -->
         <button
-          class="nav-item"
-          :class="{ active: $store.app.view === item.id }"
-          @click="$store.app.go(item.id)"
+          class="rail-brand"
+          @click="$store.app.toggleCollapse()"
+          :aria-pressed="$store.app.collapsed"
+          :aria-label="$store.app.collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+          data-tooltip="loony-dev"
         >
-          <span class="nav-icon material-symbols-outlined" aria-hidden="true" x-text="item.icon"></span>
-          <span class="nav-label" x-text="item.label"></span>
+          <span class="rail-logo material-symbols-outlined" aria-hidden="true">deployed_code</span>
+          <span class="rail-brand-text">loony-dev <span class="brand-sub">dashboard</span></span>
         </button>
-      </template>
-    </nav>
+
+        <!-- Tweaks flyout: accent / density / live-pulse / theme. -->
+        <div class="flyout" x-data="{ open: false }" @keydown.escape.window="open = false">
+          <button
+            class="icon-btn"
+            @click="open = !open"
+            :aria-expanded="open"
+            aria-haspopup="dialog"
+            aria-label="Tweaks"
+            data-tooltip="Tweaks"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">tune</span>
+          </button>
+          <div
+            class="popover tweaks-panel"
+            x-show="open"
+            x-cloak
+            x-transition
+            @click.outside="open = false"
+            role="dialog"
+            aria-label="Tweaks"
+          >
+            <div class="tweak-row">
+              <span class="tweak-label">Theme</span>
+              <div class="segmented" role="group" aria-label="Theme">
+                <button :class="{ active: $store.app.theme === 'light' }"
+                        :aria-pressed="$store.app.theme === 'light'"
+                        @click="$store.app.setTheme('light')">Light</button>
+                <button :class="{ active: $store.app.theme === 'dark' }"
+                        :aria-pressed="$store.app.theme === 'dark'"
+                        @click="$store.app.setTheme('dark')">Dark</button>
+              </div>
+            </div>
+            <div class="tweak-row">
+              <span class="tweak-label">Accent</span>
+              <div class="segmented accent-seg" role="group" aria-label="Accent color">
+                <template x-for="a in ['blue', 'violet', 'emerald', 'slate']" :key="a">
+                  <button :class="{ active: $store.app.accent === a }"
+                          :aria-pressed="$store.app.accent === a"
+                          @click="$store.app.setAccent(a)"
+                          :aria-label="a"
+                          :title="a">
+                    <span class="accent-swatch" :data-accent-swatch="a" aria-hidden="true"></span>
+                  </button>
+                </template>
+              </div>
+            </div>
+            <div class="tweak-row">
+              <span class="tweak-label">Density</span>
+              <div class="segmented" role="group" aria-label="Density">
+                <button :class="{ active: $store.app.density === 'comfortable' }"
+                        :aria-pressed="$store.app.density === 'comfortable'"
+                        @click="$store.app.setDensity('comfortable')">Comfortable</button>
+                <button :class="{ active: $store.app.density === 'compact' }"
+                        :aria-pressed="$store.app.density === 'compact'"
+                        @click="$store.app.setDensity('compact')">Compact</button>
+              </div>
+            </div>
+            <div class="tweak-row">
+              <span class="tweak-label">Live pulse</span>
+              <div class="segmented" role="group" aria-label="Live pulse">
+                <button :class="{ active: $store.app.pulse }"
+                        :aria-pressed="$store.app.pulse"
+                        @click="if (!$store.app.pulse) $store.app.togglePulse()">On</button>
+                <button :class="{ active: !$store.app.pulse }"
+                        :aria-pressed="!$store.app.pulse"
+                        @click="if ($store.app.pulse) $store.app.togglePulse()">Off</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <nav class="rail-nav" aria-label="Primary">
+        <template x-for="item in $store.app.nav" :key="item.id">
+          <button
+            class="nav-item"
+            :class="{ active: $store.app.view === item.id }"
+            :aria-current="$store.app.view === item.id ? 'page' : null"
+            @click="$store.app.go(item.id)"
+            :data-tooltip="item.label"
+            :title="item.label"
+          >
+            <span class="nav-icon material-symbols-outlined" aria-hidden="true" x-text="item.icon"></span>
+            <span class="nav-label" x-text="item.label"></span>
+            <!-- Overview's badge carries the folded stuck count so the signal
+                 surfaces on the rail even when the banner/table are offscreen. -->
+            <span class="nav-badge" x-cloak
+                  x-show="item.id === 'overview' && $store.app.stuckCount > 0"
+                  x-text="$store.app.stuckCount"></span>
+            <span class="nav-dot" x-show="item.dot" x-cloak></span>
+          </button>
+        </template>
+      </nav>
+
+      <div class="rail-footer">
+        <!-- Folded stuck pill: still clickable through to Overview. -->
+        <button
+          class="stuck-pill"
+          x-show="$store.app.stuckCount > 0"
+          x-cloak
+          @click="$store.app.go('overview')"
+          :title="`${$store.app.stuckCount} stuck`"
+          :data-tooltip="`${$store.app.stuckCount} stuck`"
+          :aria-label="`${$store.app.stuckCount} stuck processes`"
+        >
+          <span class="material-symbols-outlined" aria-hidden="true">warning</span>
+          <span class="stuck-pill-text" x-text="`${$store.app.stuckCount} stuck`"></span>
+        </button>
+
+        <!-- Folded "reconnecting…" stream-status indicator. -->
+        <span
+          class="stream-status"
+          x-show="!$store.app.streamConnected"
+          x-cloak
+          role="status"
+          aria-live="polite"
+          aria-label="Reconnecting"
+          data-tooltip="Reconnecting…"
+        >
+          <span class="stream-dot" aria-hidden="true"></span>
+          <span class="stream-status-text">reconnecting…</span>
+        </span>
+
+        <!-- Operator profile widget (the human-in-the-loop, not a bot) with the
+             settings gear flyout. Identity is a placeholder until an operator
+             backend exists (#187 follow-up). -->
+        <div class="rail-operator">
+          <span class="avatar operator" aria-hidden="true">OP</span>
+          <span class="operator-id">
+            <span class="operator-name">Operator</span>
+            <span class="operator-handle">human-in-the-loop</span>
+          </span>
+          <div class="flyout" x-data="{ open: false }" @keydown.escape.window="open = false">
+            <button
+              class="icon-btn"
+              @click="open = !open"
+              :aria-expanded="open"
+              aria-haspopup="menu"
+              aria-label="Settings"
+              data-tooltip="Settings"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">settings</span>
+            </button>
+            <div
+              class="popover gear-menu"
+              x-show="open"
+              x-cloak
+              x-transition
+              @click.outside="open = false"
+              role="menu"
+              aria-label="Settings"
+            >
+              <button class="menu-item" role="menuitem"
+                      @click="$store.app.go('skills'); open = false">
+                <span class="material-symbols-outlined" aria-hidden="true">extension</span>
+                <span>Skills &amp; Commands</span>
+              </button>
+              <button class="menu-item" role="menuitem" disabled>
+                <span class="material-symbols-outlined" aria-hidden="true">tune</span>
+                <span>Preferences</span>
+                <span class="menu-soon">soon</span>
+              </button>
+              <button class="menu-item" role="menuitem" disabled>
+                <span class="material-symbols-outlined" aria-hidden="true">folder_managed</span>
+                <span>Connected repos</span>
+                <span class="menu-soon">soon</span>
+              </button>
+              <button class="menu-item" role="menuitem" disabled>
+                <span class="material-symbols-outlined" aria-hidden="true">logout</span>
+                <span>Sign out</span>
+                <span class="menu-soon">soon</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
 
     <main>
       <!-- Overview: a roll-up of every repo. Each card drills into a per-repo
