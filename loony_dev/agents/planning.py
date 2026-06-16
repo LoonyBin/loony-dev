@@ -42,8 +42,10 @@ class PlanningAgent(ClaudeQuotaMixin, Agent):
         logger.debug("Planning turn: %s", prompt)
 
         try:
+            from loony_dev.agents.coding import _turn_timeout
+
             stdout, stderr, returncode = self._run_claude_cli(
-                prompt, cwd=work_dir, session_id=session_id,
+                prompt, cwd=work_dir, session_id=session_id, timeout=_turn_timeout(),
             )
         finally:
             cleanup_context_dir(task.worktree_key)

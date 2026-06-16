@@ -484,7 +484,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         except CommandNotInstalledError as exc:
             logger.warning("Issue #%d: %s", task.issue.number, exc)
             return f"Closes #{task.issue.number}"
-        stdout, _, returncode = self._invoke_claude(turn, cwd=work_dir)
+        stdout, _, returncode = self._invoke_claude(turn, cwd=work_dir, timeout=_turn_timeout())
         if returncode == 0 and stdout.strip():
             return stdout.strip()
         return f"Closes #{task.issue.number}"
@@ -499,7 +499,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         except CommandNotInstalledError as exc:
             logger.warning("Issue #%d: %s", task.issue.number, exc)
             return f"feat: implement issue #{task.issue.number}"
-        stdout, _, returncode = self._invoke_claude(turn, cwd=work_dir)
+        stdout, _, returncode = self._invoke_claude(turn, cwd=work_dir, timeout=_turn_timeout())
         if returncode == 0 and stdout.strip():
             return _parse_commit_message(stdout)
         return f"feat: implement issue #{task.issue.number}"

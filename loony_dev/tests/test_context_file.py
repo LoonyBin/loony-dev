@@ -45,7 +45,7 @@ class TestWriteContextFile(unittest.TestCase):
     def test_unsafe_task_key_stays_within_root(self) -> None:
         path = write_context_file("fix-ci", {"a": 1}, task_key="../escape/me")
         root = Path(self._tmp.name).resolve()
-        self.assertTrue(str(path.resolve()).startswith(str(root)))
+        self.assertTrue(path.resolve().is_relative_to(root))
 
     def test_pure_traversal_task_key_falls_back(self) -> None:
         path = write_context_file("fix-ci", {"a": 1}, task_key="..")
