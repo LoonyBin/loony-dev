@@ -146,6 +146,32 @@ class RegistryCwdTestCase(unittest.TestCase):
         sr.set_task_session_status(self.base, "acme/widgets", "ghost", "idle")
         self.assertIsNone(sr.find_session(self.base, "ghost"))
 
+    def test_record_session_worktree_sets_cwd_to_worktree(self) -> None:
+        # A pipeline recorded at dispatch (before any -p turn registers its cwd)
+        # must already be observable — #200 sets cwd to the worktree path, the
+        # exact dir the turns run in, so observe can resolve the transcript.
+        sr.record_session_worktree(
+            self.base, "acme/widgets", pipeline_key="issue-8", task_key="issue-8",
+            session_id="sid", worktree_path="/wt/issue-8",
+        )
+        got = sr.find_session(self.base, "issue-8")
+        self.assertEqual(got.cwd, "/wt/issue-8")
+        self.assertEqual(services.observe_jsonl_path(self.base, "issue-8"),
+                         jsonl_path_for(Path("/wt/issue-8"), "sid"))
+
+    def test_record_session_worktree_preserves_existing_cwd(self) -> None:
+        # A re-dispatch must never wipe a cwd a -p turn already recorded, or the
+        # entry would silently lose observability.
+        sr.register_task_session(
+            self.base, "acme/widgets", "issue-9", session_id="sid", cwd="/turn/cwd",
+        )
+        sr.record_session_worktree(
+            self.base, "acme/widgets", pipeline_key="issue-9", task_key="issue-9",
+            session_id="sid", worktree_path="/wt/issue-9",
+        )
+        got = sr.find_session(self.base, "issue-9")
+        self.assertEqual(got.cwd, "/turn/cwd")
+
 
 class ObservableViewTestCase(unittest.TestCase):
     def setUp(self) -> None:

@@ -15,7 +15,7 @@ import { apiText } from "./api.js";
 import { openModalA11y, closeModalA11y } from "./modal.js";
 import { openObserve } from "./observe.js";
 
-let active = null; // { ws, term, taskKey, resizeHandler } for the open terminal
+let active = null; // { ws, term, taskKey, resizeHandler, onClose } for the open terminal
 
 // Write to the terminal defensively: async ws handlers can fire after the
 // terminal has been disposed, which would otherwise throw.
@@ -48,12 +48,18 @@ function setMic(holder, opts = {}) {
 
 function closeTerminal() {
   if (!active) return;
-  if (active.resizeHandler) {
-    window.removeEventListener("resize", active.resizeHandler);
-  }
-  try { active.ws.close(); } catch (_) { /* already closing */ }
-  try { active.term.dispose(); } catch (_) { /* already disposed */ }
+  const closed = active;
+  // Null `active` *before* firing onClose so a release that navigates away (and
+  // re-enters closeTerminal) can't recurse, and onClose fires exactly once.
   active = null;
+  if (closed.resizeHandler) {
+    window.removeEventListener("resize", closed.resizeHandler);
+  }
+  try { closed.ws.close(); } catch (_) { /* already closing */ }
+  try { closed.term.dispose(); } catch (_) { /* already disposed */ }
+  if (closed.onClose) {
+    try { closed.onClose(); } catch (_) { /* release is best-effort */ }
+  }
 }
 
 function closeAttachModal() {
@@ -67,19 +73,29 @@ function closeAttachModal() {
 
 // Exported (issue #190) so the pipeline-detail view can reuse the live-PTY
 // terminal as its take-over fallback when a session is attachable. Behaviour is
-// unchanged from the Sessions-table Attach button.
-export function openTerminal(taskKey) {
+// unchanged from the Sessions-table Attach button when called one-arg.
+//
+// Options (issue #200, all optional — one-arg call sites are unchanged):
+//   * attachUrl — connect to this WS path verbatim instead of wsUrl(taskKey).
+//       The drive flow resumes a *new* PTY whose attach URL the backend returns.
+//   * onClose   — invoked exactly once when the terminal tears down (Close, WS
+//       drop, or navigate-away); the drive flow releases its pipeline lease here.
+//   * title     — overrides the modal title text.
+export function openTerminal(taskKey, { attachUrl, onClose, title: titleText } = {}) {
   const modal = document.getElementById("attach-modal");
   const host = document.getElementById("attach-term");
   const title = document.getElementById("attach-title");
   if (!modal || !host || !window.Terminal) {
     alert("Terminal unavailable (xterm.js failed to load).");
+    // The caller expected the terminal to own the lease release; fire onClose so
+    // a failed open doesn't leak the drive lease.
+    if (onClose) { try { onClose(); } catch (_) { /* best-effort */ } }
     return;
   }
   closeTerminal();
   host.innerHTML = "";
   modal.hidden = false;
-  if (title) title.textContent = `Attached: ${taskKey}`;
+  if (title) title.textContent = titleText || `Attached: ${taskKey}`;
 
   const term = new window.Terminal({
     convertEol: false,
@@ -92,7 +108,10 @@ export function openTerminal(taskKey) {
   term.open(host);
   if (fit) { try { fit.fit(); } catch (_) { /* not yet laid out */ } }
 
-  const ws = new WebSocket(wsUrl(taskKey));
+  const url = attachUrl
+    ? `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${attachUrl}`
+    : wsUrl(taskKey);
+  const ws = new WebSocket(url);
   ws.binaryType = "arraybuffer";
 
   const sendResize = () => {
@@ -101,7 +120,7 @@ export function openTerminal(taskKey) {
       ws.send(JSON.stringify({ type: "resize", rows: term.rows, cols: term.cols }));
     }
   };
-  active = { ws, term, taskKey, resizeHandler: sendResize };
+  active = { ws, term, taskKey, resizeHandler: sendResize, onClose };
 
   ws.onopen = () => { setMic("human"); sendResize(); };
   ws.onmessage = (ev) => {
@@ -113,7 +132,13 @@ export function openTerminal(taskKey) {
     }
     safeWrite(term, new Uint8Array(ev.data));
   };
-  ws.onclose = () => { safeWrite(term, "\r\n\x1b[2m[detached]\x1b[0m\r\n"); };
+  ws.onclose = () => {
+    safeWrite(term, "\r\n\x1b[2m[detached]\x1b[0m\r\n");
+    // A drive session (onClose set) owns a pipeline lease: when the PTY WS drops
+    // the resumed session is gone, so tear down to release the lease promptly.
+    // A plain attach (no onClose) stays open showing [detached] as before.
+    if (active && active.ws === ws && active.onClose) closeTerminal();
+  };
   ws.onerror = () => { safeWrite(term, "\r\n\x1b[31m[connection error]\x1b[0m\r\n"); };
 
   // Keystrokes go out as raw bytes; the server gates them on the mic.

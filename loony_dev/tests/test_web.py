@@ -241,8 +241,9 @@ class WebAppTestCase(unittest.TestCase):
     def test_index_wires_pipeline_view(self) -> None:
         # The Issue ▸ PR detail view (#190): the shell must expose the section,
         # the stepper / timeline / linked / worktree containers, the breadcrumb,
-        # the inline conversation + reply, and the centralized control row —
-        # including the disabled Take-over / Pause / Reassign seam stubs.
+        # the inline conversation + reply, and the centralized control row. The
+        # control buttons themselves are rendered client-side by renderControls()
+        # (#200 wires Take over live; Pause / Reassign remain disabled stubs).
         body = self.client.get("/").text
         self.assertIn('class="view pipeline-detail"', body)
         self.assertIn("$store.app.view === 'pipeline'", body)

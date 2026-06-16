@@ -88,6 +88,17 @@ class InterrogateServiceTestCase(unittest.TestCase):
         resumed.close.assert_called_once()
         self.assertIsNone(pipeline_lease.read_pipeline_lease(self.base, REPO, "issue-7"))
 
+    def test_stop_drive_idempotent_without_live_session(self) -> None:
+        # Releasing a pipeline with no live drive (e.g. the UI releases twice, or
+        # after the WS already dropped) must not raise and reports stopped=False.
+        _record(self.base)
+        out = services.stop_drive(self.base, "issue-7")
+        self.assertFalse(out["stopped"])
+        self.assertIsNone(pipeline_lease.read_pipeline_lease(self.base, REPO, "issue-7"))
+        # A second release is still a no-op.
+        out2 = services.stop_drive(self.base, "issue-7")
+        self.assertFalse(out2["stopped"])
+
     def test_unknown_pipeline_raises_not_found(self) -> None:
         with self.assertRaises(services.SessionNotFoundError):
             services.interrogate_pipeline(self.base, "issue-99", "observe")
