@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from loony_dev.github.repo import parse_datetime
 from loony_dev.models import RateLimitedError
-from loony_dev.tasks.base import CI_FAILURE_MARKER, Task
+from loony_dev.tasks.base import CI_FAILURE_MARKER, Task, issue_or_pr_keys
 
 logger = logging.getLogger(__name__)
 
@@ -71,11 +71,7 @@ class CIFailureTask(Task):
 
     @property
     def session_key(self) -> str:
-        # Must stay 1:1 with ``worktree_key``: the Claude transcript JSONL path
-        # is derived from (cwd, session_id), so reusing a session id across two
-        # worktrees makes the readiness wait time out. Distinct from the PR
-        # review / conflict session keys for the same PR for the same reason.
-        return f"pr:{self.pr.number}:ci"
+        return issue_or_pr_keys(self.pr)[0]
 
     @property
     def target_branch(self) -> str:
@@ -83,7 +79,7 @@ class CIFailureTask(Task):
 
     @property
     def worktree_key(self) -> str:
-        return f"pr-{self.pr.number}-ci"
+        return issue_or_pr_keys(self.pr)[1]
 
     def describe(self) -> str:
         """Human-readable label for logging/dashboard (not sent as a turn).

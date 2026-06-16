@@ -6,7 +6,13 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from loony_dev.models import RateLimitedError, truncate_for_log
-from loony_dev.tasks.base import FAILURE_MARKER, Task, decode_last_seen, encode_marker
+from loony_dev.tasks.base import (
+    FAILURE_MARKER,
+    Task,
+    _slugify,
+    decode_last_seen,
+    encode_marker,
+)
 
 if TYPE_CHECKING:
     from loony_dev.github import Comment, Issue, Repo
@@ -154,12 +160,28 @@ class PlanningTask(Task):
     # ------------------------------------------------------------------
 
     @property
+    def branch_name(self) -> str:
+        """The issue's feature branch — identical to ``IssueTask.branch_name``.
+
+        Planning runs in the ``issue-N`` worktree on this branch (#181) so that
+        planning -> implementation is one cwd / one session with no cross-worktree
+        reuse. The branch is created from the default branch at planning time
+        (it does not exist yet) and is already present when implementation runs.
+
+        Slug stability: the slug derives from the *current* issue title. If the
+        title is edited between planning and implementation the branch keeps its
+        original name (we never rename a live branch); a stale slug only affects
+        the human-readable suffix, not the ``issue-N`` worktree identity.
+        """
+        return f"issue-{self.issue.number}/{_slugify(self.issue.title)}"
+
+    @property
     def session_key(self) -> str:
         return f"issue:{self.issue.number}"
 
     @property
     def worktree_key(self) -> str:
-        return f"issue-{self.issue.number}-plan"
+        return f"issue-{self.issue.number}"
 
     def describe(self) -> str:
         """Human-readable label for logging/dashboard (not sent as a turn).

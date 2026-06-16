@@ -13,6 +13,7 @@ from loony_dev.tasks.base import (
     Task,
     decode_last_seen,
     encode_marker,
+    issue_or_pr_keys,
 )
 
 if TYPE_CHECKING:
@@ -132,7 +133,7 @@ class PRReviewTask(Task):
 
     @property
     def session_key(self) -> str:
-        return f"pr:{self.pr.number}"
+        return issue_or_pr_keys(self.pr)[0]
 
     @property
     def target_branch(self) -> str:
@@ -140,7 +141,7 @@ class PRReviewTask(Task):
 
     @property
     def worktree_key(self) -> str:
-        return f"pr-{self.pr.number}"
+        return issue_or_pr_keys(self.pr)[1]
 
     def describe(self) -> str:
         """Human-readable label for logging/dashboard (not sent as a turn).
