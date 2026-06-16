@@ -1282,18 +1282,101 @@ button.action:hover,
 }
 .session-note-offline { color: var(--danger); font-style: normal; }
 
-/* ---- Skills & Commands editor --------------------------------------- */
-.editor-grid {
-  display: grid;
-  grid-template-columns: minmax(12rem, 1fr) 2fr;
-  gap: var(--sp-4);
-  align-items: start;
+/* ---- Skills & Commands library (#191) ------------------------------- */
+/* Header row: the section title plus the primary "New" affordance. */
+.skills-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
 }
-#entries-list { max-height: 18rem; overflow: auto; }
-#entries-list .entry-row { cursor: pointer; }
-#entries-list .entry-row.selected td { background: var(--surface-2); }
-.editor-pane textarea {
+.skills-head h2 { margin: 0; }
+
+/* Card grid — mirrors .repo-grid / .session-grid (auto-fill minmax). */
+.skill-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+  gap: var(--sp-4);
+}
+.skill-grid .empty { color: var(--text-muted); font-size: var(--fs-2); }
+
+/* One library card — surface/border/shadow like .repo-card, flex column. */
+.skill-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.skill-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  justify-content: space-between;
+}
+.skill-name {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  word-break: break-all;
+}
+.skill-desc {
+  margin: 0;
+  font-size: var(--fs-1);
+  color: var(--text-muted);
+  /* Clamp long descriptions; the full text is on the title attribute. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.skill-trigger { margin: 0; font-size: var(--fs-1); color: var(--text-muted); font-style: italic; }
+.skill-card-meta { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.skill-card-actions {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: auto;   /* pin actions to the bottom of equal-height cards */
+  padding-top: var(--sp-2);
+}
+
+/* Editor drawer — reuses the shared .modal backdrop + .modal-card surface, but
+   slides in from the right as a full-height panel. */
+/* Compound selectors (.modal.modal-drawer) raise specificity above the base
+   .modal / .modal-card rules, which are declared later in the file and would
+   otherwise win the cascade and re-center the drawer. */
+.modal.modal-drawer { justify-content: flex-end; padding: 0; }
+.modal-card.modal-drawer-card {
+  width: min(40rem, 100%);
+  max-width: 100%;
+  height: 100vh;
+  max-height: 100vh;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+}
+.drawer-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--fs-2);
+  margin-bottom: var(--sp-3);
+}
+.drawer-field-grow { flex: 1 1 auto; min-height: 0; }
+.drawer-field input {
+  font: inherit;
+  padding: var(--sp-1) var(--sp-2);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  min-height: 2.2rem;
+}
+.drawer-field textarea {
   width: 100%;
+  flex: 1 1 auto;
   min-height: 16rem;
   box-sizing: border-box;
   font-family: var(--font-mono);
@@ -1303,13 +1386,13 @@ button.action:hover,
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: var(--sp-2);
+  resize: vertical;
 }
 .editor-actions { display: flex; gap: var(--sp-2); align-items: center; margin-top: var(--sp-2); flex-wrap: wrap; }
-.editor-actions input { flex: 1; min-width: 10rem; }
 .entry-error { color: var(--danger); font-size: var(--fs-2); min-height: 1.1em; margin-top: var(--sp-2); }
 
 @media (max-width: 720px) {
-  .editor-grid { grid-template-columns: 1fr; }
+  .modal-card.modal-drawer-card { width: 100%; }
 }
 
 /* ---- Log pane -------------------------------------------------------- */
