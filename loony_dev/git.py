@@ -256,6 +256,23 @@ class GitRepo:
         result = self._run("rev-parse", "--abbrev-ref", "HEAD")
         return result.stdout.strip()
 
+    def find_branch_with_prefix(self, prefix: str) -> str | None:
+        """Return one local branch whose name starts with *prefix*, or ``None``.
+
+        Used to rediscover a pipeline's feature branch (``issue-N/<slug>``) when
+        resuming a parked pipeline whose worktree was torn down but whose branch
+        still exists in the common git dir (issue #199). Returns the
+        lexicographically-first match for determinism; ``None`` when none exist.
+        """
+        try:
+            result = self._run(
+                "for-each-ref", "--format=%(refname:short)", f"refs/heads/{prefix}",
+            )
+        except subprocess.CalledProcessError:
+            return None
+        names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        return sorted(names)[0] if names else None
+
     def list_worktrees(self) -> list[WorktreeInfo]:
         """Parse ``git worktree list --porcelain`` into structured records."""
         result = subprocess.run(

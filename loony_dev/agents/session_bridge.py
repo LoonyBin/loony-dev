@@ -335,6 +335,10 @@ def publish_session(
     *,
     pid: int | None = None,
     started_at: str | None = None,
+    worktree_path: str | os.PathLike | None = None,
+    pipeline_key: str | None = None,
+    branch: str | None = None,
+    status: str = "running",
 ) -> SessionBridge:
     """Serve *session* over a bridge and publish its registry entry.
 
@@ -342,6 +346,11 @@ def publish_session(
     #161 integration): it allocates the per-task socket, starts the bridge, and
     writes ``session.json`` so the dashboard can discover and attach. Pair with
     :func:`unpublish_session` on teardown.
+
+    *worktree_path* / *pipeline_key* / *branch* are the on-demand-interrogation
+    fields (issue #199): an on-demand resume serves the session through this same
+    bridge, so threading them here keeps the registry entry self-describing for a
+    later resume/observe.
     """
     owner, name = repo.split("/", 1)
     sess_dir = session_registry.session_dir(base_dir, owner, name, task_key)
@@ -356,6 +365,10 @@ def publish_session(
         pid=pid if pid is not None else os.getpid(),
         started_at=started_at or datetime.now(timezone.utc).isoformat(),
         socket=str(sock),
+        status=status,
+        worktree_path=str(worktree_path) if worktree_path is not None else None,
+        pipeline_key=pipeline_key,
+        branch=branch,
     )
     return bridge
 
