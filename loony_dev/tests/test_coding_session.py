@@ -15,11 +15,66 @@ from loony_dev.agents.claude_session import (
     QuotaExceededError,
     TurnResult,
 )
-from loony_dev.agents.coding import CodingAgent
+from loony_dev.agents.coding import CodingAgent, _CliSession
 
 
 def _turn(text: str = "did the work") -> TurnResult:
     return TurnResult(text=text, stop_reason="end_turn", was_interrupted=False, entries_added=2)
+
+
+class TestCliSession(unittest.TestCase):
+    """``_CliSession`` adapts ``claude -p`` output into the ClaudeSession surface."""
+
+    def _session(self, stdout: str, stderr: str, rc: int) -> tuple[CodingAgent, _CliSession]:
+        agent = CodingAgent(repo="LoonyBin/repo")
+        agent._run_claude_cli = MagicMock(return_value=(stdout, stderr, rc))  # type: ignore[method-assign]
+        return agent, _CliSession(agent, Path("/wt"), "sid-1")
+
+    def test_success_returns_turn_result(self) -> None:
+        agent, sess = self._session("the answer", "", 0)
+        result = sess.send_turn("do it", timeout=123.0)
+        self.assertEqual(result.text, "the answer")
+        self.assertEqual(result.stop_reason, "end_turn")
+        self.assertFalse(result.was_interrupted)
+        # session id + timeout are threaded through to the CLI runner.
+        _, kwargs = agent._run_claude_cli.call_args
+        self.assertEqual(kwargs["session_id"], "sid-1")
+        self.assertEqual(kwargs["timeout"], 123.0)
+        self.assertEqual(kwargs["cwd"], Path("/wt"))
+
+    def test_quota_output_raises_quota_error(self) -> None:
+        _, sess = self._session("You've hit your limit · resets 7:30pm", "", 0)
+        with self.assertRaises(QuotaExceededError):
+            sess.send_turn("do it", timeout=1.0)
+
+    def test_nonzero_exit_raises_session_error(self) -> None:
+        _, sess = self._session("", "boom: something failed", 1)
+        with self.assertRaises(ClaudeSessionError) as ctx:
+            sess.send_turn("do it", timeout=1.0)
+        self.assertIn("boom: something failed", str(ctx.exception))
+
+    def test_timeout_rc_raises_session_error(self) -> None:
+        _, sess = self._session("", "claude -p timed out after 5s", 124)
+        with self.assertRaises(ClaudeSessionError) as ctx:
+            sess.send_turn("do it", timeout=5.0)
+        self.assertIn("timed out", str(ctx.exception))
+
+
+class TestOpenSessionIds(unittest.TestCase):
+    """``_open_session`` preserves a given id and invents one for a fresh branch."""
+
+    def test_preserves_given_session_id(self) -> None:
+        agent = CodingAgent(repo="LoonyBin/repo")
+        sess = agent._open_session(Path("/wt"), "deterministic-id")
+        self.assertEqual(sess.session_id, "deterministic-id")
+
+    def test_invents_id_when_none(self) -> None:
+        agent = CodingAgent(repo="LoonyBin/repo")
+        sess = agent._open_session(Path("/wt"), None)
+        self.assertTrue(sess.session_id)  # a fresh uuid so phases stay resumable
+        # distinct sessions get distinct invented ids
+        other = agent._open_session(Path("/wt"), None)
+        self.assertNotEqual(sess.session_id, other.session_id)
 
 
 class TestExecuteUsesSession(unittest.TestCase):

@@ -35,6 +35,38 @@ class _DummyPlainAgent(Agent):
 
 # -- Tests ----------------------------------------------------------------
 
+class TestInvokeClaudeTimeout(unittest.TestCase):
+    """``_invoke_claude`` kills an overrunning ``claude -p`` and returns rc 124."""
+
+    def test_timeout_kills_process_group_and_returns_124(self) -> None:
+        agent = _DummyClaudeAgent()
+        import subprocess as sp
+
+        fake = MagicMock()
+        fake.pid = 4242
+        # First communicate() (with the prompt + timeout) overruns; the second
+        # (after the kill) reaps the partial output.
+        fake.communicate.side_effect = [
+            sp.TimeoutExpired(cmd="claude", timeout=5.0),
+            ("partial output", ""),
+        ]
+        cm = MagicMock()
+        cm.__enter__.return_value = fake
+        cm.__exit__.return_value = False
+
+        with patch("loony_dev.agents.claude_quota.subprocess.Popen", return_value=cm), \
+                patch("loony_dev.agents.claude_quota.os.killpg") as killpg:
+            stdout, stderr, rc = agent._invoke_claude(
+                "do work", cwd=Path("/wt"), timeout=5.0,
+            )
+
+        self.assertEqual(rc, 124)
+        self.assertEqual(stdout, "partial output")
+        self.assertIn("timed out", stderr)
+        killpg.assert_called_once()
+        self.assertEqual(killpg.call_args.args[0], 4242)
+
+
 class TestIsQuotaError(unittest.TestCase):
     """``_is_quota_error`` must fire only on a *genuine* usage-limit error.
 

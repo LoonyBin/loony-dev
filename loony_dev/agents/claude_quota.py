@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+import signal
 import subprocess
 import threading
 from datetime import datetime, timedelta, timezone
@@ -258,6 +260,7 @@ class ClaudeQuotaMixin:
         *,
         cwd: Path,
         session_id: str | None = None,
+        timeout: float | None = None,
     ) -> tuple[str, str, int]:
         """Run the Claude CLI with optional session continuity.
 
@@ -265,18 +268,27 @@ class ClaudeQuotaMixin:
         continue an existing session.  If that fails because no matching
         session is found, retries with ``--session-id`` to create a new
         session with the given UUID.
+
+        *timeout* (seconds) bounds each invocation; on expiry the CLI process
+        group is killed and the call returns rc ``124`` (a timeout is not a
+        "session not found", so it is returned as-is without the create retry).
         """
         if session_id:
             stdout, stderr, rc = self._invoke_claude(
-                prompt, cwd=cwd, extra_flags=["--resume", session_id],
+                prompt, cwd=cwd, extra_flags=["--resume", session_id], timeout=timeout,
             )
             if rc == 0 or not self._is_session_not_found(f"{stdout}\n{stderr}"):
                 return stdout, stderr, rc
             logger.debug("Session %s not found — creating new session", session_id)
             return self._invoke_claude(
-                prompt, cwd=cwd, extra_flags=["--session-id", session_id],
+                prompt, cwd=cwd, extra_flags=["--session-id", session_id], timeout=timeout,
             )
-        return self._invoke_claude(prompt, cwd=cwd)
+        return self._invoke_claude(prompt, cwd=cwd, timeout=timeout)
+
+    # Returncode used when a ``claude -p`` invocation is killed for exceeding its
+    # timeout. Mirrors the shell convention (128 + SIGKILL? no — matches the
+    # ``timeout(1)`` utility's 124) so it is recognisable and never 0.
+    _CLI_TIMEOUT_RC = 124
 
     def _invoke_claude(
         self,
@@ -284,10 +296,15 @@ class ClaudeQuotaMixin:
         *,
         cwd: Path,
         extra_flags: list[str] | None = None,
+        timeout: float | None = None,
     ) -> tuple[str, str, int]:
         """Spawn ``claude -p`` and return (stdout, stderr, returncode).
 
         Prompt is passed via stdin to avoid OS ARG_MAX limits on large inputs.
+        When *timeout* is set and the process overruns it, the whole process
+        group is SIGKILLed (``start_new_session=True`` puts the CLI and any
+        children in their own group) and ``(stdout_so_far, msg, 124)`` is
+        returned rather than hanging the worker.
         """
         cmd = ["claude", "-p", "--dangerously-skip-permissions"]
         if extra_flags:
@@ -304,7 +321,14 @@ class ClaudeQuotaMixin:
         ) as proc:
             self._register_process(proc)
             try:
-                stdout, stderr = proc.communicate(input=prompt)
+                stdout, stderr = proc.communicate(input=prompt, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):  # already gone
+                    pass
+                stdout, stderr = proc.communicate()
+                return (stdout or ""), f"claude -p timed out after {timeout:.0f}s", self._CLI_TIMEOUT_RC
             finally:
                 self._unregister_process(proc)
         return stdout, stderr, proc.returncode
