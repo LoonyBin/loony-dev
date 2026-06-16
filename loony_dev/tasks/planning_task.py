@@ -50,6 +50,7 @@ def _split_revision_note(summary: str) -> tuple[str, str]:
 class PlanningTask(Task):
     task_type = "plan_issue"
     priority = 30
+    command_name = "plan-issue"
 
     def __init__(
         self,
@@ -161,34 +162,34 @@ class PlanningTask(Task):
         return f"issue-{self.issue.number}-plan"
 
     def describe(self) -> str:
-        if self.existing_plan is None:
-            return (
-                f"Create a clear implementation plan for the following GitHub issue.\n\n"
-                f"Issue #{self.issue.number}: {self.issue.title}\n\n"
-                f"{self.issue.body}\n\n"
-                f"You may read the codebase to understand the existing structure before planning.\n"
-                f"Output ONLY the plan text in well-structured markdown. "
-                f"Do NOT implement anything — planning only."
-            )
+        """Human-readable label for logging/dashboard (not sent as a turn).
 
-        feedback = "\n\n".join(
-            f"**{c.author}:** {c.body}" for c in self.new_comments
-        )
-        return (
-            f"Revise the implementation plan for GitHub issue #{self.issue.number} "
-            f"based on the user feedback below.\n\n"
-            f"Issue #{self.issue.number}: {self.issue.title}\n\n"
-            f"{self.issue.body}\n\n"
-            f"## Current Plan\n\n{self.existing_plan}\n\n"
-            f"## User Feedback\n\n{feedback}\n\n"
-            f"Output the updated plan in well-structured markdown. Then on a new line emit "
-            f"the literal delimiter `{REVISION_NOTE_DELIMITER}` (exactly, on its own line), "
-            f"followed by a short (2-4 sentence) revision note summarising what changed in this "
-            f"revision and any questions or pushback you have about the feedback. The plan must "
-            f"come before the delimiter and the revision note after it; do not include the "
-            f"delimiter anywhere else.\n\n"
-            f"Do NOT implement anything — planning only."
-        )
+        The work is driven via the ``/plan-issue`` slash command built from
+        :meth:`context_payload` (issue #166).
+        """
+        action = "Revise" if self.existing_plan is not None else "Create"
+        return f"{action} implementation plan for issue #{self.issue.number}: {self.issue.title}"
+
+    def context_payload(self) -> dict:
+        """Context for ``/plan-issue``.
+
+        For a fresh plan: ``issue_number``, ``title``, ``body``. For a revision
+        it additionally carries ``current_plan``, ``feedback`` and the literal
+        ``revision_note_delimiter`` — the command body must emit that delimiter so
+        :func:`_split_revision_note` can split the plan from the revision note.
+        """
+        payload: dict = {
+            "issue_number": self.issue.number,
+            "title": self.issue.title,
+            "body": self.issue.body,
+        }
+        if self.existing_plan is not None:
+            payload["current_plan"] = self.existing_plan
+            payload["feedback"] = "\n\n".join(
+                f"**{c.author}:** {c.body}" for c in self.new_comments
+            )
+            payload["revision_note_delimiter"] = REVISION_NOTE_DELIMITER
+        return payload
 
     def on_start(self, repo: Repo) -> None:
         logger.debug("Issue #%d: starting planning (keeping 'ready-for-planning' label)", self.issue.number)

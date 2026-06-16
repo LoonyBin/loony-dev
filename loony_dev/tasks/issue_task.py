@@ -98,67 +98,53 @@ class IssueTask(Task):
         return f"issue:{self.issue.number}"
 
     def describe(self) -> str:
-        return self.implement_prompt()
+        """Human-readable label for logging/dashboard (not sent as a turn).
 
-    def implement_prompt(self) -> str:
-        """Prompt for phase 1: write code only, no git operations."""
+        The actual work is driven by ``execute_issue`` via the ``/implement-issue``
+        slash command built from :meth:`implement_payload` (issue #166).
+        """
+        return f"Implement issue #{self.issue.number}: {self.issue.title}"
+
+    def implement_payload(self) -> dict:
+        """Context for ``/implement-issue`` (phase 1: write code, no git ops)."""
+        payload: dict = {
+            "issue_number": self.issue.number,
+            "title": self.issue.title,
+            "body": self.issue.body,
+        }
         if self.plan is not None:
-            content = f"## Approved Implementation Plan\n\n{self.plan}"
-        else:
-            content = f"Issue #{self.issue.number}: {self.issue.title}\n\n{self.issue.body}"
-        return (
-            f"Implement the following GitHub issue.\n\n"
-            f"{content}\n\n"
-            f"Instructions:\n"
-            f"- Implement the changes described in the issue\n"
-            f"- After making changes, read `.githooks/pre-commit` to understand what checks this "
-            f"project requires, run all applicable checks, and fix any failures before stopping\n"
-            f"- Do NOT commit, push, or create a pull request — stop after making code changes"
-        )
+            payload["plan"] = self.plan
+        return payload
 
-    def fix_review_prompt(self, review_output: str) -> str:
-        """Prompt for fixing issues reported by Coderabbit."""
-        return (
-            f"A Coderabbit code review found issues with your changes for "
-            f"issue #{self.issue.number}. Please fix them. "
-            f"Do NOT commit or push — only fix the code.\n\n"
-            f"Review output:\n{review_output}"
-        )
+    def fix_review_payload(self, review_output: str) -> dict:
+        """Context for ``/fix-review`` (fix issues reported by CodeRabbit)."""
+        return {
+            "issue_number": self.issue.number,
+            "review_output": review_output,
+        }
 
-    def fix_hook_prompt(self, hook_output: str) -> str:
-        """Prompt for fixing pre-commit/pre-push hook failures."""
-        return (
-            f"A git hook rejected the commit for issue #{self.issue.number}. "
-            f"Please fix the code to satisfy the hook. "
-            f"Do NOT commit or push — only fix the code.\n\n"
-            f"Hook output:\n{hook_output}"
-        )
+    def fix_hook_payload(self, hook_output: str) -> dict:
+        """Context for ``/fix-hook`` (fix pre-commit/pre-push hook failures)."""
+        return {
+            "issue_number": self.issue.number,
+            "hook_output": hook_output,
+        }
 
-    def commit_message_prompt(self) -> str:
-        """Prompt asking Claude to output only a commit message."""
-        return (
-            f"Generate a conventional commit message for the changes made to implement "
-            f"issue #{self.issue.number}: {self.issue.title}.\n\n"
-            f"Output ONLY the commit message — no explanation, no preamble, no markdown fences. "
-            f"The message must reference #{self.issue.number}."
-        )
+    def commit_message_payload(self) -> dict:
+        """Context for ``/commit-message`` (conventional commit message only)."""
+        return {
+            "issue_number": self.issue.number,
+            "title": self.issue.title,
+        }
 
-    def pr_body_prompt(self, diff: str) -> str:
-        """Prompt asking Claude to write a GitHub PR body."""
-        return (
-            f"Write a GitHub pull request body for the changes implementing "
-            f"issue #{self.issue.number}: {self.issue.title}.\n\n"
-            f"Issue description:\n{self.issue.body}\n\n"
-            f"Diff:\n{diff}\n\n"
-            f"Format the body exactly like this (no extra sections, no preamble):\n"
-            f"## Summary\n"
-            f"- <bullet points: what changed and why>\n\n"
-            f"## Test plan\n"
-            f"- [ ] <checkbox items to verify>\n\n"
-            f"🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n"
-            f"Closes #{self.issue.number}\n\n"
-            f"Output ONLY the PR body — no explanation, no markdown fences."
-        )
+    def pr_body_payload(self, diff: str) -> dict:
+        """Context for ``/pr-body`` (write a GitHub PR body)."""
+        return {
+            "issue_number": self.issue.number,
+            "title": self.issue.title,
+            "body": self.issue.body,
+            "diff": diff,
+        }
 
     def mark_commit_exhausted(self, hook_output: str | None) -> None:
         self.commit_exhausted = True

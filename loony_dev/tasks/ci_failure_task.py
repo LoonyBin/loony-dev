@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 class CIFailureTask(Task):
     task_type = "fix_ci"
     priority = 15
+    command_name = "fix-ci"
 
     def __init__(self, pr: PullRequest, failed_checks: list[CheckRun]) -> None:
         self.pr = pr
@@ -85,21 +86,28 @@ class CIFailureTask(Task):
         return f"pr-{self.pr.number}-ci"
 
     def describe(self) -> str:
-        check_lines = "\n".join(
-            f"- {c.name} ({c.conclusion}): {c.details_url}"
-            for c in self.failed_checks
-        )
-        return (
-            f"Fix CI failures on PR #{self.pr.number}: {self.pr.title}\n\n"
-            f"Branch: {self.pr.branch}\n\n"
-            f"The following CI checks are failing:\n{check_lines}\n\n"
-            f"Instructions:\n"
-            f"- Review the CI logs at the URLs above\n"
-            f"- Identify the root cause of each failure\n"
-            f"- Make targeted fixes on branch {self.pr.branch}\n"
-            f"- Do not change unrelated code\n"
-            f"- Push the fixes when done"
-        )
+        """Human-readable label for logging/dashboard (not sent as a turn).
+
+        The work is driven via the ``/fix-ci`` slash command built from
+        :meth:`context_payload` (issue #166).
+        """
+        return f"Fix CI failures on PR #{self.pr.number}: {self.pr.title}"
+
+    def context_payload(self) -> dict:
+        """Context for ``/fix-ci``."""
+        return {
+            "pr_number": self.pr.number,
+            "title": self.pr.title,
+            "branch": self.pr.branch,
+            "failed_checks": [
+                {
+                    "name": c.name,
+                    "conclusion": c.conclusion,
+                    "url": c.details_url,
+                }
+                for c in self.failed_checks
+            ],
+        }
 
     def on_start(self, repo: Repo) -> None:
         self.pr.add_label("in-progress")

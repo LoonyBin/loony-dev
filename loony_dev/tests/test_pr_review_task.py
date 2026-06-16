@@ -305,5 +305,44 @@ class TestOnComplete(unittest.TestCase):
         self.assertEqual(new, [], "No comments should be new after marker is posted")
 
 
+class TestContextPayload(unittest.TestCase):
+    """PRReviewTask.context_payload() — the /address-reviews slash-command context (#166)."""
+
+    def _pr(self) -> MagicMock:
+        repo = MagicMock()
+        repo.owner = "LoonyBin"
+        repo.name = "LoonyBin/loony-dev"
+        pr = MagicMock()
+        pr.number = 12
+        pr.title = "My PR"
+        pr.branch = "issue-1/feature"
+        pr._repo = repo
+        pr.new_comments = [
+            _comment(REVIEWER, "Fix this bug.", "2024-01-01T10:00:00Z", path="a.py", line=3),
+        ]
+        return pr
+
+    def test_command_name_is_address_reviews(self) -> None:
+        self.assertEqual(PRReviewTask.command_name, "address-reviews")
+
+    def test_payload_keys_and_values(self) -> None:
+        task = PRReviewTask(self._pr())
+        payload = task.context_payload()
+        self.assertEqual(payload["pr_number"], 12)
+        self.assertEqual(payload["pr"], 12)
+        self.assertEqual(payload["title"], "My PR")
+        self.assertEqual(payload["branch"], "issue-1/feature")
+        self.assertEqual(payload["owner"], "LoonyBin")
+        self.assertEqual(payload["repo"], "loony-dev")
+        self.assertIn("allow_create_issues", payload)
+        # The comment blocks are pre-formatted into the `comments` string.
+        self.assertIn("Fix this bug.", payload["comments"])
+        self.assertIn("author=alice", payload["comments"])
+
+    def test_describe_is_short_label(self) -> None:
+        task = PRReviewTask(self._pr())
+        self.assertEqual(task.describe(), "Address review comments on PR #12: My PR")
+
+
 if __name__ == "__main__":
     unittest.main()

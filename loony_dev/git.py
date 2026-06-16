@@ -120,6 +120,45 @@ class GitRepo:
         result = self._run("status", "--porcelain")
         return bool(result.stdout.strip())
 
+    @staticmethod
+    def add_local_exclude(work_dir: Path, pattern: str) -> None:
+        """Add *pattern* to the repo's local git exclude (``info/exclude``).
+
+        This keeps generated, never-committed files (e.g. the slash commands
+        installed into ``.claude/commands/`` for the agent, #166) out of both
+        ``git status`` and ``git add -A`` without touching the tracked
+        ``.gitignore``. The exclude lives in the common git dir, so a single
+        entry covers the base checkout and every linked worktree. Idempotent and
+        best-effort: failures are logged and swallowed.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--git-path", "info/exclude"],
+                cwd=work_dir, capture_output=True, text=True, check=True,
+            )
+        except (subprocess.CalledProcessError, OSError) as exc:
+            logger.debug("Could not resolve info/exclude in %s: %s", work_dir, exc)
+            return
+
+        raw = result.stdout.strip()
+        if not raw:
+            return
+        exclude_path = Path(raw)
+        if not exclude_path.is_absolute():
+            exclude_path = (Path(work_dir) / exclude_path).resolve()
+
+        line = pattern.rstrip("\n")
+        try:
+            existing = exclude_path.read_text(encoding="utf-8") if exclude_path.exists() else ""
+            if line in existing.splitlines():
+                return
+            exclude_path.parent.mkdir(parents=True, exist_ok=True)
+            prefix = "" if existing.endswith("\n") or not existing else "\n"
+            with exclude_path.open("a", encoding="utf-8") as fh:
+                fh.write(f"{prefix}{line}\n")
+        except OSError as exc:
+            logger.debug("Could not update %s: %s", exclude_path, exc)
+
     def force_commit_and_push(self, message: str) -> None:
         """Stage all changes, commit, and push current branch."""
         self._run("add", "-A")

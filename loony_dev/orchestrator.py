@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 # Imported at runtime (not TYPE_CHECKING) so isinstance checks work.
 from loony_dev.agents.coding import CodingAgent
 from loony_dev.agents.claude_session import trust_directory
+from loony_dev.commands import install_commands
 
 logger = logging.getLogger(__name__)
 
@@ -313,6 +314,20 @@ class Orchestrator:
                     # paths are always untrusted; without this, session startup
                     # hangs and every task times out. See #178.
                     trust_directory(worktree_path)
+                    # Install the bundled slash commands into the worktree's
+                    # .claude/commands/ so agent turns can invoke them (#166).
+                    # Each worktree is a separate working tree, so the base
+                    # checkout's commands (installed at startup) are not visible
+                    # here — install them per worktree. Exclude them locally so
+                    # `git add -A` never sweeps the generated files into the PR.
+                    try:
+                        install_commands(worktree_path)
+                        self.git.add_local_exclude(worktree_path, ".claude/commands/")
+                    except OSError as exc:
+                        logger.warning(
+                            "Failed to install slash commands into worktree %s: %s",
+                            worktree_path, exc,
+                        )
                     work_dir = worktree_path
 
             # ── Execute (concurrent — runs inside the isolated worktree) ─────

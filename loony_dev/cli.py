@@ -122,6 +122,10 @@ def worker(**_) -> None:
         written = install_commands(work_path)
         if written:
             click.echo(f"Installed {len(written)} loony-dev slash command(s) into {work_path / '.claude' / 'commands'}")
+        # Keep the generated commands out of git status / git add -A (they are
+        # reinstalled each run; the canonical copy lives in loony_dev/commands/).
+        # The exclude lives in the common git dir, so it also covers worktrees.
+        GitRepo.add_local_exclude(work_path, ".claude/commands/")
     except OSError as e:
         logging.getLogger(__name__).warning("Failed to install slash commands: %s", e)
 

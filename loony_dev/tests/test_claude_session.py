@@ -31,6 +31,8 @@ from loony_dev.agents.claude_session import (
     jsonl_path_for,
     trust_directory,
 )
+from loony_dev.agents.context_file import cleanup_context_dir, write_context_file
+from loony_dev.commands import install_commands
 
 _STUB = Path(__file__).parent / "_claude_stub.py"
 
@@ -340,6 +342,34 @@ class TestQuota(_StubSessionTest):
         self.assertIn("limit", str(ctx.exception).lower())
 
 
+class TestSlashCommandTurnBoundary(_StubSessionTest):
+    """(#166) A ``/<command> <path>`` turn produces one clean turn boundary.
+
+    Stub-backed so the boundary assertion runs in normal CI without the real
+    binary: it checks the worker really injects the short slash-command
+    invocation (not an inline prompt body) and that it completes as one turn.
+    """
+
+    def test_slash_command_invocation_is_one_turn(self) -> None:
+        self.session.open()
+        before = _count_entries(self.session.jsonl_path)
+
+        path = write_context_file(
+            "plan-issue", {"issue_number": 1, "title": "T"}, task_key="issue-1-plan",
+        )
+        self.addCleanup(cleanup_context_dir, "issue-1-plan")
+
+        turn = self.session.send_turn(f"/plan-issue {path}", timeout=10.0)
+
+        self.assertEqual(turn.stop_reason, "end_turn")
+        self.assertFalse(turn.was_interrupted)
+        # The turn we sent was the slash-command invocation, not an inline body.
+        self.assertIn("/plan-issue", turn.text)
+        # Exactly the turn's terminal assistant entry was appended.
+        after = _count_entries(self.session.jsonl_path)
+        self.assertGreater(after, before)
+
+
 class TestIdleBackstop(_StubSessionTest):
     """(#166) The turn backstop is an *idle* window, not a total-time cap.
 
@@ -474,6 +504,67 @@ class TestRealClaudeIntegration(unittest.TestCase):
             )
         finally:
             session.close()
+
+
+@unittest.skipUnless(shutil.which("claude"), "claude CLI not installed")
+@unittest.skipUnless(
+    os.environ.get("LOONY_CLAUDE_INTEGRATION") == "1",
+    "set LOONY_CLAUDE_INTEGRATION=1 to run the real-claude integration test "
+    "(spends Claude quota; needs a trusted cwd)",
+)
+class TestRealSlashCommandIntegration(unittest.TestCase):
+    """(#166) End-to-end: a real ``/plan-issue <path>`` turn against the CLI.
+
+    Installs the bundled commands into a temp worktree, writes a context file,
+    sends the short slash-command invocation, and asserts the transcript shows a
+    single clean turn boundary (the user prompt recorded as the slash command,
+    one terminal assistant ``end_turn``) and that the command expanded — the
+    model read the file and produced a plan that echoes the issue title. The
+    command does planning only, so it has no side effects.
+    """
+
+    def test_plan_issue_slash_command_expands(self) -> None:
+        cwd = Path(self.enterContext(_tmpdir()))
+        install_commands(cwd)
+        self.enterContext(_trusted_dir(cwd))
+
+        # A distinctive title we can look for in the plan, proving the model read
+        # the JSON context file rather than treating the path as opaque text.
+        sentinel = "Zorblax widget reconciler"
+        path = write_context_file(
+            "plan-issue",
+            {
+                "issue_number": 99999,
+                "title": sentinel,
+                "body": "Add a reconciler for Zorblax widgets. Keep the plan to one line.",
+            },
+            task_key="issue-99999-plan",
+        )
+        self.addCleanup(cleanup_context_dir, "issue-99999-plan")
+
+        session = ClaudeSession(cwd, backstop_seconds=120.0)
+        session.open()
+        try:
+            turn = session.send_turn(f"/plan-issue {path}", timeout=120.0)
+        finally:
+            session.close()
+
+        self.assertEqual(turn.stop_reason, "end_turn")
+        self.assertFalse(turn.was_interrupted)
+
+        entries = _read_entries(session.jsonl_path)
+        # One user prompt recorded as the slash-command invocation …
+        self.assertTrue(
+            any(
+                e.get("type") == "user" and "/plan-issue" in _entry_text(e)
+                for e in entries
+            ),
+            "transcript has no user entry for the /plan-issue invocation",
+        )
+        # … and at least one terminal assistant end_turn.
+        self.assertTrue(any(_is_terminal_assistant(e) for e in entries))
+        # The command expanded and the model read the context file.
+        self.assertIn("Zorblax", turn.text)
 
 
 # ---------------------------------------------------------------------------

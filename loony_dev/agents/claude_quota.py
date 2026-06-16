@@ -13,6 +13,10 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from loony_dev import config
+from loony_dev.agents.context_file import (
+    CommandNotInstalledError,
+    write_context_file,
+)
 from loony_dev.session import session_id_for
 
 if TYPE_CHECKING:
@@ -253,6 +257,34 @@ class ClaudeQuotaMixin:
         if not key or not self.repo:
             return None
         return session_id_for(self.repo, key)
+
+    def _command_turn(
+        self,
+        work_dir: Path,
+        command: str,
+        payload: dict,
+        *,
+        task_key: str | None,
+    ) -> str:
+        """Write *payload* to a context file and return ``/<command> <path>``.
+
+        The turn injected into the session is a short slash-command invocation;
+        Claude Code expands ``$ARGUMENTS`` to the context-file path and the
+        command body (under ``<work_dir>/.claude/commands/``) reads the JSON.
+
+        Raises :class:`CommandNotInstalledError` if the command is not installed
+        in *work_dir* — #165 installs the bundled commands into every worker
+        checkout, so its absence is config drift, surfaced loudly rather than
+        falling back to an inline prompt.
+        """
+        command_file = Path(work_dir) / ".claude" / "commands" / f"{command}.md"
+        if not command_file.is_file():
+            raise CommandNotInstalledError(
+                f"slash command '/{command}' is not installed at {command_file} — "
+                f"run `loony-dev setup` (commands are installed at worker startup, #165)",
+            )
+        path = write_context_file(command, payload, task_key=task_key or command)
+        return f"/{command} {path}"
 
     def _run_claude_cli(
         self,

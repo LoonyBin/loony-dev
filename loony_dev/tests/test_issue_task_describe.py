@@ -31,56 +31,57 @@ def test_branch_name_truncates_long_titles():
     assert len(slug) <= 50
 
 
-def test_describe_delegates_to_implement_prompt():
-    task = IssueTask(_make_issue())
-    assert task.describe() == task.implement_prompt()
-
-
-def test_implement_prompt_does_not_mention_branch():
+def test_describe_is_short_human_readable_label():
+    # describe() is now a concise label for logging — not the turn sent to Claude
+    # (that is the /implement-issue slash command built from implement_payload).
     task = IssueTask(_make_issue(number=7, title="Add login"))
-    assert "branch" not in task.implement_prompt().lower()
+    assert task.describe() == "Implement issue #7: Add login"
 
 
-def test_implement_prompt_does_not_instruct_commit_push_or_pr():
-    task = IssueTask(_make_issue())
-    prompt = task.implement_prompt().lower()
-    assert "gh pr create" not in prompt
-    assert "git commit" not in prompt
-    assert "git push" not in prompt
+def test_implement_payload_includes_issue_text_when_no_plan():
+    task = IssueTask(_make_issue(number=7, title="Add login", body="do the thing"))
+    payload = task.implement_payload()
+    assert payload["issue_number"] == 7
+    assert payload["title"] == "Add login"
+    assert payload["body"] == "do the thing"
+    assert "plan" not in payload
 
 
-def test_implement_prompt_instructs_pre_commit_check():
-    task = IssueTask(_make_issue())
-    prompt = task.implement_prompt()
-    assert ".githooks/pre-commit" in prompt
-    assert "fix any failures" in prompt.lower()
+def test_implement_payload_includes_plan_when_present():
+    task = IssueTask(_make_issue(number=7), plan="## Approved plan\n\nStep 1")
+    payload = task.implement_payload()
+    assert payload["plan"] == "## Approved plan\n\nStep 1"
+    # body is still carried so the command body has the issue text as context.
+    assert "body" in payload
 
 
-def test_implement_prompt_instructs_no_git_ops():
-    task = IssueTask(_make_issue())
-    assert "Do NOT commit, push, or create a pull request" in task.implement_prompt()
-
-
-def test_fix_review_prompt_contains_review_output():
-    task = IssueTask(_make_issue())
+def test_fix_review_payload_contains_review_output():
+    task = IssueTask(_make_issue(number=3))
     review = "Line 5: missing type hint"
-    prompt = task.fix_review_prompt(review)
-    assert review in prompt
-    assert "fix" in prompt.lower()
-    assert "Do NOT commit" in prompt
+    payload = task.fix_review_payload(review)
+    assert payload["issue_number"] == 3
+    assert payload["review_output"] == review
 
 
-def test_fix_hook_prompt_contains_hook_output():
-    task = IssueTask(_make_issue())
+def test_fix_hook_payload_contains_hook_output():
+    task = IssueTask(_make_issue(number=3))
     hook_out = "pre-commit hook failed: flake8 errors"
-    prompt = task.fix_hook_prompt(hook_out)
-    assert hook_out in prompt
-    assert "Do NOT commit" in prompt
+    payload = task.fix_hook_payload(hook_out)
+    assert payload["issue_number"] == 3
+    assert payload["hook_output"] == hook_out
 
 
-def test_commit_message_prompt_requests_conventional_commit():
+def test_commit_message_payload_carries_number_and_title():
     task = IssueTask(_make_issue(number=42, title="Add feature"))
-    prompt = task.commit_message_prompt()
-    assert "#42" in prompt
-    assert "conventional commit" in prompt.lower()
-    assert "ONLY" in prompt
+    payload = task.commit_message_payload()
+    assert payload["issue_number"] == 42
+    assert payload["title"] == "Add feature"
+
+
+def test_pr_body_payload_carries_diff_and_issue_text():
+    task = IssueTask(_make_issue(number=42, title="Add feature", body="why"))
+    payload = task.pr_body_payload("diff --git a b")
+    assert payload["issue_number"] == 42
+    assert payload["title"] == "Add feature"
+    assert payload["body"] == "why"
+    assert payload["diff"] == "diff --git a b"

@@ -8,12 +8,18 @@ rather than respawning `claude` per phase.
 """
 from __future__ import annotations
 
+import re
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from loony_dev.agents.claude_session import TurnResult
 from loony_dev.agents.coding import CodingAgent
+from loony_dev.commands import install_commands
+
+# A bot turn is `/<command> <abs path>.json` (issue #166).
+_TURN_RE = re.compile(r"^/[a-z-]+ /.+\.json$")
 
 
 def _turn(text: str = "ok") -> TurnResult:
@@ -22,14 +28,27 @@ def _turn(text: str = "ok") -> TurnResult:
 
 class TestExecuteIssueWorktreeAware(unittest.TestCase):
 
-    def _run_execute_issue(self, fake_git: MagicMock, fake_session: MagicMock | None = None):
-        agent = CodingAgent()
+    def setUp(self) -> None:
+        # A real worktree with the bundled commands installed so _command_turn
+        # finds the command files (#166).
+        self._tmp = tempfile.TemporaryDirectory()
+        self.worktree = Path(self._tmp.name)
+        install_commands(self.worktree)
+        self.addCleanup(self._tmp.cleanup)
 
+    def _make_task(self) -> MagicMock:
         task = MagicMock()
         task.issue.number = 7
         task.issue.title = "My feature"
         task.branch_name = "feature/7"
-        task.implement_prompt.return_value = "implement it"
+        task.worktree_key = "issue-7"
+        task.implement_payload.return_value = {"issue_number": 7, "title": "My feature"}
+        return task
+
+    def _run_execute_issue(self, fake_git: MagicMock, fake_session: MagicMock | None = None):
+        agent = CodingAgent()
+
+        task = self._make_task()
 
         session = fake_session or MagicMock()
         session.send_turn.return_value = _turn()
@@ -44,7 +63,7 @@ class TestExecuteIssueWorktreeAware(unittest.TestCase):
                 patch.object(agent, "_generate_summary", return_value="done"):
             GitRepoCls.detect_default_branch.return_value = "main"
             GitRepoCls.return_value = fake_git
-            result = agent.execute_issue(task, Path("/fake/worktree"))
+            result = agent.execute_issue(task, self.worktree)
             return result, open_mock, close_mock, session
 
     def test_does_not_prepare_branch(self) -> None:
@@ -85,7 +104,9 @@ class TestExecuteIssueWorktreeAware(unittest.TestCase):
         _result, _open, _close, session = self._run_execute_issue(fake_git)
 
         session.send_turn.assert_called_once()
-        self.assertEqual(session.send_turn.call_args.args[0], "implement it")
+        # The implement phase runs as a /implement-issue slash-command turn.
+        self.assertRegex(session.send_turn.call_args.args[0], _TURN_RE)
+        self.assertTrue(session.send_turn.call_args.args[0].startswith("/implement-issue "))
 
     def test_empty_branch_uses_fresh_session(self) -> None:
         """An empty branch opens a fresh (session_id=None) session."""
@@ -93,12 +114,8 @@ class TestExecuteIssueWorktreeAware(unittest.TestCase):
         fake_git.count_commits_ahead.return_value = 0
 
         agent = CodingAgent(repo="LoonyBin/repo")
-        task = MagicMock()
-        task.issue.number = 7
-        task.issue.title = "My feature"
-        task.branch_name = "feature/7"
+        task = self._make_task()
         task.session_key = "issue:7"
-        task.implement_prompt.return_value = "implement it"
         session = MagicMock()
         session.send_turn.return_value = _turn()
 
@@ -112,7 +129,7 @@ class TestExecuteIssueWorktreeAware(unittest.TestCase):
                 patch.object(agent, "_generate_summary", return_value="done"):
             GitRepoCls.detect_default_branch.return_value = "main"
             GitRepoCls.return_value = fake_git
-            agent.execute_issue(task, Path("/fake/worktree"))
+            agent.execute_issue(task, self.worktree)
 
         self.assertIsNone(open_mock.call_args.args[1])
 

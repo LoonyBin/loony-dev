@@ -247,12 +247,35 @@ class TestQuotaWorkerGracefulHandling(unittest.TestCase):
     than a non-zero subprocess exit), so these tests inject the error there.
     """
 
+    def setUp(self) -> None:
+        # A real worktree with the bundled commands installed so the agent can
+        # build its /<command> <path> turn before reaching send_turn (#166).
+        import tempfile
+
+        from loony_dev.commands import install_commands
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.worktree = Path(self._tmp.name)
+        install_commands(self.worktree)
+        self.addCleanup(self._tmp.cleanup)
+
     def _quota_session(self, message: str) -> MagicMock:
         from loony_dev.agents.claude_session import QuotaExceededError
 
         session = MagicMock()
         session.send_turn.side_effect = QuotaExceededError(message)
         return session
+
+    def _mock_task(self) -> MagicMock:
+        # A conflict-resolution task: the single-shot execute() path (issue
+        # implementation goes through execute_issue instead). All fields align to
+        # the same task type for realism.
+        mock_task = MagicMock()
+        mock_task.task_type = "resolve_conflicts"
+        mock_task.command_name = "resolve-conflicts"
+        mock_task.context_payload.return_value = {"pr_number": 1}
+        mock_task.worktree_key = "pr-1-conflicts"
+        return mock_task
 
     def test_quota_error_returns_task_result_not_raises(self) -> None:
         """execute() with a quota-error turn must return TaskResult without raising."""
@@ -262,14 +285,12 @@ class TestQuotaWorkerGracefulHandling(unittest.TestCase):
         agent = CodingAgent()
         session = self._quota_session("You've hit your limit · resets 7:30pm (Asia/Calcutta)")
 
-        mock_task = MagicMock()
-        mock_task.describe.return_value = "implement test feature"
-        mock_task.task_type = "implement_issue"
+        mock_task = self._mock_task()
 
         with patch.object(agent, "_open_session", return_value=session), \
              patch.object(agent, "_close_session"), \
              patch.object(agent, "_get_head_commit", return_value="abc123"):
-            result = agent.execute(mock_task, Path("/tmp"))
+            result = agent.execute(mock_task, self.worktree)
 
         self.assertIsInstance(result, TaskResult)
         self.assertFalse(result.success)
@@ -283,13 +304,12 @@ class TestQuotaWorkerGracefulHandling(unittest.TestCase):
         agent = CodingAgent()
         session = self._quota_session("rate limit exceeded")
 
-        mock_task = MagicMock()
-        mock_task.describe.return_value = "implement test feature"
+        mock_task = self._mock_task()
 
         with patch.object(agent, "_open_session", return_value=session), \
              patch.object(agent, "_close_session"), \
              patch.object(agent, "_get_head_commit", return_value="deadbeef"):
-            agent.execute(mock_task, Path("/tmp"))
+            agent.execute(mock_task, self.worktree)
 
         self.assertTrue(agent.is_disabled())
         self.assertFalse(agent.can_handle(mock_task))

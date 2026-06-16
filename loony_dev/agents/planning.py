@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from loony_dev.agents.base import Agent
 from loony_dev.agents.claude_quota import ClaudeQuotaMixin
+from loony_dev.agents.context_file import CommandNotInstalledError, cleanup_context_dir
 from loony_dev.models import TaskResult, truncate_for_log
 
 if TYPE_CHECKING:
@@ -27,14 +28,27 @@ class PlanningAgent(ClaudeQuotaMixin, Agent):
         return task.task_type == "plan_issue"
 
     def execute(self, task: Task, work_dir: Path) -> TaskResult:
-        prompt = task.describe()
         session_id = self._session_id_for(task)
-        logger.debug("Running planning Claude CLI (cwd=%s, session=%s)", work_dir, session_id)
-        logger.debug("Planning prompt: %s", truncate_for_log(prompt))
+        try:
+            prompt = self._command_turn(
+                work_dir, task.command_name, task.context_payload(),
+                task_key=task.worktree_key,
+            )
+        except CommandNotInstalledError as exc:
+            logger.error("Cannot dispatch planning task: %s", exc)
+            return TaskResult(success=False, output=str(exc), summary=str(exc))
 
-        stdout, stderr, returncode = self._run_claude_cli(
-            prompt, cwd=work_dir, session_id=session_id,
-        )
+        logger.debug("Running planning Claude CLI (cwd=%s, session=%s)", work_dir, session_id)
+        logger.debug("Planning turn: %s", prompt)
+
+        try:
+            from loony_dev.agents.coding import _turn_timeout
+
+            stdout, stderr, returncode = self._run_claude_cli(
+                prompt, cwd=work_dir, session_id=session_id, timeout=_turn_timeout(),
+            )
+        finally:
+            cleanup_context_dir(task.worktree_key)
 
         logger.debug("Planning Claude CLI exited with code %d", returncode)
         if stdout:

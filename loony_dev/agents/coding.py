@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from loony_dev.agents.base import Agent
 from loony_dev.agents.claude_quota import ClaudeQuotaMixin
+from loony_dev.agents.context_file import CommandNotInstalledError, cleanup_context_dir
 from loony_dev.agents.claude_session import (
     ClaudeSessionError,
     QuotaExceededError,
@@ -97,19 +98,28 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         return task.task_type in ("implement_issue", "address_review", "resolve_conflicts", "fix_ci")
 
     def execute(self, task: Task, work_dir: Path) -> TaskResult:
-        prompt = task.describe()
         session_id = self._session_id_for(task)
+        baseline_commit = self._get_head_commit(work_dir)
+
+        try:
+            prompt = self._command_turn(
+                work_dir, task.command_name, task.context_payload(),
+                task_key=task.worktree_key,
+            )
+        except CommandNotInstalledError as exc:
+            logger.error("Cannot dispatch task: %s", exc)
+            return TaskResult(success=False, output=str(exc), summary=str(exc))
+
         logger.debug(
             "Coding turn via claude -p (cwd=%s, session=%s)", work_dir, session_id,
         )
-        logger.debug("Claude prompt: %s", truncate_for_log(prompt))
-
-        baseline_commit = self._get_head_commit(work_dir)
+        logger.debug("Claude turn: %s", prompt)
 
         try:
             session = self._open_session(work_dir, session_id)
         except ClaudeSessionError as exc:
             logger.warning("Failed to open ClaudeSession: %s", exc)
+            cleanup_context_dir(task.worktree_key)
             return TaskResult(
                 success=False,
                 output=str(exc),
@@ -125,6 +135,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             output = turn.text
         finally:
             self._close_session(session)
+            cleanup_context_dir(task.worktree_key)
 
         if output:
             logger.debug("Claude output: %s", truncate_for_log(output))
@@ -187,11 +198,18 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
         try:
             # ── Phase 1: Implement ──────────────────────────────────────────
             logger.info("Issue #%d: phase 1 — implementing", task.issue.number)
-            implement_prompt = task.implement_prompt()
-            logger.debug("Claude prompt: %s", truncate_for_log(implement_prompt))
+            try:
+                implement_turn = self._command_turn(
+                    work_dir, "implement-issue", task.implement_payload(),
+                    task_key=task.worktree_key,
+                )
+            except CommandNotInstalledError as exc:
+                logger.error("Issue #%d: %s", task.issue.number, exc)
+                return TaskResult(success=False, output=str(exc), summary=str(exc))
+            logger.debug("Claude turn: %s", implement_turn)
 
             turn, failure = self._run_turn(
-                session, implement_prompt, timeout=timeout, phase="implementation",
+                session, implement_turn, timeout=timeout, phase="implementation",
             )
             if failure is not None:
                 return failure
@@ -226,7 +244,11 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                     )
                     _, failure = self._run_turn(
                         session,
-                        task.fix_review_prompt(cr_result.agent_prompt),
+                        self._command_turn(
+                            work_dir, "fix-review",
+                            task.fix_review_payload(cr_result.agent_prompt),
+                            task_key=task.worktree_key,
+                        ),
                         timeout=timeout,
                         phase="review fix",
                     )
@@ -272,7 +294,11 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                     )
                     _, failure = self._run_turn(
                         session,
-                        task.fix_hook_prompt(hook_failed_output),
+                        self._command_turn(
+                            work_dir, "fix-hook",
+                            task.fix_hook_payload(hook_failed_output),
+                            task_key=task.worktree_key,
+                        ),
                         timeout=timeout,
                         phase="hook fix",
                     )
@@ -284,7 +310,11 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
                             if cr_result.has_issues:
                                 _, failure = self._run_turn(
                                     session,
-                                    task.fix_review_prompt(cr_result.agent_prompt),
+                                    self._command_turn(
+                                        work_dir, "fix-review",
+                                        task.fix_review_payload(cr_result.agent_prompt),
+                                        task_key=task.worktree_key,
+                                    ),
                                     timeout=timeout,
                                     phase="post-hook review fix",
                                 )
@@ -322,6 +352,7 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             return TaskResult(success=True, output=implement_output, summary=summary, post_summary=True)
         finally:
             self._close_session(session)
+            cleanup_context_dir(task.worktree_key)
 
     # ------------------------------------------------------------------
     # Session helpers (non-interactive ``claude -p``, see _CliSession)
@@ -445,18 +476,30 @@ class CodingAgent(ClaudeQuotaMixin, Agent):
             logger.warning("Issue #%d: could not get diff for PR body: %s", task.issue.number, exc)
             return f"Closes #{task.issue.number}"
 
-        stdout, _, returncode = self._invoke_claude(
-            task.pr_body_prompt(diff), cwd=work_dir,
-        )
+        try:
+            turn = self._command_turn(
+                work_dir, "pr-body", task.pr_body_payload(diff),
+                task_key=task.worktree_key,
+            )
+        except CommandNotInstalledError as exc:
+            logger.warning("Issue #%d: %s", task.issue.number, exc)
+            return f"Closes #{task.issue.number}"
+        stdout, _, returncode = self._invoke_claude(turn, cwd=work_dir, timeout=_turn_timeout())
         if returncode == 0 and stdout.strip():
             return stdout.strip()
         return f"Closes #{task.issue.number}"
 
     def _generate_commit_message(self, task: IssueTask, work_dir: Path) -> str:
         """Ask Claude (no session) to produce a conventional commit message."""
-        stdout, _, returncode = self._invoke_claude(
-            task.commit_message_prompt(), cwd=work_dir,
-        )
+        try:
+            turn = self._command_turn(
+                work_dir, "commit-message", task.commit_message_payload(),
+                task_key=task.worktree_key,
+            )
+        except CommandNotInstalledError as exc:
+            logger.warning("Issue #%d: %s", task.issue.number, exc)
+            return f"feat: implement issue #{task.issue.number}"
+        stdout, _, returncode = self._invoke_claude(turn, cwd=work_dir, timeout=_turn_timeout())
         if returncode == 0 and stdout.strip():
             return _parse_commit_message(stdout)
         return f"feat: implement issue #{task.issue.number}"

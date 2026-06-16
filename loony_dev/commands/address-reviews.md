@@ -1,14 +1,23 @@
 ---
 description: Triage and address review comments on a PR
-argument-hint: <PR number/title, branch, and the review comments to address>
+argument-hint: <path to JSON context file>
 ---
-Address review comments on a PR.
+Address review comments on a PR. The argument is the path to a JSON context file.
 
-$ARGUMENTS
+Read the JSON file at: $ARGUMENTS
+
+It contains:
+- `pr_number` / `pr` — the PR number
+- `title` — the PR title
+- `branch` — the PR branch you are on
+- `owner` — the repository owner (for `gh api` calls below)
+- `repo` — the repository name (for `gh api` calls below)
+- `allow_create_issues` — whether you may open tracking issues for deferred findings
+- `comments` — the new review comments to address (each block carries its `kind`, `id`, and for inline review comments `thread_id` and `in_reply_to_id`)
 
 # Instructions
 
-You are addressing review comments on a PR. Each comment above comes from
+You are addressing the review comments in `comments`. Each comment comes from
 either a human reviewer or a review bot (e.g. CodeRabbit). Apply the same
 triage to all of them.
 
@@ -60,9 +69,11 @@ DEFER (valid but out of scope per the diff-scope test):
 - Reply to the comment: "Acknowledged -- pre-existing, not in scope for
   this PR. Filing separately per repo policy." Link the follow-up issue
   if you opened one.
-- If the bug looks real, open a tracking issue in this repo
-  (`gh issue create -R <owner>/<repo>`) with a short description and a link
-  back to the comment URL.
+- If `allow_create_issues` is true and the bug looks real, open a tracking
+  issue in this repo (`gh issue create -R <owner>/<repo>`) with a short
+  description and a link back to the comment URL. If `allow_create_issues`
+  is false, do NOT open the issue yourself — instead mention in your reply
+  that a follow-up issue should be filed.
 - For inline review threads (kind=inline), do NOT resolve the thread
   yourself.
 
@@ -73,7 +84,7 @@ human reviewer.
 
 ## Replying and resolving
 
-Each comment block above carries its `kind`, `id`, and (for inline review
+Each comment block carries its `kind`, `id`, and (for inline review
 comments) `thread_id` and `in_reply_to_id`. Use them:
 
 - Reply to an inline review thread (kind=inline). Use the databaseId of the
