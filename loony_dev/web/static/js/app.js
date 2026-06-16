@@ -17,6 +17,7 @@ import * as overview from "./overview.js";
 import * as sessions from "./sessions.js";
 import * as fleet from "./fleet.js";
 import * as repoDetail from "./repoDetail.js";
+import * as issueDetail from "./issueDetail.js";
 import * as logs from "./logs.js";
 import * as entries from "./entries.js";
 import * as attach from "./attach.js";
@@ -66,6 +67,7 @@ function applySnapshot(snapshot) {
   // key. Worker / worktree detail still lives in the per-repo drill-down.
   fleet.render(snapshot);
   repoDetail.update(snapshot);
+  issueDetail.update(snapshot);
 
   // Keep the per-repo pickers in sync with discovered repos (cheap, no clobber).
   const next = [...new Set([
@@ -127,6 +129,7 @@ function start() {
   observe.init();
   repoDetail.init();
   fleet.init();
+  issueDetail.init();
   connect();
 }
 

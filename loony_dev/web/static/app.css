@@ -1049,11 +1049,6 @@ button.action:hover,
 .back-link .material-symbols-outlined { font-size: 1.1rem; }
 .back-link:hover { text-decoration: underline; }
 
-.detail-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-  gap: var(--sp-4);
-}
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1074,6 +1069,134 @@ button.action:hover,
 .kv dt { color: var(--text-muted); }
 .kv dd { margin: 0; word-break: break-word; }
 .join-link { display: inline-block; margin-top: var(--sp-2); text-decoration: none; }
+
+/* ---- Repo-detail Live screen (#189) ---------------------------------- */
+/* Header: title on the left, right-aligned quick-actions bar. */
+.live-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+.live-head h2 { margin: 0; }
+.quick-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+/* Three-region body: a flexible center column + a fixed ~284px sidebar. */
+.live-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 284px;
+  gap: var(--sp-4);
+  align-items: start;
+  margin-top: var(--sp-4);
+}
+
+.live-session { display: flex; flex-direction: column; gap: var(--sp-3); }
+.live-session-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+.live-session-repo { margin: var(--sp-1) 0 0; word-break: break-all; }
+.live-session-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--fs-1);
+}
+.live-meta-row { display: flex; justify-content: space-between; gap: var(--sp-3); }
+.live-meta-val { word-break: break-all; text-align: right; }
+.live-meta-val.mono { font-family: var(--font-mono); }
+/* The embedded #157 card already carries its own card chrome; flatten it when
+   nested inside the panel so we don't double up borders/shadow. */
+.live-session .session-card-compact {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+/* Sidebar: a stack of panels. */
+.live-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+.live-panel { display: flex; flex-direction: column; gap: var(--sp-3); }
+.live-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+.live-panel-head h3 { margin: 0; }
+
+/* Repos switcher rows. */
+.repos-switch { display: flex; flex-direction: column; gap: var(--sp-1); }
+.repo-switch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font: inherit;
+  font-size: var(--fs-1);
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: var(--sp-1) var(--sp-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.repo-switch-row:hover { background: var(--surface-2); }
+.repo-switch-row.active {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.repo-switch-name { word-break: break-all; }
+
+/* Repo-context metric cards + commit rows. */
+.context-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-2);
+}
+.context-stats .stat { padding: var(--sp-3); }
+.commit-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-1);
+  margin-bottom: var(--sp-2);
+}
+
+/* Worker rows in the sidebar. */
+.worker-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.worker-row + .worker-row { margin-top: var(--sp-2); }
+.worker-mid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+  flex: 1;
+}
+.worker-name { font-size: var(--fs-1); word-break: break-all; }
+.worker-age { font-size: var(--fs-0); white-space: nowrap; }
+
+/* Collapse to a single column at the existing mobile breakpoint. */
+@media (max-width: 720px) {
+  .live-grid { grid-template-columns: 1fr; }
+}
 
 /* ---- Sessions view --------------------------------------------------- */
 .session-grid {
@@ -1547,3 +1670,152 @@ button.action:hover,
   color: var(--text);
   box-shadow: var(--shadow);
 }
+
+/* ====================================================================== */
+/* Issue ▸ PR pipeline detail (#190)                                      */
+/* ---------------------------------------------------------------------- */
+/* Three new components — breadcrumb, stepper, timeline — plus the 2-col   */
+/* detail layout, built on the existing tokens and the .tag/.statepill/    */
+/* .sdot/.avatar primitives so theme + lifecycle colors stay centralized.  */
+
+/* breadcrumb — Fleet ▸ repo ▸ #N. Crumb links are bare buttons; the trailing
+   current segment is plain text. */
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  font-size: var(--fs-1);
+  margin-bottom: var(--sp-3);
+}
+.breadcrumb .crumb {
+  font: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--primary);
+  cursor: pointer;
+}
+.breadcrumb .crumb:hover { text-decoration: underline; }
+.breadcrumb .crumb.current { color: var(--text-muted); cursor: default; }
+.breadcrumb .crumb-sep { color: var(--text-muted); }
+
+.pipeline-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+}
+.pipeline-header h2 { margin: 0; }
+
+/* Drive-state pill modifiers — reserved for the #200 seam (observe/drive/busy).
+   They re-tint the statepill so a parked vs. busy vs. live drive reads at a
+   glance; the .sdot inside still carries the canonical state hue. */
+.statepill.observing { background: rgba(245, 158, 11, 0.14); }
+.statepill.driving   { background: var(--accent-soft); color: var(--accent-ink); }
+.statepill.busy      { background: rgba(239, 68, 68, 0.14); color: var(--state-blocked); }
+
+/* stepper — Issue → Plan → Implement → PR → Review → Merge with a conflict
+   detour badge. Steps connect via a thin line; the current step is emphasized
+   and later steps are dimmed (gated). */
+.stepper {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-5);
+}
+.stepper .step {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-1);
+  font-weight: 600;
+  color: var(--text-muted);
+  position: relative;
+  padding-right: var(--sp-3);
+}
+/* Connector line between steps (suppressed after the last one). */
+.stepper .step::after {
+  content: "";
+  width: var(--sp-4);
+  height: 1px;
+  background: var(--border);
+}
+.stepper .step:last-of-type { padding-right: 0; }
+.stepper .step:last-of-type::after { display: none; }
+.stepper .step.active { color: var(--text); }
+.stepper .step.done { color: var(--text); }
+.stepper .step.gated { opacity: 0.6; }
+.stepper .step-label { white-space: nowrap; }
+/* conflict detour badge — hangs off the spine after Implement. */
+.stepper .step-detour {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-0);
+  font-weight: 600;
+  padding: 3px var(--sp-2);
+  border-radius: 999px;
+  background: rgba(239, 68, 68, 0.14);
+  color: var(--state-blocked);
+}
+.stepper .step-detour .material-symbols-outlined { font-size: 1rem; }
+
+/* detail-2col — the steer panel (main) + sidebar. Collapses to a single column
+   on narrow viewports. Extends the .detail-grid idiom with a fixed sidebar. */
+.detail-2col {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem);
+  gap: var(--sp-4);
+  align-items: start;
+}
+@media (max-width: 56rem) {
+  .detail-2col { grid-template-columns: 1fr; }
+}
+.pipeline-steer { display: flex; flex-direction: column; gap: var(--sp-3); }
+.pipeline-steer .observe-conv { height: 40vh; min-height: 240px; }
+.pipeline-reply { display: flex; flex-direction: column; gap: var(--sp-2); }
+.pipeline-reply textarea {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+}
+.pipeline-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border);
+}
+.pipeline-sidebar { display: flex; flex-direction: column; gap: var(--sp-4); }
+
+/* linked issue/PR cards — a titled mini-card with a state tag + kv body. */
+.linked-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+.linked-card:last-child { margin-bottom: 0; }
+.linked-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.linked-title { font-weight: 700; font-size: var(--fs-2); }
+.linked-head .tag { margin-left: auto; }
+
+/* timeline — actor chip + label + relative time, one row per event. */
+.timeline { display: flex; flex-direction: column; gap: var(--sp-2); }
+.timeline-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-1);
+}
+.timeline-row .avatar { width: 1.5rem; height: 1.5rem; font-size: var(--fs-0); }
+.timeline-label { flex: 1; min-width: 0; overflow-wrap: break-word; }
+.timeline-time { color: var(--text-muted); font-size: var(--fs-0); white-space: nowrap; }
