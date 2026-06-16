@@ -435,6 +435,62 @@ class EntriesTestCase(unittest.TestCase):
             entries.delete_entry("skills", "stray", **self._kw())
         self.assertTrue((stray / "keepme.txt").is_file())
 
+    # ---- Card metadata (#191) -------------------------------------------
+
+    def test_list_surfaces_description_owner_and_trigger(self) -> None:
+        # A hand-authored skill with a frontmatter description + explicit trigger.
+        body = (
+            "---\n"
+            "description: Deploy the service\n"
+            "trigger: a release tag is pushed\n"
+            "---\n\n# Deploy\n"
+        )
+        entries.write_entry("skills", "deploy", body, **self._kw())
+        (view,) = entries.list_entries("skills", **self._kw())
+        self.assertEqual(view.description, "Deploy the service")
+        self.assertEqual(view.owner, "capo")  # no managed marker => hand-authored
+        self.assertEqual(view.trigger, "a release tag is pushed")
+
+    def test_owner_is_trixy_when_managed_marker_present(self) -> None:
+        body = (
+            "---\ndescription: do it\n---\n"
+            f"{entries.MANAGED_MARKER}\n\nbody\n"
+        )
+        entries.write_entry("commands", "ship", body, **self._kw())
+        (view,) = entries.list_entries("commands", **self._kw())
+        self.assertEqual(view.owner, "trixy")
+
+    def test_phase_from_known_command_mapping(self) -> None:
+        entries.write_entry("commands", "plan-issue", "no frontmatter\n", **self._kw())
+        entries.write_entry("commands", "fix-ci", "no frontmatter\n", **self._kw())
+        by_name = {v.name: v for v in entries.list_entries("commands", **self._kw())}
+        self.assertEqual(by_name["plan-issue"].phase, "planning")
+        self.assertEqual(by_name["fix-ci"].phase, "ci")
+
+    def test_trigger_extracted_from_use_when_clause(self) -> None:
+        body = "---\ndescription: A tool. Use when the build breaks.\n---\n"
+        entries.write_entry("skills", "rescue", body, **self._kw())
+        (view,) = entries.list_entries("skills", **self._kw())
+        self.assertEqual(view.trigger, "the build breaks.")
+
+    def test_frontmatterless_entry_lists_with_none_metadata(self) -> None:
+        # A plain markdown file (no fence, unknown name) must list without raising
+        # and surface None metadata — except owner, which is always concrete.
+        entries.write_entry("skills", "plain", "# Just a heading\nbody\n", **self._kw())
+        (view,) = entries.list_entries("skills", **self._kw())
+        self.assertIsNone(view.description)
+        self.assertIsNone(view.trigger)
+        self.assertIsNone(view.phase)
+        self.assertEqual(view.owner, "capo")
+
+    def test_write_round_trips_frontmatter_verbatim(self) -> None:
+        # Editing in the drawer must never strip metadata: read-back equals write.
+        body = (
+            "---\ndescription: keep me\nargument-hint: <x>\n---\n\n# Body\n"
+        )
+        entries.write_entry("skills", "verbatim", body, **self._kw())
+        self.assertEqual(entries.read_entry("skills", "verbatim", **self._kw()), body)
+
 
 class EntriesApiTestCase(unittest.TestCase):
     """Integration tests for the skills/commands endpoints via TestClient."""

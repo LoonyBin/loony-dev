@@ -524,9 +524,18 @@
         <div id="sessions" class="session-grid"></div>
       </section>
 
-      <!-- Skills & Commands editor -->
+      <!-- Skills & Commands library (#191). The Kind/Scope/Repo selects stay as
+           a filter bar; entries render as a card grid (one card per skill /
+           command). The editor lives in a drawer overlay (sibling of the attach /
+           observe modals below) so it composes regardless of where the nav puts
+           this view. -->
       <section class="view" x-show="$store.app.view === 'skills'">
-        <h2>Skills &amp; Commands</h2>
+        <div class="skills-head">
+          <h2>Skills &amp; Commands</h2>
+          <button id="entry-new" class="ld-btn md primary" type="button">
+            <span class="material-symbols-outlined" aria-hidden="true">add</span>New
+          </button>
+        </div>
         <div class="controls">
           <label>Kind
             <select id="entry-kind">
@@ -544,24 +553,7 @@
             <select id="entry-repo"></select>
           </label>
         </div>
-        <div class="editor-grid">
-          <div class="table-wrap">
-            <table id="entries-list" class="data-table">
-              <thead><tr><th>Name</th><th>Size</th><th>Modified</th></tr></thead>
-              <tbody></tbody>
-            </table>
-          </div>
-          <div class="editor-pane">
-            <textarea id="entry-content" placeholder="Paste or edit markdown (with frontmatter) here…"></textarea>
-            <div class="editor-actions">
-              <input id="entry-name" type="text" placeholder="entry-name (no slashes)" />
-              <button id="entry-save" class="action btn-primary" type="button">Save</button>
-              <button id="entry-delete" class="action" type="button">Delete</button>
-              <button id="entry-new" class="action" type="button">New</button>
-            </div>
-            <div id="entry-error" class="entry-error"></div>
-          </div>
-        </div>
+        <div id="entries-grid" class="skill-grid"></div>
       </section>
 
       <!-- Logs: live tail of a worker's log -->
@@ -603,6 +595,33 @@
         <button id="observe-close" class="icon-btn" aria-label="Close"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
       </div>
       <div id="observe-conv" class="observe-conv"></div>
+    </div>
+  </div>
+
+  <!-- Skills & Commands editor drawer (#191). A right-side panel reusing the
+       shared .modal backdrop + modal.js focus-trap. Holds the same textarea /
+       name input / Save / Delete the old inline editor did, so entries.js save /
+       validate logic carries over unchanged. -->
+  <div id="entry-modal" class="modal modal-drawer" role="dialog" aria-modal="true"
+       aria-labelledby="entry-modal-title" hidden>
+    <div class="modal-card modal-drawer-card">
+      <div class="modal-head">
+        <span id="entry-modal-title" class="modal-title">Edit entry</span>
+        <span class="spacer"></span>
+        <button id="entry-cancel" class="icon-btn" aria-label="Close"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
+      </div>
+      <label class="drawer-field">Name
+        <input id="entry-name" type="text" placeholder="entry-name (no slashes)" />
+      </label>
+      <label class="drawer-field drawer-field-grow">Content
+        <textarea id="entry-content" placeholder="Paste or edit markdown (with frontmatter) here…"></textarea>
+      </label>
+      <div class="editor-actions">
+        <button id="entry-save" class="ld-btn md primary" type="button">Save</button>
+        <button id="entry-delete" class="ld-btn md danger" type="button">Delete</button>
+        <button id="entry-cancel-2" class="ld-btn md ghost" type="button">Cancel</button>
+      </div>
+      <div id="entry-error" class="entry-error" role="alert" aria-live="assertive"></div>
     </div>
   </div>
 

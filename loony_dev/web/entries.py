@@ -22,12 +22,38 @@ mirrors ``services._safe_repo_log_path``).
 
 from __future__ import annotations
 
+import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from loony_dev.commands import MANAGED_MARKER
+
 CLAUDE_DIR_NAME = ".claude"
+
+# Cap how much of each content file the metadata reader pulls in. Frontmatter
+# plus the managed marker live in the first few lines, so a few KiB is ample and
+# keeps the per-file read during listing bounded.
+_META_HEAD_BYTES = 8192
+
+# Best-effort lifecycle phase for the loony-dev managed commands. There is no
+# `phase` frontmatter field today (it is a mockup invention), so cards fall back
+# to this name→phase table when frontmatter omits it. Unknown names yield None
+# and the card simply hides the phase chip.
+_KNOWN_COMMAND_PHASES: dict[str, str] = {
+    "plan-issue": "planning",
+    "implement-issue": "development",
+    "fix-ci": "ci",
+    "fix-review": "review",
+    "address-reviews": "review",
+    "resolve-conflicts": "conflict",
+    "cleanup-stuck": "stuck",
+}
+
+# Pull a "use when …" / "triggers on …" clause out of a description when no
+# explicit `trigger` frontmatter field is present.
+_TRIGGER_RE = re.compile(r"(?:use when|triggers on)\b[\s:—-]*(.+)", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +85,13 @@ class EntryView:
     path: str                 # path to SKILL.md or <name>.md
     size: int                 # bytes of the markdown content file
     modified_at: str | None   # ISO-8601 UTC mtime of the content file
+    # Card metadata, derived best-effort from the content file's head. All
+    # optional: a frontmatter-less or unreadable file lists with these None
+    # (listing never raises). The read/write/delete paths are unaffected.
+    description: str | None = None   # frontmatter `description`
+    owner: str | None = None         # "trixy" (managed marker present) / "capo"
+    trigger: str | None = None       # "triggers on …" clause, when derivable
+    phase: str | None = None         # lifecycle phase, when derivable
 
 
 # ---------------------------------------------------------------------------
@@ -202,16 +235,79 @@ def _contained(root: Path, content_path: Path) -> bool:
     return root == resolved or root in resolved.parents
 
 
+def _read_head(content_path: Path) -> str:
+    """Return the first ``_META_HEAD_BYTES`` of *content_path* as text, or ""."""
+    try:
+        with content_path.open("r", encoding="utf-8", errors="replace") as fh:
+            return fh.read(_META_HEAD_BYTES)
+    except OSError:
+        return ""
+
+
+def _parse_frontmatter(head: str) -> dict[str, str]:
+    """Parse a leading ``---``-fenced YAML block into a flat ``key: value`` dict.
+
+    Dependency-free (PyYAML is not a project dependency): only simple top-level
+    ``key: value`` scalar lines are understood, which covers the frontmatter the
+    skills/commands use (``description``, ``argument-hint``, ``name``, …). A file
+    without a leading fence yields ``{}``.
+    """
+    if not head.startswith("---\n") and not head.startswith("---\r\n"):
+        return {}
+    lines = head.splitlines()
+    fields: dict[str, str] = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if not line[:1].strip() and line.strip():
+            # Indented (nested) line — skip; only top-level scalars are parsed.
+            continue
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        key = key.strip()
+        if not key or key.startswith("#"):
+            continue  # Skip blanks and comments.
+        fields[key] = value.strip().strip("'\"")
+    return fields
+
+
+def _derive_metadata(name: str, head: str) -> tuple[str | None, str, str | None, str | None]:
+    """Return ``(description, owner, trigger, phase)`` derived from *head*.
+
+    ``owner`` is always concrete: ``"trixy"`` when the managed marker is present
+    in the head (a loony-dev-installed file), else ``"capo"`` (hand-authored).
+    The remaining fields are surfaced when derivable and ``None`` otherwise.
+    """
+    fm = _parse_frontmatter(head)
+    description = fm.get("description") or None
+    owner = "trixy" if MANAGED_MARKER in head else "capo"
+
+    trigger = fm.get("trigger") or None
+    if trigger is None and description:
+        match = _TRIGGER_RE.search(description)
+        if match:
+            trigger = match.group(1).strip() or None
+
+    phase = fm.get("phase") or _KNOWN_COMMAND_PHASES.get(name)
+    return description, owner, trigger, phase
+
+
 def _view(name: str, content_path: Path) -> EntryView:
     try:
         size = content_path.stat().st_size
     except OSError:
         size = 0
+    description, owner, trigger, phase = _derive_metadata(name, _read_head(content_path))
     return EntryView(
         name=name,
         path=str(content_path),
         size=size,
         modified_at=_iso_mtime(content_path),
+        description=description,
+        owner=owner,
+        trigger=trigger,
+        phase=phase,
     )
 
 
