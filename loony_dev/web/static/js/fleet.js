@@ -221,9 +221,16 @@ function statePill(row) {
   return pill;
 }
 
-// Single worker (the trixy bot). One repointable navigation helper: routes to
-// the per-repo drill-down for now (interim until #190's Issue ▸ PR detail).
+// Single worker (the trixy bot). Deep-link a row to the Issue ▸ PR pipeline
+// detail (#190), which keys off the pipeline's `issue-N`/`pr-N` key, so the
+// detail view keeps full pipeline context. Falls back to the per-repo drill-down
+// when the row has no pipeline key (or Alpine has not booted).
 function goPipeline(row) {
+  const store = window.Alpine && window.Alpine.store("app");
+  if (store && row.repo && row.key) {
+    store.goPipeline(row.repo, row.key);
+    return;
+  }
   if (row.repo) goRepo(row.repo);
 }
 
