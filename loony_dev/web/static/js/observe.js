@@ -13,6 +13,7 @@
 // times the client reconnects.
 
 import { openModalA11y, closeModalA11y } from "./modal.js";
+import { icon } from "./dom.js";
 
 let active = null; // { ws, taskKey, seen:Set, toolCards:Map } for the open view
 
@@ -87,7 +88,12 @@ function renderThinking(ev) {
 
 function renderToolUse(ev) {
   const el = block("tool");
-  el.appendChild(label(`🔧 ${ev.tool || "tool"}`));
+  const lab = label(ev.tool || "tool");
+  lab.prepend(icon("build"));
+  // Separate the icon from the tool name so a font-load failure degrades to
+  // readable "build tool" rather than "buildtool" (matches attach.js spacing).
+  lab.insertBefore(document.createTextNode(" "), lab.childNodes[1] || null);
+  el.appendChild(lab);
   const args = formatArgs(ev.args);
   if (args) {
     const pre = document.createElement("pre");

@@ -5,15 +5,25 @@
 :root {
   color-scheme: light dark;
 
-  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Type — Manrope (variable) is the sans for the L Space look (#186); the
+     system stack stays as the fallback if the web font is blocked. */
+  --font-sans: "Manrope", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-  --fs-0: 0.75rem;
+  /* Type scale: micro → display. --fs-0..5 are unchanged so existing consumers
+     don't shift; --fs-display is the new large-title step. */
+  --fs-0: 0.75rem;   /* micro / eyebrow */
   --fs-1: 0.8rem;
   --fs-2: 0.9rem;
-  --fs-3: 1rem;
-  --fs-4: 1.25rem;
+  --fs-3: 1rem;      /* body */
+  --fs-4: 1.25rem;   /* title */
   --fs-5: 1.5rem;
+  --fs-display: 2rem; /* display headings */
+
+  /* Wide tracking for uppercase eyebrows; tabular numerals keep counts from
+     jittering as digits change. Apply --num via `font-variant-numeric`. */
+  --track-eyebrow: 0.08em;
+  --num: tabular-nums;
 
   --sp-1: 0.25rem;
   --sp-2: 0.5rem;
@@ -26,58 +36,100 @@
   --radius-sm: 4px;
   --maxw: 1100px;
 
-  /* Light palette (default) */
+  /* Accent family — the blueprint blue (#186). soft = tinted fill for selected
+     rows/pills; ink = a slightly deeper text-on-light accent. */
+  --accent: #2667B7;
+  --accent-hover: #1E4F8F;
+  --accent-soft: #EFF6FF;
+  --accent-ink: #1D4ED8;
+
+  /* Lifecycle state colors (the label state machine's hues). in-progress
+     reuses the accent so "working" reads as the primary brand color. */
+  --state-merged: #10B981;
+  --state-review: #F59E0B;
+  --state-blocked: #EF4444;
+  --state-gated: #9CA3AF;
+  --state-progress: var(--accent);
+
+  /* Cool-gray neutrals (light). Hairline borders, subtle card shadow. */
   --bg: #f5f6f8;
   --surface: #ffffff;
   --surface-2: #eef1f5;
   --border: #d9dee5;
   --text: #1a1f26;
   --text-muted: #5b6573;
-  --primary: #2563eb;
+
+  /* Legacy aliases re-pointed at the new tokens so existing class names (the
+     pre-rework markup) pick up the new look for free, no markup changes. */
+  --primary: var(--accent);
   --primary-contrast: #ffffff;
-  --danger: #c62828;
-  --danger-strong: #b71c1c;
-  --running: #2e7d32;
-  --stale: #8a8a8a;
-  --unknown: #b58900;
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 2px 8px rgba(0, 0, 0, 0.04);
+  --danger: var(--state-blocked);
+  --danger-strong: #DC2626;   /* solid-red surfaces (banner, stuck pill) */
+  --running: var(--state-merged);
+  --stale: var(--state-gated);
+  --unknown: var(--state-review);
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 2px 8px rgba(16, 24, 40, 0.05);
 }
 
 /* Dark tokens: applied automatically by OS preference (unless a manual light
    choice is pinned), and explicitly when the toggle pins dark. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
+    /* Accent + lifecycle hues brightened for dark surfaces. Kept usable, not
+       final — full dark re-theming is deferred to the Tweaks issue (#186). */
+    --accent: #4F8CFF;
+    --accent-hover: #6FA3FF;
+    --accent-soft: #18233a;
+    --accent-ink: #93B4FF;
+    --state-merged: #34D399;
+    --state-review: #FBBF24;
+    --state-blocked: #F87171;
+    --state-gated: #9CA3AF;
+    --state-progress: var(--accent);
+
     --bg: #0f1318;
     --surface: #171c23;
     --surface-2: #1f262f;
     --border: #2c343e;
     --text: #e6e9ee;
     --text-muted: #9aa4b2;
-    --primary: #4f8cff;
+
+    --primary: var(--accent);
     --primary-contrast: #0f1318;
-    --danger: #ef5350;
-    --danger-strong: #c62828;
-    --running: #66bb6a;
-    --stale: #8a8a8a;
-    --unknown: #d6a82a;
+    --danger: var(--state-blocked);
+    --danger-strong: #EF4444;
+    --running: var(--state-merged);
+    --stale: var(--state-gated);
+    --unknown: var(--state-review);
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 10px rgba(0, 0, 0, 0.3);
   }
 }
 
 :root[data-theme="dark"] {
+  --accent: #4F8CFF;
+  --accent-hover: #6FA3FF;
+  --accent-soft: #18233a;
+  --accent-ink: #93B4FF;
+  --state-merged: #34D399;
+  --state-review: #FBBF24;
+  --state-blocked: #F87171;
+  --state-gated: #9CA3AF;
+  --state-progress: var(--accent);
+
   --bg: #0f1318;
   --surface: #171c23;
   --surface-2: #1f262f;
   --border: #2c343e;
   --text: #e6e9ee;
   --text-muted: #9aa4b2;
-  --primary: #4f8cff;
+
+  --primary: var(--accent);
   --primary-contrast: #0f1318;
-  --danger: #ef5350;
-  --danger-strong: #c62828;
-  --running: #66bb6a;
-  --stale: #8a8a8a;
-  --unknown: #d6a82a;
+  --danger: var(--state-blocked);
+  --danger-strong: #EF4444;
+  --running: var(--state-merged);
+  --stale: var(--state-gated);
+  --unknown: var(--state-review);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 10px rgba(0, 0, 0, 0.3);
 }
 
@@ -102,6 +154,27 @@ h1 { font-size: var(--fs-5); margin: 0; }
 h2 { font-size: var(--fs-3); margin: var(--sp-5) 0 var(--sp-3); }
 section.view > h2:first-child { margin-top: 0; }
 
+/* Material Symbols Outlined (#186) — the single icon font. The ligature text in
+   each `.material-symbols-outlined` span (e.g. "dashboard") renders as a glyph;
+   if the font is blocked it degrades to that readable text. `vertical-align`
+   keeps inline icons centered on the surrounding text; the variation settings
+   fix the calm outline weight (FILL 0). Context rules below tune the size. */
+.material-symbols-outlined {
+  font-family: "Material Symbols Outlined";
+  font-weight: normal;
+  font-style: normal;
+  font-size: 1.1em;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  vertical-align: middle;
+  -webkit-font-smoothing: antialiased;
+  font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+}
+
 /* ---- Top bar --------------------------------------------------------- */
 .topbar {
   display: flex;
@@ -119,6 +192,9 @@ section.view > h2:first-child { margin-top: 0; }
 .spacer { flex: 1; }
 
 .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font: inherit;
   font-size: var(--fs-4);
   line-height: 1;
@@ -134,9 +210,13 @@ section.view > h2:first-child { margin-top: 0; }
 .icon-btn:hover { background: var(--surface-2); color: var(--text); }
 
 .stuck-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
   font: inherit;
   font-size: var(--fs-1);
   font-weight: 600;
+  font-variant-numeric: var(--num); /* tabular count digits */
   /* Fixed white: the background is always danger-red, so reusing the
      theme-aware --primary-contrast would render dark text in dark mode. */
   color: #fff;
@@ -146,6 +226,7 @@ section.view > h2:first-child { margin-top: 0; }
   padding: var(--sp-1) var(--sp-3);
   cursor: pointer;
 }
+.stuck-pill .material-symbols-outlined { font-size: 1.05rem; }
 
 /* Subtle "reconnecting…" indicator shown while the SSE stream is down. */
 .stream-status {
@@ -203,7 +284,8 @@ section.view > h2:first-child { margin-top: 0; }
 }
 .nav-item:hover { background: var(--surface-2); color: var(--text); }
 .nav-item.active { background: var(--primary); color: var(--primary-contrast); }
-.nav-icon { font-size: 1.15rem; line-height: 1; }
+/* Specific enough to beat the .material-symbols-outlined base font-size. */
+.nav-item .nav-icon { font-size: 1.35rem; line-height: 1; }
 
 main {
   padding: var(--sp-5);
@@ -244,6 +326,7 @@ main {
   border-collapse: collapse;
   width: 100%;
   font-size: var(--fs-2);
+  font-variant-numeric: var(--num); /* align digit columns (PID, age, …) */
 }
 .data-table th,
 .data-table td {
@@ -309,11 +392,17 @@ td.cmdline { font-family: var(--font-mono); font-size: var(--fs-1); word-break: 
 
 /* ---- Banners --------------------------------------------------------- */
 .banner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
   padding: var(--sp-3) var(--sp-4);
   border-radius: var(--radius);
   margin: 0 0 var(--sp-4);
   font-weight: 600;
 }
+/* `display:flex` above would otherwise defeat the `hidden` toggle (author
+   styles beat the UA `[hidden]` rule), so restore it explicitly. */
+.banner[hidden] { display: none; }
 .banner-danger { background: var(--danger-strong); color: #fff; }
 
 /* ---- Buttons --------------------------------------------------------- */
@@ -410,12 +499,26 @@ button.action:hover,
   font-size: var(--fs-1);
   color: var(--text-muted);
 }
-.stuck-badge { color: #fff; background: var(--danger-strong); border-radius: 999px; padding: 0 var(--sp-2); font-weight: 600; }
+.stuck-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: #fff;
+  background: var(--danger-strong);
+  border-radius: 999px;
+  padding: 0 var(--sp-2);
+  font-weight: 600;
+  font-variant-numeric: var(--num);
+}
+.stuck-badge .material-symbols-outlined { font-size: 1rem; }
 
 /* ---- Repo detail (#158) ---------------------------------------------- */
 .repo-detail h2 { word-break: break-all; }
 .repo-detail h3 { font-size: var(--fs-3); margin: var(--sp-5) 0 var(--sp-3); }
 .back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
   font: inherit;
   font-size: var(--fs-2);
   background: none;
@@ -425,6 +528,7 @@ button.action:hover,
   color: var(--primary);
   cursor: pointer;
 }
+.back-link .material-symbols-outlined { font-size: 1.1rem; }
 .back-link:hover { text-decoration: underline; }
 
 .detail-grid {
@@ -741,4 +845,187 @@ button.action:hover,
 .observe-conv:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
+}
+
+/* ====================================================================== */
+/* Primitives — L Space design system (#186)                              */
+/* ---------------------------------------------------------------------- */
+/* Framework-agnostic classes so the existing htmx/Alpine markup can adopt  */
+/* the new look incrementally. They coexist with the legacy .action/.btn/   */
+/* .card/.session-badge classes (which already inherit the new palette via  */
+/* the re-pointed aliases above); later per-screen issues migrate markup    */
+/* onto these. Every class consumes the design tokens, so theme + lifecycle */
+/* colors stay centralized. */
+
+/* eyebrow — uppercase micro label with wide tracking; sits above a heading. */
+.eyebrow {
+  font-size: var(--fs-0);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--track-eyebrow);
+  color: var(--text-muted);
+}
+
+/* card modifiers — extend the existing .card primitive (defined above):
+   .subtle drops the shadow to a hairline-only card; .pad adds roomier space. */
+.card.subtle { box-shadow: none; }
+.card.pad { padding: var(--sp-5); }
+
+/* ld-btn — the new button primitive. A `size` class sets density, a `variant`
+   class sets color. New namespace so it coexists with the legacy .action/.btn
+   until later issues migrate the markup. */
+.ld-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  font: inherit;
+  font-weight: 600;
+  line-height: 1;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  background: var(--surface-2);
+  color: var(--text);
+}
+.ld-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ld-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+/* sizes */
+.ld-btn.sm { padding: var(--sp-1) var(--sp-3); font-size: var(--fs-1); min-height: 1.9rem; }
+.ld-btn.md { padding: var(--sp-2) var(--sp-4); font-size: var(--fs-2); min-height: 2.2rem; }
+/* variants */
+.ld-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.ld-btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.ld-btn.soft { background: var(--accent-soft); color: var(--accent-ink); }
+.ld-btn.soft:hover { filter: brightness(0.97); }
+.ld-btn.outline { background: transparent; color: var(--accent-ink); border-color: var(--border); }
+.ld-btn.outline:hover { border-color: var(--accent); color: var(--accent); }
+.ld-btn.ghost { background: transparent; color: var(--text-muted); }
+.ld-btn.ghost:hover { background: var(--surface-2); color: var(--text); }
+.ld-btn.danger { background: var(--state-blocked); color: #fff; border-color: var(--state-blocked); }
+.ld-btn.danger:hover { filter: brightness(1.05); }
+
+/* tag — small inline label chip. Color variants map to lifecycle/accent tokens.
+   The translucent fills keep tags readable on either theme. */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-0);
+  font-weight: 600;
+  line-height: 1;
+  padding: 3px var(--sp-2);
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.tag.neutral { background: var(--surface-2); color: var(--text-muted); }
+.tag.blue    { background: var(--accent-soft); color: var(--accent-ink); }
+.tag.green   { background: rgba(16, 185, 129, 0.14); color: var(--state-merged); }
+.tag.amber   { background: rgba(245, 158, 11, 0.16); color: var(--state-review); }
+.tag.red     { background: rgba(239, 68, 68, 0.14); color: var(--state-blocked); }
+.tag.purple  { background: rgba(124, 58, 237, 0.14); color: #7C3AED; }
+.tag.ghost   { background: transparent; color: var(--text-muted); border-color: var(--border); }
+
+/* statepill — a pill that pairs an .sdot state dot with a label. */
+.statepill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-1);
+  font-weight: 600;
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* sdot — a small lifecycle state dot. Modifier sets the hue; bare dot = gated. */
+.sdot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  flex: none;
+  background: var(--state-gated);
+}
+.sdot.merged  { background: var(--state-merged); }
+.sdot.active  { background: var(--state-progress); }
+.sdot.review  { background: var(--state-review); }
+.sdot.blocked { background: var(--state-blocked); }
+.sdot.gated   { background: var(--state-gated); }
+
+/* avatar — a small round actor chip (initial or icon). Variant tints per actor:
+   trixy (the bot, accent), capo (purple), operator (the human, green). */
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  font-size: var(--fs-1);
+  font-weight: 700;
+  text-transform: uppercase;
+  flex: none;
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+.avatar.trixy    { background: var(--accent-soft); color: var(--accent-ink); }
+.avatar.capo     { background: rgba(124, 58, 237, 0.16); color: #7C3AED; }
+.avatar.operator { background: rgba(16, 185, 129, 0.16); color: var(--state-merged); }
+
+/* stat — a metric card: an eyebrow label over a large tabular-num value. */
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.stat .stat-label {
+  font-size: var(--fs-0);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--track-eyebrow);
+  color: var(--text-muted);
+}
+.stat .stat-value {
+  font-size: var(--fs-display);
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: var(--num);
+}
+
+/* segmented — a row of mutually-exclusive options (the base for future
+   view/filter toggles). The selected child lifts onto a surface chip. */
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.segmented > button,
+.segmented > .seg {
+  font: inherit;
+  font-size: var(--fs-1);
+  font-weight: 600;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: calc(var(--radius-sm) - 1px);
+  cursor: pointer;
+}
+.segmented > .active,
+.segmented > [aria-selected="true"] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
 }

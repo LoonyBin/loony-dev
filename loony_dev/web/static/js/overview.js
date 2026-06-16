@@ -4,7 +4,7 @@
 // detail moved into the per-repo drill-down (#158); the Overview is now a
 // roll-up of repo cards (see repos.js) plus this cross-repo stuck signal.
 
-import { cell, setRows, formatAge } from "./dom.js";
+import { cell, setRows, formatAge, icon } from "./dom.js";
 
 // ESC interrupt: the primary, reversible intervention. It aborts the in-flight
 // turn but leaves the session alive, so no confirmation prompt is needed.
@@ -98,7 +98,10 @@ export function renderStuck(stuck) {
   section.hidden = !has;
   if (has) {
     const noun = stuck.length === 1 ? "process" : "processes";
-    banner.textContent = `⚠ ${stuck.length} stuck ${noun} detected — a Claude descendant appears wedged.`;
+    banner.textContent = "";
+    banner.appendChild(icon("warning"));
+    banner.appendChild(document.createTextNode(
+      `${stuck.length} stuck ${noun} detected — a Claude descendant appears wedged.`));
     setRows("stuck", stuck, renderStuckRow, "");
   }
   return stuck.length;

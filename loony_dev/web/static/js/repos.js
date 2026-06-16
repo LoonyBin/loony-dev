@@ -4,7 +4,7 @@
 // status, worktree count, and any stuck processes. Tapping a card opens the
 // per-repo drill-down page (#158).
 
-import { goRepo } from "./dom.js";
+import { goRepo, icon } from "./dom.js";
 
 export function render(workers, worktrees, stuck = []) {
   const container = document.getElementById("repos-list");
@@ -67,7 +67,8 @@ export function render(workers, worktrees, stuck = []) {
     if (r.stuck > 0) {
       const stuckBadge = document.createElement("span");
       stuckBadge.className = "stuck-badge";
-      stuckBadge.textContent = `⚠ ${r.stuck} stuck`;
+      stuckBadge.appendChild(icon("warning"));
+      stuckBadge.appendChild(document.createTextNode(`${r.stuck} stuck`));
       meta.appendChild(stuckBadge);
     }
     card.appendChild(meta);

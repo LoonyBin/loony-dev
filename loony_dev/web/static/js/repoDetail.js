@@ -10,7 +10,7 @@
 // /api/events stream); we filter it to the current repo. The log tail uses the
 // existing /api/logs/{owner}/{repo}/stream endpoint via streamLog().
 
-import { cell, setRows, formatAge } from "./dom.js";
+import { cell, setRows, formatAge, icon } from "./dom.js";
 import { killProcess, interruptSession } from "./overview.js";
 import { streamLog } from "./logs.js";
 
@@ -74,7 +74,8 @@ function renderSession(repo, state) {
     a.href = s.join_url;
     a.target = "_blank";
     a.rel = "noopener noreferrer";
-    a.textContent = "Open join link ↗";
+    a.textContent = "Open join link ";
+    a.appendChild(icon("open_in_new"));
     body.appendChild(a);
     // QR rendering arrives with the shared #157 session-card component; until
     // then the join link itself is the actionable hand-off.

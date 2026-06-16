@@ -10,7 +10,7 @@
 //               drive a live terminal).
 // xterm.js is loaded from a CDN (no build step), mirroring the htmx/Alpine setup.
 
-import { cell, setRows } from "./dom.js";
+import { cell, setRows, icon } from "./dom.js";
 import { apiText } from "./api.js";
 import { openModalA11y, closeModalA11y } from "./modal.js";
 import { openObserve } from "./observe.js";
@@ -32,12 +32,16 @@ function setMic(holder, opts = {}) {
   const el = document.getElementById("attach-mic");
   if (!el) return;
   if (holder === "bot") {
-    el.textContent = opts.refused
-      ? "🤖 bot has the mic — keystroke ignored (read-only until the turn ends)"
-      : "🤖 bot has the mic — read-only (press ESC to interrupt the turn)";
+    el.textContent = "";
+    el.appendChild(icon("smart_toy"));
+    el.appendChild(document.createTextNode(opts.refused
+      ? " bot has the mic — keystroke ignored (read-only until the turn ends)"
+      : " bot has the mic — read-only (press ESC to interrupt the turn)"));
     el.className = "attach-mic mic-bot";
   } else {
-    el.textContent = "⌨ you have the mic — type to steer; ESC interrupts";
+    el.textContent = "";
+    el.appendChild(icon("keyboard"));
+    el.appendChild(document.createTextNode(" you have the mic — type to steer; ESC interrupts"));
     el.className = "attach-mic mic-human";
   }
 }

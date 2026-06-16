@@ -4,6 +4,24 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>loony-dev dashboard</title>
+
+  <!-- Type + icons for the L Space design system (#186). Manrope is the
+       --font-sans; Material Symbols Outlined supplies all nav/UI glyphs that
+       used to be emoji. Google Fonts CSS can't be SRI-pinned (it points at
+       versioned, rotating font binaries), so these <link>s carry no integrity
+       hash — consistent with how web fonts are normally loaded and with this
+       app's no-build-step convention. If the CDN is blocked, Manrope falls back
+       to the system stack and Material Symbols spans show their ligature text
+       (e.g. "dashboard"); icon-only buttons stay aria-labelled, so nothing
+       becomes unusable. Loaded before app.css so its tokens can name the
+       families. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Manrope:wght@400..800&display=swap" />
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" />
+
   <link rel="stylesheet" href="/static/app.css" />
 
   <!-- Apply a pinned theme before first paint to avoid a flash. -->
@@ -53,11 +71,13 @@
        Alpine pattern). The deferred ES module below owns the live SSE feed. -->
   <script>
     document.addEventListener("alpine:init", () => {
+      // Nav icons are Material Symbols Outlined ligature names (#186), rendered
+      // through the icon font by the .nav-icon span below.
       const NAV = [
-        { id: "overview", label: "Overview", icon: "📊" },
-        { id: "sessions", label: "Sessions", icon: "🔗" },
-        { id: "skills", label: "Skills & Commands", icon: "🧩" },
-        { id: "logs", label: "Logs", icon: "📜" },
+        { id: "overview", label: "Overview", icon: "dashboard" },
+        { id: "sessions", label: "Sessions", icon: "cable" },
+        { id: "skills", label: "Skills & Commands", icon: "extension" },
+        { id: "logs", label: "Logs", icon: "receipt_long" },
       ];
       const VALID = new Set(NAV.map((n) => n.id));
       // The per-repo drill-down (#158) is not a nav item — it is reached by
@@ -158,8 +178,10 @@
       class="stuck-pill"
       x-show="$store.app.stuckCount > 0"
       @click="$store.app.go('overview')"
-      x-text="`⚠ ${$store.app.stuckCount} stuck`"
-    ></button>
+    >
+      <span class="material-symbols-outlined" aria-hidden="true">warning</span>
+      <span x-text="`${$store.app.stuckCount} stuck`"></span>
+    </button>
     <span class="spacer"></span>
     <span
       class="stream-status"
@@ -174,8 +196,10 @@
       class="icon-btn"
       @click="$store.app.toggleTheme()"
       :aria-label="$store.app.theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'"
-      x-text="$store.app.theme === 'dark' ? '☀' : '☾'"
-    ></button>
+    >
+      <span class="material-symbols-outlined" aria-hidden="true"
+            x-text="$store.app.theme === 'dark' ? 'light_mode' : 'dark_mode'"></span>
+    </button>
   </header>
 
   <div class="layout">
@@ -186,7 +210,7 @@
           :class="{ active: $store.app.view === item.id }"
           @click="$store.app.go(item.id)"
         >
-          <span class="nav-icon" x-text="item.icon"></span>
+          <span class="nav-icon material-symbols-outlined" aria-hidden="true" x-text="item.icon"></span>
           <span class="nav-label" x-text="item.label"></span>
         </button>
       </template>
@@ -221,7 +245,8 @@
            into these slots and live-tails this repo's worker log. -->
       <section class="view repo-detail" x-show="$store.app.view === 'repo'"
                x-effect="window.repoDetail && window.repoDetail.show($store.app.view === 'repo' ? $store.app.repo : null)">
-        <button class="back-link" type="button" @click="$store.app.go('overview')">← All repos</button>
+        <button class="back-link" type="button" @click="$store.app.go('overview')">
+          <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>All repos</button>
         <h2 id="repo-detail-title" x-text="$store.app.repo || 'Repo'"></h2>
 
         <div class="detail-grid">
@@ -342,7 +367,7 @@
       <div class="modal-head">
         <span id="attach-title" class="modal-title">Attached</span>
         <span class="spacer"></span>
-        <button id="attach-close" class="icon-btn" aria-label="Detach">✕</button>
+        <button id="attach-close" class="icon-btn" aria-label="Detach"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
       </div>
       <div id="attach-mic" class="attach-mic"></div>
       <div id="attach-term" class="attach-term"></div>
@@ -358,7 +383,7 @@
         <span id="observe-title" class="modal-title">Observing</span>
         <span class="spacer"></span>
         <span id="observe-status" class="observe-status muted"></span>
-        <button id="observe-close" class="icon-btn" aria-label="Close">✕</button>
+        <button id="observe-close" class="icon-btn" aria-label="Close"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
       </div>
       <div id="observe-conv" class="observe-conv"></div>
     </div>
@@ -371,7 +396,7 @@
       <div class="modal-head">
         <span id="steer-title" class="modal-title">Send guidance</span>
         <span class="spacer"></span>
-        <button id="steer-cancel" class="icon-btn" aria-label="Cancel">✕</button>
+        <button id="steer-cancel" class="icon-btn" aria-label="Cancel"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
       </div>
       <textarea id="steer-text" rows="5"
         aria-describedby="steer-error"
