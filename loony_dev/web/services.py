@@ -101,6 +101,13 @@ class TaskSessionView:
     attachable: bool
     observable: bool = False
     cwd: str | None = None
+    # The per-pipeline mutual-exclusion identity (``issue-N`` / ``pr-P``). It may
+    # equal ``task_key`` for a simple issue pipeline but is conceptually distinct
+    # (``task_key`` = ``task.worktree_key``); the dashboard must use this — not
+    # ``task_key`` — to address the ``/api/pipelines/{pipeline_key}/...`` routes
+    # (issue #199). Surfaced read-only so the Issue ▸ PR detail view (#190) can
+    # name the pipeline the upcoming #200 controls act on.
+    pipeline_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -327,6 +334,7 @@ def list_task_sessions(base_dir: Path) -> list[TaskSessionView]:
                 attachable=attachable,
                 observable=observable,
                 cwd=session.cwd,
+                pipeline_key=session.pipeline_key,
             )
         )
     return views

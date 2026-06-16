@@ -16,6 +16,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
+from loony_dev import session_registry
 from loony_dev.web import create_app
 from loony_dev.web import entries
 from loony_dev.web import routes, services, streaming
@@ -223,6 +224,7 @@ class WebAppTestCase(unittest.TestCase):
             "/static/js/app.js",
             "/static/js/sessions.js",
             "/static/js/attach.js",
+            "/static/js/issueDetail.js",
         ):
             resp = self.client.get(path)
             self.assertEqual(resp.status_code, 200, path)
@@ -235,6 +237,55 @@ class WebAppTestCase(unittest.TestCase):
         self.assertIn('qrcode-generator', body)
         self.assertIn('id="sessions"', body)
         self.assertIn('class="session-grid"', body)
+
+    def test_index_wires_pipeline_view(self) -> None:
+        # The Issue ▸ PR detail view (#190): the shell must expose the section,
+        # the stepper / timeline / linked / worktree containers, the breadcrumb,
+        # the inline conversation + reply, and the centralized control row —
+        # including the disabled Take-over / Pause / Reassign seam stubs.
+        body = self.client.get("/").text
+        self.assertIn('class="view pipeline-detail"', body)
+        self.assertIn("$store.app.view === 'pipeline'", body)
+        self.assertIn('id="pipeline-breadcrumb"', body)
+        self.assertIn('id="pipeline-stepper"', body)
+        self.assertIn('id="pipeline-conv"', body)
+        self.assertIn('id="pipeline-reply-send"', body)
+        self.assertIn('id="pipeline-controls"', body)
+        self.assertIn('id="pipeline-timeline"', body)
+        self.assertIn('id="pipeline-linked"', body)
+        self.assertIn('id="pipeline-worktree"', body)
+        # The detail module is loaded as part of the app shell's module graph.
+        self.assertEqual(self.client.get("/static/js/issueDetail.js").status_code, 200)
+
+    def test_task_sessions_endpoint_surfaces_pipeline_key(self) -> None:
+        # The Issue ▸ PR detail view (#190) addresses the #199 pipeline routes by
+        # pipeline_key, so the read path must surface it (read-only). It rides the
+        # existing /api/task-sessions GET via asdict.
+        sess_dir = session_registry.session_dir(self.base, "acme", "widgets", "issue-9")
+        session_registry.write_session_file(
+            sess_dir, task_key="issue-9", repo="acme/widgets", session_id="sid",
+            pid=1, started_at="t", cwd="/cwd", pipeline_key="issue-9",
+        )
+        # Service layer.
+        view = next(v for v in services.list_task_sessions(self.base)
+                    if v.task_key == "issue-9")
+        self.assertEqual(view.pipeline_key, "issue-9")
+        # HTTP endpoint.
+        resp = self.client.get("/api/task-sessions")
+        self.assertEqual(resp.status_code, 200)
+        row = next(r for r in resp.json() if r["task_key"] == "issue-9")
+        self.assertEqual(row["pipeline_key"], "issue-9")
+
+    def test_task_sessions_endpoint_pipeline_key_absent_is_none(self) -> None:
+        # A pre-#199 entry (no pipeline_key) round-trips as null, not an error.
+        sess_dir = session_registry.session_dir(self.base, "acme", "widgets", "issue-10")
+        session_registry.write_session_file(
+            sess_dir, task_key="issue-10", repo="acme/widgets", session_id="sid",
+            pid=1, started_at="t", cwd="/cwd",  # no pipeline_key
+        )
+        row = next(r for r in self.client.get("/api/task-sessions").json()
+                   if r["task_key"] == "issue-10")
+        self.assertIsNone(row["pipeline_key"])
 
     def test_workers_endpoint(self) -> None:
         resp = self.client.get("/api/workers")
@@ -791,6 +842,19 @@ class StateEventsEndpointTestCase(unittest.IsolatedAsyncioTestCase):
         )
         # The snapshot mirrors the per-resource endpoints: the seeded worker shows.
         self.assertEqual([w["repo"] for w in snapshot["workers"]], ["acme/widgets"])
+
+    async def test_events_snapshot_carries_task_session_pipeline_key(self) -> None:
+        # The pipeline-detail view (#190) reads pipeline_key off the SSE snapshot's
+        # task_sessions rows, so it must ride the consolidated stream.
+        sess_dir = session_registry.session_dir(self.base, "acme", "widgets", "issue-11")
+        session_registry.write_session_file(
+            sess_dir, task_key="issue-11", repo="acme/widgets", session_id="sid",
+            pid=1, started_at="t", cwd="/cwd", pipeline_key="issue-11",
+        )
+        async with _SSEDriver(self.app, "/api/events") as drv:
+            snapshot = json.loads(await _read_first_sse_event(drv))
+        row = next(r for r in snapshot["task_sessions"] if r["task_key"] == "issue-11")
+        self.assertEqual(row["pipeline_key"], "issue-11")
 
     async def test_events_heartbeat_during_idle(self) -> None:
         # Shrink the cadences so an idle period elapses in test time; the state is

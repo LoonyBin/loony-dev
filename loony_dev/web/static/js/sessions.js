@@ -151,17 +151,24 @@ function renderState(card, s) {
   card.appendChild(qrWrap);
 }
 
-function renderCard(s) {
+// Build one session card. The standalone Sessions view calls this with no
+// options; the #189 Live repo-detail panel passes { compact: true } to drop the
+// per-card repo title + liveness badge (its panel header already carries them),
+// keeping the join button / QR / starting-offline-stale states identical so the
+// embed is a pure reuse rather than a duplicated surface.
+export function renderSessionCard(s, { compact = false } = {}) {
   const card = document.createElement("div");
-  card.className = "session-card";
+  card.className = compact ? "session-card session-card-compact" : "session-card";
 
-  const head = document.createElement("div");
-  head.className = "session-head";
-  const title = document.createElement("span");
-  title.className = "session-repo";
-  title.textContent = s.repo || s.session_id || "(unknown repo)";
-  head.append(title, livenessBadge(s));
-  card.appendChild(head);
+  if (!compact) {
+    const head = document.createElement("div");
+    head.className = "session-head";
+    const title = document.createElement("span");
+    title.className = "session-repo";
+    title.textContent = s.repo || s.session_id || "(unknown repo)";
+    head.append(title, livenessBadge(s));
+    card.appendChild(head);
+  }
 
   const meta = document.createElement("div");
   meta.className = "session-meta";
@@ -198,5 +205,5 @@ export function render(sessions) {
   const sorted = [...sessions].sort((a, b) =>
     (a.repo || a.session_id || "").localeCompare(b.repo || b.session_id || ""),
   );
-  for (const s of sorted) container.appendChild(renderCard(s));
+  for (const s of sorted) container.appendChild(renderSessionCard(s));
 }

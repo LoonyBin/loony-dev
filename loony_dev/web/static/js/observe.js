@@ -15,7 +15,10 @@
 import { openModalA11y, closeModalA11y } from "./modal.js";
 import { icon } from "./dom.js";
 
-let active = null; // { ws, taskKey, seen:Set, toolCards:Map } for the open view
+// The modal's open stream ({ close }), or null. The reusable core (streamObserve)
+// holds its own per-stream state, so a caller-provided host (e.g. the #190
+// pipeline-detail conversation) streams independently of this modal.
+let modalStream = null;
 
 function wsUrl(taskKey) {
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
@@ -86,7 +89,7 @@ function renderThinking(ev) {
   return el;
 }
 
-function renderToolUse(ev) {
+function renderToolUse(ev, stream) {
   const el = block("tool");
   const lab = label(ev.tool || "tool");
   lab.prepend(icon("build"));
@@ -105,14 +108,14 @@ function renderToolUse(ev) {
   const result = document.createElement("div");
   result.className = "obs-tool-result";
   el.appendChild(result);
-  if (ev.tool_use_id && active) active.toolCards.set(ev.tool_use_id, result);
+  if (ev.tool_use_id && stream) stream.toolCards.set(ev.tool_use_id, result);
   return el;
 }
 
-function renderToolResult(ev) {
+function renderToolResult(ev, stream) {
   // Prefer attaching the result to its originating tool card; if the card isn't
   // present (result before call, or out-of-order), render a standalone block.
-  const slot = ev.tool_use_id && active ? active.toolCards.get(ev.tool_use_id) : null;
+  const slot = ev.tool_use_id && stream ? stream.toolCards.get(ev.tool_use_id) : null;
   const target = slot || block("tool");
   if (!slot) target.appendChild(label("tool result"));
   const out = document.createElement("pre");
@@ -134,53 +137,63 @@ function renderInterrupt() {
   return el;
 }
 
-function renderEvent(ev) {
+function renderEvent(ev, stream) {
   switch (ev.kind) {
     case "user": return renderUser(ev);
     case "assistant": return renderAssistant(ev);
     case "thinking": return renderThinking(ev);
-    case "tool_use": return renderToolUse(ev);
-    case "tool_result": return renderToolResult(ev);
+    case "tool_use": return renderToolUse(ev, stream);
+    case "tool_result": return renderToolResult(ev, stream);
     case "stop": return renderStop(ev);
     case "interrupt": return renderInterrupt(ev);
     default: return null;
   }
 }
 
-// Apply one event idempotently: a previously-seen `id` is a no-op, so replaying
-// the whole transcript on reconnect never duplicates a node.
-function applyEvent(ev) {
+// Apply one event idempotently into the stream's container: a previously-seen
+// `id` is a no-op, so replaying the whole transcript on reconnect never
+// duplicates a node.
+function applyEvent(stream, ev) {
   if (!ev || typeof ev !== "object") return;
-  if (ev.id && active.seen.has(ev.id)) return;
-  if (ev.id) active.seen.add(ev.id);
-  const node = renderEvent(ev);
+  if (ev.id && stream.seen.has(ev.id)) return;
+  if (ev.id) stream.seen.add(ev.id);
+  const node = renderEvent(ev, stream);
   if (!node) return; // e.g. a tool_result attached to an existing card in place
-  const conv = document.getElementById("observe-conv");
+  const conv = stream.conv;
   if (!conv) return;
   const atBottom = conv.scrollHeight - conv.scrollTop - conv.clientHeight < 40;
   conv.appendChild(node);
   if (atBottom) conv.scrollTop = conv.scrollHeight;
 }
 
-function connect(taskKey) {
-  const conv = document.getElementById("observe-conv");
+// Reusable observe core (issue #190): connect to a task's observe WS and render
+// its transcript into *conv* (a caller-provided container element). *onStatus*
+// (optional) is called with (text, kind) on connection-state changes. Returns a
+// controller `{ close }`; the caller is responsible for tearing the stream down
+// when its host goes away. The modal surface below is one such caller.
+export function streamObserve(taskKey, conv, onStatus) {
+  const status = onStatus || (() => {});
+  const stream = { ws: null, conv, seen: new Set(), toolCards: new Map() };
   if (conv) conv.innerHTML = "";
-  // Fresh per-connection state: on reconnect we replay from zero, so the seen-id
-  // set and tool-card map must reset too (the DOM was cleared above).
-  active.seen = new Set();
-  active.toolCards = new Map();
-
   const ws = new WebSocket(wsUrl(taskKey));
-  active.ws = ws;
-  setStatus("connecting…");
-  ws.onopen = () => setStatus("live", "live");
+  stream.ws = ws;
+  status("connecting…", null);
+  ws.onopen = () => status("live", "live");
   ws.onmessage = (e) => {
     let ev;
     try { ev = JSON.parse(e.data); } catch (_) { return; }
-    applyEvent(ev);
+    applyEvent(stream, ev);
   };
-  ws.onclose = () => setStatus("disconnected", "off");
-  ws.onerror = () => setStatus("connection error", "off");
+  ws.onclose = () => status("disconnected", "off");
+  ws.onerror = () => status("connection error", "off");
+  return {
+    close() {
+      if (stream.ws) {
+        try { stream.ws.close(); } catch (_) { /* already closing */ }
+        stream.ws = null;
+      }
+    },
+  };
 }
 
 export function openObserve(taskKey) {
@@ -190,17 +203,17 @@ export function openObserve(taskKey) {
   closeObserve(); // drop any prior connection
   modal.hidden = false;
   if (title) title.textContent = `Observing: ${taskKey}`;
-  active = { ws: null, taskKey, seen: new Set(), toolCards: new Map() };
-  connect(taskKey);
+  const conv = document.getElementById("observe-conv");
+  modalStream = streamObserve(taskKey, conv, setStatus);
   const closeBtn = document.getElementById("observe-close");
   openModalA11y(modal, closeObserve, closeBtn);
 }
 
 export function closeObserve() {
-  if (active && active.ws) {
-    try { active.ws.close(); } catch (_) { /* already closing */ }
+  if (modalStream) {
+    modalStream.close();
+    modalStream = null;
   }
-  active = null;
   const modal = document.getElementById("observe-modal");
   if (modal && !modal.hidden) {
     modal.hidden = true;
