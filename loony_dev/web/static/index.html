@@ -156,9 +156,16 @@
           this.repo = s.repo;
         },
         toggleTheme() {
-          this.theme = this.theme === "dark" ? "light" : "dark";
-          root.setAttribute("data-theme", this.theme);
-          lsSet("loony-theme", this.theme);
+          this.setTheme(this.theme === "dark" ? "light" : "dark");
+        },
+        // Always persist the chosen theme, even when it already matches the
+        // (OS-derived) current value — otherwise re-picking the active segment
+        // is a no-op and leaves the theme unpinned, so the OS-theme listener
+        // can later override the user's explicit choice.
+        setTheme(theme) {
+          this.theme = theme;
+          root.setAttribute("data-theme", theme);
+          lsSet("loony-theme", theme);
         },
         // The brand toggles the rail between expanded and icon-only; the width
         // lives in --rail-w, keyed off data-rail (mirrored onto <html> like the
@@ -273,11 +280,11 @@
               <span class="tweak-label">Theme</span>
               <div class="segmented" role="group" aria-label="Theme">
                 <button :class="{ active: $store.app.theme === 'light' }"
-                        :aria-selected="$store.app.theme === 'light'"
-                        @click="if ($store.app.theme !== 'light') $store.app.toggleTheme()">Light</button>
+                        :aria-pressed="$store.app.theme === 'light'"
+                        @click="$store.app.setTheme('light')">Light</button>
                 <button :class="{ active: $store.app.theme === 'dark' }"
-                        :aria-selected="$store.app.theme === 'dark'"
-                        @click="if ($store.app.theme !== 'dark') $store.app.toggleTheme()">Dark</button>
+                        :aria-pressed="$store.app.theme === 'dark'"
+                        @click="$store.app.setTheme('dark')">Dark</button>
               </div>
             </div>
             <div class="tweak-row">
@@ -285,7 +292,7 @@
               <div class="segmented accent-seg" role="group" aria-label="Accent color">
                 <template x-for="a in ['blue', 'violet', 'emerald', 'slate']" :key="a">
                   <button :class="{ active: $store.app.accent === a }"
-                          :aria-selected="$store.app.accent === a"
+                          :aria-pressed="$store.app.accent === a"
                           @click="$store.app.setAccent(a)"
                           :aria-label="a"
                           :title="a">
@@ -298,10 +305,10 @@
               <span class="tweak-label">Density</span>
               <div class="segmented" role="group" aria-label="Density">
                 <button :class="{ active: $store.app.density === 'comfortable' }"
-                        :aria-selected="$store.app.density === 'comfortable'"
+                        :aria-pressed="$store.app.density === 'comfortable'"
                         @click="$store.app.setDensity('comfortable')">Comfortable</button>
                 <button :class="{ active: $store.app.density === 'compact' }"
-                        :aria-selected="$store.app.density === 'compact'"
+                        :aria-pressed="$store.app.density === 'compact'"
                         @click="$store.app.setDensity('compact')">Compact</button>
               </div>
             </div>
@@ -309,10 +316,10 @@
               <span class="tweak-label">Live pulse</span>
               <div class="segmented" role="group" aria-label="Live pulse">
                 <button :class="{ active: $store.app.pulse }"
-                        :aria-selected="$store.app.pulse"
+                        :aria-pressed="$store.app.pulse"
                         @click="if (!$store.app.pulse) $store.app.togglePulse()">On</button>
                 <button :class="{ active: !$store.app.pulse }"
-                        :aria-selected="!$store.app.pulse"
+                        :aria-pressed="!$store.app.pulse"
                         @click="if ($store.app.pulse) $store.app.togglePulse()">Off</button>
               </div>
             </div>
@@ -325,6 +332,7 @@
           <button
             class="nav-item"
             :class="{ active: $store.app.view === item.id }"
+            :aria-current="$store.app.view === item.id ? 'page' : null"
             @click="$store.app.go(item.id)"
             :data-tooltip="item.label"
             :title="item.label"
@@ -350,6 +358,7 @@
           @click="$store.app.go('overview')"
           :title="`${$store.app.stuckCount} stuck`"
           :data-tooltip="`${$store.app.stuckCount} stuck`"
+          :aria-label="`${$store.app.stuckCount} stuck processes`"
         >
           <span class="material-symbols-outlined" aria-hidden="true">warning</span>
           <span class="stuck-pill-text" x-text="`${$store.app.stuckCount} stuck`"></span>
@@ -362,6 +371,7 @@
           x-cloak
           role="status"
           aria-live="polite"
+          aria-label="Reconnecting"
           data-tooltip="Reconnecting…"
         >
           <span class="stream-dot" aria-hidden="true"></span>
