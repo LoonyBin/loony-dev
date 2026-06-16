@@ -9,7 +9,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from loony_dev.agents.base import Agent
 from loony_dev.models import TaskResult
@@ -43,25 +43,20 @@ def _make_orchestrator(tmp_path: Path, git: MagicMock, agents: list, *, max_conc
     return orch
 
 
-def _make_task(*, worktree_key: str | None, target_branch: str | None = None, task_type: str = "t") -> MagicMock:
+def _make_task(
+    *,
+    worktree_key: str | None,
+    target_branch: str | None = None,
+    task_type: str = "t",
+    priority: int = 10,
+) -> MagicMock:
     task = MagicMock()
     task.worktree_key = worktree_key
     task.target_branch = target_branch
     task.task_type = task_type
+    task.priority = priority
     task.describe.return_value = "do work"
     return task
-
-
-def _fake_task_class(tasks: list) -> type:
-    """A stand-in TASK_CLASSES entry whose discover() yields *tasks*."""
-    class _FTC:
-        priority = 1
-
-        @staticmethod
-        def discover(repo: object):  # noqa: ANN205
-            return iter(tasks)
-
-    return _FTC
 
 
 def _drain(orch: Orchestrator, timeout: float = 5.0) -> None:
@@ -144,22 +139,22 @@ class TestFindWorkOverlap(unittest.TestCase):
         # review + CI fix on the same PR) collapse to one identity → one dispatch.
         a = _make_task(worktree_key="issue-5", target_branch="issue-5/slug")
         b = _make_task(worktree_key="issue-5", target_branch="issue-5/slug")
-        with patch("loony_dev.orchestrator.TASK_CLASSES", [_fake_task_class([a, b])]):
-            batch = self.orch._find_work(limit=2, claimed=set())
+        self.orch._gather_candidates = lambda: [a, b]
+        batch = self.orch._find_work(limit=2, claimed=set())
         self.assertEqual(len(batch), 1)
 
     def test_distinct_branches_yield_both(self) -> None:
         a = _make_task(worktree_key="k1", target_branch="feature/x")
         b = _make_task(worktree_key="k2", target_branch="feature/y")
-        with patch("loony_dev.orchestrator.TASK_CLASSES", [_fake_task_class([a, b])]):
-            batch = self.orch._find_work(limit=2, claimed=set())
+        self.orch._gather_candidates = lambda: [a, b]
+        batch = self.orch._find_work(limit=2, claimed=set())
         self.assertEqual(len(batch), 2)
 
     def test_respects_claimed_keys(self) -> None:
         a = _make_task(worktree_key="k1", target_branch="feature/x")
         b = _make_task(worktree_key="k2", target_branch="feature/y")
-        with patch("loony_dev.orchestrator.TASK_CLASSES", [_fake_task_class([a, b])]):
-            batch = self.orch._find_work(limit=2, claimed={"k1"})
+        self.orch._gather_candidates = lambda: [a, b]
+        batch = self.orch._find_work(limit=2, claimed={"k1"})
         self.assertEqual(len(batch), 1)
         self.assertEqual(batch[0][0], b)
 
@@ -167,15 +162,25 @@ class TestFindWorkOverlap(unittest.TestCase):
         # Two IssueTask-style tasks (target_branch None) sharing a worktree_key.
         a = _make_task(worktree_key="issue-5", target_branch=None)
         b = _make_task(worktree_key="issue-5", target_branch=None)
-        with patch("loony_dev.orchestrator.TASK_CLASSES", [_fake_task_class([a, b])]):
-            batch = self.orch._find_work(limit=2, claimed=set())
+        self.orch._gather_candidates = lambda: [a, b]
+        batch = self.orch._find_work(limit=2, claimed=set())
         self.assertEqual(len(batch), 1)
 
     def test_limit_caps_results(self) -> None:
         tasks = [_make_task(worktree_key=f"k{i}", target_branch=f"f{i}") for i in range(5)]
-        with patch("loony_dev.orchestrator.TASK_CLASSES", [_fake_task_class(tasks)]):
-            batch = self.orch._find_work(limit=2, claimed=set())
+        self.orch._gather_candidates = lambda: tasks
+        batch = self.orch._find_work(limit=2, claimed=set())
         self.assertEqual(len(batch), 2)
+
+    def test_priority_order_across_pipelines(self) -> None:
+        # Candidates arrive unsorted; _find_work must arbitrate by priority
+        # (lowest number first), matching the old class-by-class scan order.
+        low = _make_task(worktree_key="k-low", target_branch="f-low", priority=40)
+        high = _make_task(worktree_key="k-high", target_branch="f-high", priority=5)
+        self.orch._gather_candidates = lambda: [low, high]
+        batch = self.orch._find_work(limit=1, claimed=set())
+        self.assertEqual(len(batch), 1)
+        self.assertEqual(batch[0][0], high)
 
 
 class TestFreeSlotAccounting(unittest.TestCase):
@@ -373,19 +378,18 @@ class TestQuotaGlobalDisable(unittest.TestCase):
         orch = _make_orchestrator(self.tmp, git, [agent], max_concurrent=2)
 
         task = _make_task(worktree_key="issue-9", target_branch=None, task_type="implement_issue")
-        with patch("loony_dev.orchestrator.TASK_CLASSES", [_fake_task_class([task])]):
-            # Before quota: agent can handle implement_issue.
-            self.assertEqual(len(orch._find_work(limit=2, claimed=set())), 1)
+        orch._gather_candidates = lambda: [task]
+        # Before quota: agent can handle implement_issue.
+        self.assertEqual(len(orch._find_work(limit=2, claimed=set())), 1)
 
-            # Quota hit disables the shared instance for everyone.
-            agent._handle_quota_error("You've hit your limit · resets 7:30pm (Asia/Calcutta)")
-            self.assertTrue(agent.is_disabled())
-            self.assertEqual(orch._find_work(limit=2, claimed=set()), [])
+        # Quota hit disables the shared instance for everyone.
+        agent._handle_quota_error("You've hit your limit · resets 7:30pm (Asia/Calcutta)")
+        self.assertTrue(agent.is_disabled())
+        self.assertEqual(orch._find_work(limit=2, claimed=set()), [])
 
         # Manually expire the cooldown -> agent eligible again.
         agent._disabled_until = datetime.now(timezone.utc) - timedelta(seconds=1)
-        with patch("loony_dev.orchestrator.TASK_CLASSES", [_fake_task_class([task])]):
-            self.assertEqual(len(orch._find_work(limit=2, claimed=set())), 1)
+        self.assertEqual(len(orch._find_work(limit=2, claimed=set())), 1)
 
 
 class _RealSleepAgent(Agent):

@@ -51,6 +51,15 @@ Issues move through GitHub labels (defined in `loony_dev/github/repo.py`):
 
 The bot also self-handles CI failures, merge conflicts, and post-PR review comments on its own PRs. Plan-approval and PR-merge are the two gates intentionally left to a human.
 
+## How work is discovered (Pipelines)
+
+Each tick, the orchestrator enumerates **pipelines** rather than scanning six task classes (`loony_dev/pipeline.py`, issue #197). A `Pipeline` is one logical work-thread keyed by branch (`issue-N`, or `pr-P` for an externally-opened PR with no originating issue). It groups the issue facet and the PR facet — every phase of an issue (plan → implement → review → CI fix → conflict) shares its `issue-N` key (the #181 worktree/session key).
+
+- `Pipeline.discover(repo)` enumerates open issues + PRs **once** and groups them into pipelines.
+- `Pipeline.next_task(repo)` is a **pure function of GitHub + git state**: it walks the same priority ladder (stuck 5 → conflict 10 → CI 15 → review 20 → plan 30 → implement 40) and returns the single highest-priority actionable task, or `None`. **One task per pipeline.** It never mutates GitHub — per-phase idempotency (e.g. the CI marker-vs-`updatedAt` check) is computed here once, not re-derived per task.
+- `_find_work` (`orchestrator.py`) sources candidates from `_gather_candidates` (one `next_task()` per pipeline), then arbitrates with the unchanged scheduler: global priority order, the `max_concurrent` / `_free_slots` cap, and `_task_identity` in-flight dedupe.
+- The per-task predicates live as module-level helpers (`*_action`) in each `loony_dev/tasks/*.py`; both the legacy `Task.discover()` (kept for unit tests) and `next_task` call the same helpers, so the logic is identical. Because `next_task` is a pure read, a label-reconciliation side effect (dropping a stale `ready-for-planning` once a plan is approved) now lives in `IssueTask.on_start`, not in discovery.
+
 ## Architecture notes
 
 - `loony_dev/agents/` — `planning.py`, `coding.py` (each shells out to the Claude Code CLI with a session id for context continuity).

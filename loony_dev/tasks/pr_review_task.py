@@ -23,6 +23,56 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def pr_review_action(pr: PullRequest, repo: Repo) -> PRReviewTask | None:
+    """Pure predicate: a review task for *pr* if it has new authorized comments, else None."""
+    if not pr.is_assigned_to(repo.bot_name):
+        logger.debug("PR #%d is not assigned to bot — skipping", pr.number)
+        return None
+    logger.debug("Examining PR #%d: %s (labels=%s)", pr.number, pr.title, pr.labels)
+    if "in-progress" in pr.labels:
+        logger.debug("PR #%d is in-progress — skipping", pr.number)
+        return None
+    if "in-error" in pr.labels:
+        logger.debug("PR #%d is in-error — skipping", pr.number)
+        return None
+
+    all_comments = PRReviewTask._assemble_comments(pr, repo)
+    new_comments = PRReviewTask._new_since_bot(all_comments, repo.bot_name)
+
+    if not new_comments:
+        logger.debug("PR #%d has no new comments — skipping", pr.number)
+        return None
+
+    authorized_comments = [c for c in new_comments if repo.is_authorized(c.author)]
+    if not authorized_comments:
+        logger.debug(
+            "PR #%d has %d new comment(s) but none from authorized users — skipping",
+            pr.number, len(new_comments),
+        )
+        return None
+
+    logger.debug(
+        "PR #%d has %d authorized new comment(s) — yielding task",
+        pr.number, len(authorized_comments),
+    )
+    # Create a new PR object with just the relevant data for the task.
+    # `comments`/`reviews` are carried over (not just `new_comments`) so
+    # the repeated-failure -> in-error escalation in on_failure can see
+    # the bot's own prior failure comments via get_comments(); without
+    # them get_comments() returns [] and the item never escalates.
+    from loony_dev.github import PullRequest as PR
+    return PRReviewTask(PR(
+        number=pr.number,
+        branch=pr.branch,
+        title=pr.title,
+        labels=pr.labels,
+        comments=pr.comments,
+        reviews=pr.reviews,
+        new_comments=authorized_comments,
+        _repo=pr._repo,
+    ))
+
+
 class PRReviewTask(Task):
     task_type = "address_review"
     priority = 20
@@ -41,55 +91,9 @@ class PRReviewTask(Task):
         from loony_dev.github import PullRequest
 
         for pr in PullRequest.list_open(repo=repo):
-            if not pr.is_assigned_to(repo.bot_name):
-                logger.debug("PR #%d is not assigned to bot — skipping", pr.number)
-                continue
-            logger.debug("Examining PR #%d: %s (labels=%s)", pr.number, pr.title, pr.labels)
-            if "in-progress" in pr.labels:
-                logger.debug("PR #%d is in-progress — skipping", pr.number)
-                continue
-            if "in-error" in pr.labels:
-                logger.debug("PR #%d is in-error — skipping", pr.number)
-                continue
-
-            all_comments = PRReviewTask._assemble_comments(pr, repo)
-            new_comments = PRReviewTask._new_since_bot(all_comments, repo.bot_name)
-
-            if not new_comments:
-                logger.debug("PR #%d has no new comments — skipping", pr.number)
-                continue
-
-            authorized_comments = [
-                c for c in new_comments
-                if repo.is_authorized(c.author)
-            ]
-            if not authorized_comments:
-                logger.debug(
-                    "PR #%d has %d new comment(s) but none from authorized users — skipping",
-                    pr.number, len(new_comments),
-                )
-                continue
-
-            logger.debug(
-                "PR #%d has %d authorized new comment(s) — yielding task",
-                pr.number, len(authorized_comments),
-            )
-            # Create a new PR object with just the relevant data for the task.
-            # `comments`/`reviews` are carried over (not just `new_comments`) so
-            # the repeated-failure -> in-error escalation in on_failure can see
-            # the bot's own prior failure comments via get_comments(); without
-            # them get_comments() returns [] and the item never escalates.
-            from loony_dev.github import PullRequest as PR
-            yield PRReviewTask(PR(
-                number=pr.number,
-                branch=pr.branch,
-                title=pr.title,
-                labels=pr.labels,
-                comments=pr.comments,
-                reviews=pr.reviews,
-                new_comments=authorized_comments,
-                _repo=pr._repo,
-            ))
+            task = pr_review_action(pr, repo)
+            if task is not None:
+                yield task
 
     @staticmethod
     def _assemble_comments(pr: PullRequest, repo: Repo) -> list[Comment]:

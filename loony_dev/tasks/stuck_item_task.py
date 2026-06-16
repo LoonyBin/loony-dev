@@ -14,6 +14,51 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def stuck_params() -> tuple[int, datetime]:
+    """Return ``(threshold_hours, cutoff)`` for the stuck-item check this tick."""
+    from loony_dev import config
+
+    threshold_hours = int(config.settings.get("stuck_threshold_hours", 12))
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=threshold_hours)
+    return threshold_hours, cutoff
+
+
+def stuck_issue_action(
+    issue: Issue, threshold_hours: int, cutoff: datetime,
+) -> StuckItemCleanupTask | None:
+    """Pure predicate: a cleanup task for *issue* if it is stuck in-progress, else None."""
+    if "in-progress" not in issue.labels:
+        return None
+    if "in-error" in issue.labels:
+        return None
+    if issue.updated_at is not None and issue.updated_at < cutoff:
+        logger.debug(
+            "Issue #%d has been in-progress since %s (threshold: %dh) — marking stuck",
+            issue.number, issue.updated_at, threshold_hours,
+        )
+        return StuckItemCleanupTask(issue, threshold_hours)
+    return None
+
+
+def stuck_pr_action(
+    pr: PullRequest, threshold_hours: int, cutoff: datetime, bot_name: str,
+) -> StuckItemCleanupTask | None:
+    """Pure predicate: a cleanup task for *pr* if it is stuck in-progress, else None."""
+    if not pr.is_assigned_to(bot_name):
+        return None
+    if "in-progress" not in pr.labels:
+        return None
+    if "in-error" in pr.labels:
+        return None
+    if pr.updated_at is not None and pr.updated_at < cutoff:
+        logger.debug(
+            "PR #%d has been in-progress since %s (threshold: %dh) — marking stuck",
+            pr.number, pr.updated_at, threshold_hours,
+        )
+        return StuckItemCleanupTask(pr, threshold_hours)
+    return None
+
+
 class StuckItemCleanupTask(Task):
     """Resets issues and PRs that have been stuck in-progress for too long."""
 
@@ -31,35 +76,19 @@ class StuckItemCleanupTask(Task):
     @staticmethod
     def discover(repo: Repo) -> Iterator[StuckItemCleanupTask]:
         """Yield cleanup tasks for issues and PRs stuck in-progress past the threshold."""
-        from loony_dev import config
         from loony_dev.github import Issue, PullRequest
 
-        threshold_hours = int(config.settings.get("stuck_threshold_hours", 12))
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=threshold_hours)
+        threshold_hours, cutoff = stuck_params()
 
         for issue in Issue.list(label="in-progress", repo=repo):
-            if "in-error" in issue.labels:
-                continue
-            if issue.updated_at is not None and issue.updated_at < cutoff:
-                logger.debug(
-                    "Issue #%d has been in-progress since %s (threshold: %dh) — marking stuck",
-                    issue.number, issue.updated_at, threshold_hours,
-                )
-                yield StuckItemCleanupTask(issue, threshold_hours)
+            task = stuck_issue_action(issue, threshold_hours, cutoff)
+            if task is not None:
+                yield task
 
         for pr in PullRequest.list_open(repo=repo):
-            if not pr.is_assigned_to(repo.bot_name):
-                continue
-            if "in-progress" not in pr.labels:
-                continue
-            if "in-error" in pr.labels:
-                continue
-            if pr.updated_at is not None and pr.updated_at < cutoff:
-                logger.debug(
-                    "PR #%d has been in-progress since %s (threshold: %dh) — marking stuck",
-                    pr.number, pr.updated_at, threshold_hours,
-                )
-                yield StuckItemCleanupTask(pr, threshold_hours)
+            task = stuck_pr_action(pr, threshold_hours, cutoff, repo.bot_name)
+            if task is not None:
+                yield task
 
     # ------------------------------------------------------------------
     # Task interface

@@ -14,6 +14,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def conflict_action(
+    pr: PullRequest, bot_name: str, default_branch: str,
+) -> ConflictResolutionTask | None:
+    """Pure predicate: a conflict-resolution task for *pr* if it conflicts, else None."""
+    if not pr.is_assigned_to(bot_name):
+        return None
+    if "in-progress" in pr.labels:
+        return None
+    if "in-error" in pr.labels:
+        return None
+    if pr.mergeable != "CONFLICTING":
+        return None
+    return ConflictResolutionTask(pr, default_branch=default_branch)
+
+
 class ConflictResolutionTask(Task):
     task_type = "resolve_conflicts"
     priority = 10
@@ -34,16 +49,9 @@ class ConflictResolutionTask(Task):
 
         default_branch = repo.detect_default_branch()
         for pr in PullRequest.list_open(repo=repo):
-            if not pr.is_assigned_to(repo.bot_name):
-                continue
-            if "in-progress" in pr.labels:
-                continue
-            if "in-error" in pr.labels:
-                continue
-            if pr.mergeable != "CONFLICTING":
-                continue
-
-            yield ConflictResolutionTask(pr, default_branch=default_branch)
+            task = conflict_action(pr, repo.bot_name, default_branch)
+            if task is not None:
+                yield task
 
     # ------------------------------------------------------------------
     # Task interface
