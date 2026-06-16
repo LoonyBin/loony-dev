@@ -10,7 +10,7 @@ Guidance for Claude Code working in this repo.
 
 Three long-running process kinds, **coordinating through the filesystem only** — no IPC/sockets between them except the per-session Unix control/attach sockets under the session registry:
 
-- **worker** (`loony-dev worker`, `loony_dev/orchestrator.py`) — the orchestrator loop for one repo. Runs each task in its own git worktree; agents shell out to `claude -p`. GitHub label state prevents two workers taking the same item.
+- **worker** (`loony-dev worker`, `loony_dev/orchestrator.py`) — the orchestrator loop for one repo. Runs each *pipeline*'s tasks in a per-pipeline git worktree, retained across all phases of one issue (plan → implement → review → CI fix → conflict) and reclaimed only when the work reaches a terminal GitHub state (see "How work is discovered" below); agents shell out to `claude -p`. GitHub label state prevents two workers taking the same item.
 - **supervisor** (`loony-dev supervisor`, `loony_dev/supervisor.py`) — discovers every accessible repo, runs a `worker` per repo under `<base-dir>/<owner>/<repo>`, and restarts crashed children with exponential backoff. Unless `--no-remote-control` is set it also launches one `claude --remote-control` session per repo and captures the claude.ai join URL into a connection file (see below).
 - **web** (`loony-dev web`, `loony_dev/web/`) — a read-only FastAPI dashboard. It derives all state from the on-disk layout under `<base-dir>/.logs/<owner>/<repo>/` and the session registry; it runs as a wholly separate process and shares no memory with workers.
 
@@ -77,6 +77,13 @@ Each tick, the orchestrator enumerates **pipelines** rather than scanning six ta
 - `Pipeline.next_task(repo)` is a **pure function of GitHub + git state**: it walks the same priority ladder (stuck 5 → conflict 10 → CI 15 → review 20 → plan 30 → implement 40) and returns the single highest-priority actionable task, or `None`. **One task per pipeline.** It never mutates GitHub — per-phase idempotency (e.g. the CI marker-vs-`updatedAt` check) is computed here once, not re-derived per task.
 - `_find_work` (`orchestrator.py`) sources candidates from `_gather_candidates` (one `next_task()` per pipeline), then arbitrates with the unchanged scheduler: global priority order, the `max_concurrent` / `_free_slots` cap, and `_task_identity` in-flight dedupe.
 - The per-task predicates live as module-level helpers (`*_action`) in each `loony_dev/tasks/*.py`; both the legacy `Task.discover()` (kept for unit tests) and `next_task` call the same helpers, so the logic is identical. Because `next_task` is a pure read, a label-reconciliation side effect (dropping a stale `ready-for-planning` once a plan is approved) now lives in `IssueTask.on_start`, not in discovery.
+
+### Pipeline session (worktree retention)
+
+Each active pipeline owns **one** git worktree, not one per task (`loony_dev/pipeline_session.py`, `Orchestrator._pipeline_sessions`, issue #198). It is lazily created on the pipeline's first task and reused — together with a deterministic Claude session id — across every subsequent phase, so consecutive phases of one issue see the same on-disk state and skip the per-task create/trust/install/teardown cycle.
+
+- **Reclamation is driven by terminal GitHub state, not idle time** (`_reclaim_completed_pipelines`, every tick): a pipeline's worktree is released only once its PR is merged, its PR is closed without merging, or — with no PR — its issue is closed. A pipeline that is still in-flight or held by a drive lease (`loony_dev/pipeline_lease.py`, #199) is always kept.
+- **Debuggability is the point:** because the worktree survives between phases, the operator can `cd <base-dir>/<owner>/<repo>/.worktrees/<owner>/<repo>/issue-N` at any point and inspect exactly what the bot did. Retention is for inspection, not performance.
 
 ## Architecture notes
 

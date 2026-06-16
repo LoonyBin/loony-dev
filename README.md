@@ -43,9 +43,11 @@ auth, then polls every 60 seconds. Two steps are intentionally left to a human:
 
 ### `loony-dev worker`
 
-Runs the orchestrator loop for a single repository. Each actionable task runs in
-its own git worktree, so a worker can process several tasks concurrently; GitHub
-label state prevents two workers from taking the same item.
+Runs the orchestrator loop for a single repository. Each *pipeline* — one
+logical work-thread per issue (or per externally-opened PR) — runs in its own
+git worktree, retained across all of its phases. A worker can process several
+pipelines concurrently; GitHub label state prevents two workers from taking the
+same item.
 
 Key options:
 
@@ -53,7 +55,7 @@ Key options:
 |---|---|---|
 | `--repo owner/repo` | detected from git remote | Repository to watch |
 | `--interval SECONDS` | `60` | Polling interval |
-| `--max-concurrent-tasks N` | `3` | Tasks run at once (each in its own worktree) |
+| `--max-concurrent-tasks N` | `3` | Pipelines worked at once (each in its own worktree) |
 | `--work-dir PATH` | `.` | Repo checkout to operate on |
 | `--bot-name NAME` | detected from `gh` auth | Bot username for watermark detection |
 | `--allowed-users USER` | — | Always-permitted triggerers (repeatable) |
@@ -125,8 +127,9 @@ When the supervisor launches a `claude --remote-control` session per repo, it
 scans that session's output for the **claude.ai join URL** and writes it (with the
 live PID) to a per-repo connection file. The dashboard surfaces the join link /
 QR code via `/api/sessions`, giving you a single relay per repo to join from a
-phone or another machine. Pass `--no-remote-control` to skip this (e.g. in
-environments without Anthropic relay access, to avoid restart churn).
+phone or another machine. Pass `--no-remote-control` to skip this in
+environments where the relay isn't reachable or you don't want a per-repo
+`claude` session running.
 
 ## How it works
 
@@ -160,8 +163,13 @@ stuck → conflict → CI failure → PR review → planning → implementation
 ```
 
 The scheduler then arbitrates across pipelines (global priority, the
-`--max-concurrent-tasks` cap, in-flight dedupe) and dispatches each chosen task in
-its own worktree. See [`CLAUDE.md`](CLAUDE.md) for the full design.
+`--max-concurrent-tasks` cap, in-flight dedupe) and dispatches the chosen task in
+that pipeline's worktree. A pipeline's worktree is created on its first task and
+**retained across all subsequent phases of the issue** — so consecutive phases
+see the same on-disk state, and you can `cd` into it to inspect what the bot did
+between phases. It is reclaimed only when the work reaches a terminal GitHub
+state (PR merged/closed, or issue closed with no PR). See
+[`CLAUDE.md`](CLAUDE.md) for the full design.
 
 ### Agents
 
@@ -179,6 +187,8 @@ loony_dev/
 ├── orchestrator.py        # Per-repo worker loop: discover → schedule → dispatch
 ├── supervisor.py          # Multi-repo: worker-per-repo + remote-control relay
 ├── pipeline.py            # Pipeline discovery + next_task priority ladder
+├── pipeline_session.py    # Per-pipeline reusable worktree + session id (#198)
+├── pipeline_lease.py      # Cross-process per-pipeline lock (bot vs. drive, #199)
 ├── git.py                 # GitRepo: branch + worktree lifecycle
 ├── coderabbit.py          # Wraps `coderabbit review --agent`
 ├── session_registry.py    # On-disk session contract (workers + dashboard)
