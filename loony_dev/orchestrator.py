@@ -1,3 +1,25 @@
+"""The per-repo worker loop: discover work, schedule it, dispatch it.
+
+A single :class:`Orchestrator` drives one repository. Each tick it:
+
+1. Enumerates **pipelines** (one logical work-thread per branch — ``issue-N`` or
+   ``pr-P``; see :mod:`loony_dev.pipeline`) and asks each for its single
+   highest-priority actionable task via ``Pipeline.next_task`` — a pure read of
+   GitHub + git state that never mutates GitHub.
+2. Arbitrates the candidates in ``_find_work`` → ``_gather_candidates``: global
+   priority order (stuck → conflict → CI → review → plan → implement), the
+   ``max_concurrent`` / ``_free_slots`` cap, and ``_task_identity`` in-flight
+   dedupe so two workers never take the same item.
+3. Dispatches each chosen task in its own git worktree (keyed on the issue, #181)
+   so concurrent tasks stay isolated. Agents shell out to ``claude -p`` (see
+   :mod:`loony_dev.agents.claude_quota`); GitHub label state is the only
+   cross-worker coordination.
+
+``TASK_CLASSES`` below is retained as the canonical priority list and a test seam
+for the legacy per-class ``discover()`` paths, but live discovery flows through
+pipelines (#197).
+"""
+
 from __future__ import annotations
 
 import concurrent.futures
