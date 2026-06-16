@@ -36,6 +36,11 @@
   --radius-sm: 4px;
   --maxw: 1100px;
 
+  /* Left rail width (#187): expanded by default, icon-only when collapsed
+     (keyed off :root[data-rail="collapsed"] below). The .shell grid and the
+     rail itself both read --rail-w, so toggling the token reflows the layout. */
+  --rail-w: 236px;
+
   /* Accent family — the blueprint blue (#186). soft = tinted fill for selected
      rows/pills; ink = a slightly deeper text-on-light accent. */
   --accent: #2667B7;
@@ -145,10 +150,12 @@ body {
   line-height: 1.45;
   color: var(--text);
   background: var(--bg);
-  display: grid;
-  grid-template-rows: auto 1fr;
   min-height: 100vh;
 }
+
+/* Icon-only rail: shrink the width token; label/text hiding lives further
+   down with the rail rules. */
+:root[data-rail="collapsed"] { --rail-w: 72px; }
 
 h1 { font-size: var(--fs-5); margin: 0; }
 h2 { font-size: var(--fs-3); margin: var(--sp-5) 0 var(--sp-3); }
@@ -175,18 +182,7 @@ section.view > h2:first-child { margin-top: 0; }
   font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
 }
 
-/* ---- Top bar --------------------------------------------------------- */
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-4);
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
-  z-index: 30;
-}
+/* ---- Shell controls (shared by the rail) ----------------------------- */
 .brand { font-weight: 700; font-size: var(--fs-4); white-space: nowrap; }
 .brand-sub { color: var(--text-muted); font-weight: 500; }
 .spacer { flex: 1; }
@@ -253,22 +249,77 @@ section.view > h2:first-child { margin-top: 0; }
   .stream-dot { animation: none; }
 }
 
-/* ---- Layout ---------------------------------------------------------- */
-.layout {
+/* ---- App shell: full-height left rail (#187) ------------------------- */
+.shell {
   display: grid;
-  grid-template-columns: 210px minmax(0, 1fr);
-  min-height: 0;
+  grid-template-columns: var(--rail-w) minmax(0, 1fr);
+  min-height: 100vh;
 }
 
-.sidenav {
+/* Sticky full-height rail: brand/Tweaks head, scrollable nav, pinned footer. */
+.rail {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
+  gap: var(--sp-3);
   padding: var(--sp-3);
   background: var(--surface);
   border-right: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow: visible; /* let flyout popovers escape the rail */
+  z-index: 30;
 }
+
+.rail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* The brand doubles as the collapse toggle. */
+.rail-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 1;
+  min-width: 0;
+  padding: var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  font: inherit;
+  font-weight: 700;
+  font-size: var(--fs-4);
+  color: var(--text);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.rail-brand:hover { background: var(--surface-2); }
+.rail-brand:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rail-logo { font-size: 1.5rem; color: var(--accent); flex: none; }
+.rail-brand-text { overflow: hidden; text-overflow: ellipsis; }
+
+.rail-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.rail-footer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+
 .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--sp-3);
@@ -284,8 +335,144 @@ section.view > h2:first-child { margin-top: 0; }
 }
 .nav-item:hover { background: var(--surface-2); color: var(--text); }
 .nav-item.active { background: var(--primary); color: var(--primary-contrast); }
+.nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* Specific enough to beat the .material-symbols-outlined base font-size. */
-.nav-item .nav-icon { font-size: 1.35rem; line-height: 1; }
+.nav-item .nav-icon { font-size: 1.35rem; line-height: 1; flex: none; }
+.nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* Trailing count badge + "needs attention" dot on a nav item. */
+.nav-badge {
+  margin-left: auto;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--sp-1);
+  font-size: var(--fs-0);
+  font-weight: 700;
+  font-variant-numeric: var(--num);
+  color: #fff;
+  background: var(--danger-strong);
+  border-radius: 999px;
+}
+.nav-dot {
+  margin-left: auto;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+}
+
+/* Operator profile widget (the human-in-the-loop) + settings gear. */
+.rail-operator {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.operator-id {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  line-height: 1.2;
+}
+.operator-name {
+  font-weight: 600;
+  font-size: var(--fs-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.operator-handle {
+  font-size: var(--fs-0);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- Flyouts: Tweaks panel + settings gear menu ---------------------- */
+.flyout { position: relative; flex: none; }
+.popover {
+  position: absolute;
+  left: 0;
+  z-index: 60;
+  min-width: 14rem;
+  max-width: min(20rem, 90vw);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--sp-2);
+}
+/* The Tweaks trigger sits in the head -> drop the panel below it; the gear sits
+   in the footer -> pop the menu above it. Both grow rightward over <main> so
+   they stay on-screen in both expanded and collapsed rail widths. */
+.tweaks-panel { top: calc(100% + var(--sp-1)); }
+.gear-menu { bottom: calc(100% + var(--sp-1)); }
+
+.tweaks-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  min-width: 15rem;
+}
+.tweak-row { display: flex; flex-direction: column; gap: var(--sp-1); }
+.tweak-label {
+  font-size: var(--fs-0);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--track-eyebrow);
+  color: var(--text-muted);
+}
+.tweaks-panel .segmented { width: 100%; }
+.tweaks-panel .segmented > button { flex: 1; }
+.accent-seg > button { padding: var(--sp-1) var(--sp-2); }
+.accent-swatch {
+  display: block;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+}
+.accent-swatch[data-accent-swatch="blue"]    { background: #2667B7; }
+.accent-swatch[data-accent-swatch="violet"]  { background: #7C3AED; }
+.accent-swatch[data-accent-swatch="emerald"] { background: #10B981; }
+.accent-swatch[data-accent-swatch="slate"]   { background: #64748B; }
+
+.gear-menu { display: flex; flex-direction: column; gap: 2px; }
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  font: inherit;
+  font-size: var(--fs-2);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.menu-item:hover:not(:disabled) { background: var(--surface-2); }
+.menu-item:disabled { color: var(--text-muted); cursor: not-allowed; }
+.menu-item .material-symbols-outlined { font-size: 1.2rem; color: var(--text-muted); flex: none; }
+.menu-soon {
+  margin-left: auto;
+  font-size: var(--fs-0);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--track-eyebrow);
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border-radius: 999px;
+  padding: 1px var(--sp-2);
+}
 
 main {
   padding: var(--sp-5);
@@ -294,29 +481,150 @@ main {
   max-width: var(--maxw);
 }
 
-/* ---- Responsive: side nav -> bottom bar ------------------------------ */
+/* ---- Collapsed rail (icon-only) -------------------------------------- */
+/* Hide every text label; icons + controls remain, identified by tooltips. */
+[data-rail="collapsed"] .rail-brand-text,
+[data-rail="collapsed"] .nav-label,
+[data-rail="collapsed"] .operator-id,
+[data-rail="collapsed"] .stuck-pill-text,
+[data-rail="collapsed"] .stream-status-text {
+  display: none;
+}
+[data-rail="collapsed"] .rail-head { flex-direction: column; }
+[data-rail="collapsed"] .rail-brand,
+[data-rail="collapsed"] .nav-item,
+[data-rail="collapsed"] .stuck-pill { justify-content: center; }
+[data-rail="collapsed"] .rail-operator { flex-direction: column; gap: var(--sp-1); }
+/* The count badge becomes a small corner marker when there is no label row. */
+[data-rail="collapsed"] .nav-badge,
+[data-rail="collapsed"] .nav-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  margin: 0;
+}
+[data-rail="collapsed"] .nav-badge {
+  min-width: 1rem;
+  height: 1rem;
+  font-size: 0.6rem;
+  padding: 0;
+}
+
+/* CSS tooltips, shown only when the rail is collapsed (a styled affordance on
+   top of the always-present native `title`). */
+[data-rail="collapsed"] [data-tooltip] { position: relative; }
+[data-rail="collapsed"] [data-tooltip]:hover::after,
+[data-rail="collapsed"] [data-tooltip]:focus-visible::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: calc(100% + var(--sp-2));
+  top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  background: var(--text);
+  color: var(--bg);
+  font-size: var(--fs-1);
+  font-weight: 600;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  z-index: 70;
+  pointer-events: none;
+}
+
+/* ---- Tweaks: accent themes ------------------------------------------- */
+/* Each [data-accent] re-points the accent family. Default (blue) needs no
+   override — it equals the base tokens. The overrides are repeated across all
+   three theme contexts: light (:root), the dark media query
+   (:root:not([data-theme="light"])), and pinned dark (:root[data-theme="dark"]).
+   The extra attribute keeps each more specific than the base theme block. */
+
+/* Light */
+:root[data-accent="violet"]  { --accent: #7C3AED; --accent-hover: #6D28D9; --accent-soft: #F5F3FF; --accent-ink: #6D28D9; }
+:root[data-accent="emerald"] { --accent: #059669; --accent-hover: #047857; --accent-soft: #ECFDF5; --accent-ink: #047857; }
+:root[data-accent="slate"]   { --accent: #475569; --accent-hover: #334155; --accent-soft: #F1F5F9; --accent-ink: #334155; }
+
+/* Pinned dark */
+:root[data-theme="dark"][data-accent="violet"]  { --accent: #A78BFA; --accent-hover: #C4B5FD; --accent-soft: #2A1F4A; --accent-ink: #C4B5FD; }
+:root[data-theme="dark"][data-accent="emerald"] { --accent: #34D399; --accent-hover: #6EE7B7; --accent-soft: #103027; --accent-ink: #6EE7B7; }
+:root[data-theme="dark"][data-accent="slate"]   { --accent: #94A3B8; --accent-hover: #CBD5E1; --accent-soft: #1E293B; --accent-ink: #CBD5E1; }
+
+/* OS-dark, unless a light theme is pinned. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"])[data-accent="violet"]  { --accent: #A78BFA; --accent-hover: #C4B5FD; --accent-soft: #2A1F4A; --accent-ink: #C4B5FD; }
+  :root:not([data-theme="light"])[data-accent="emerald"] { --accent: #34D399; --accent-hover: #6EE7B7; --accent-soft: #103027; --accent-ink: #6EE7B7; }
+  :root:not([data-theme="light"])[data-accent="slate"]   { --accent: #94A3B8; --accent-hover: #CBD5E1; --accent-soft: #1E293B; --accent-ink: #CBD5E1; }
+}
+
+/* ---- Tweaks: density ------------------------------------------------- */
+/* Compact overrides a small set of layout-spacing paddings rather than shrinking
+   the global --sp-* scale (which would cascade everywhere). Comfortable is the
+   default spacing. */
+:root[data-density="compact"] .nav-item { padding: var(--sp-2) var(--sp-3); }
+:root[data-density="compact"] main { padding: var(--sp-4); }
+:root[data-density="compact"] .data-table th,
+:root[data-density="compact"] .data-table td { padding: var(--sp-1) var(--sp-2); }
+:root[data-density="compact"] .card,
+:root[data-density="compact"] .repo-card,
+:root[data-density="compact"] .session-card,
+:root[data-density="compact"] .stat { padding: var(--sp-3); }
+
+/* ---- Tweaks: live pulse ---------------------------------------------- */
+/* Pulse-off disables the live animations; the prefers-reduced-motion guard
+   (below the .stream-dot rule) already covers the OS-level case, so either one
+   stops the motion. */
+:root[data-pulse="off"] .stream-dot { animation: none; }
+
+/* ---- Responsive: rail -> bottom bar ---------------------------------- */
 @media (max-width: 720px) {
-  .layout { grid-template-columns: 1fr; }
-  .sidenav {
+  .shell { grid-template-columns: 1fr; }
+  .rail {
     position: fixed;
     left: 0;
     right: 0;
     bottom: 0;
+    top: auto;
+    height: auto;
     flex-direction: row;
-    justify-content: space-around;
-    gap: 0;
-    padding: var(--sp-1);
+    align-items: center;
+    gap: var(--sp-1);
+    padding: var(--sp-1) var(--sp-2);
     border-right: none;
     border-top: 1px solid var(--border);
     z-index: 30;
   }
+  /* The collapse toggle is meaningless on the bottom bar; keep the Tweaks
+     flyout (the rest of .rail-head) at the far end. */
+  .rail-head { order: 3; gap: 0; }
+  .rail-brand { display: none; }
+  .rail-nav {
+    order: 1;
+    flex: 1;
+    flex-direction: row;
+    justify-content: space-around;
+    gap: 0;
+    overflow: visible;
+  }
+  .rail-footer {
+    order: 2;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--sp-1);
+    padding-top: 0;
+    border-top: none;
+  }
+  .rail-operator .operator-id { display: none; }
   .nav-item {
     flex-direction: column;
     gap: 2px;
     padding: var(--sp-2);
     min-width: 0;
   }
-  .nav-label { font-size: 0.68rem; }
+  .nav-label { font-size: 0.68rem; flex: none; }
+  .stuck-pill-text,
+  .stream-status-text { display: none; }
+  /* Both flyouts pop upward, above the bottom bar. */
+  .popover { bottom: calc(100% + var(--sp-1)); top: auto; }
   main { padding: var(--sp-4); padding-bottom: 5rem; }
 }
 
