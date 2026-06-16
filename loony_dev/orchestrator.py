@@ -581,7 +581,15 @@ class Orchestrator:
                 continue
             logger.info("Hibernating idle pipeline %s — releasing worktree %s", key, ps.worktree_path)
             with self._git_lock:
-                self._remove_worktree(ps.worktree_path)
+                removed = self._remove_worktree(ps.worktree_path)
+            if not removed:
+                # Worktree removal is best-effort and failed (e.g. a stale lock);
+                # keep the session live so a later sweep retries rather than
+                # silently leaking the worktree and dropping our handle to it.
+                logger.warning(
+                    "Worktree removal failed for pipeline %s — retaining session for retry", key,
+                )
+                continue
             ps.live = False
             with self._pipeline_sessions_lock:
                 self._pipeline_sessions.pop(key, None)
@@ -612,14 +620,22 @@ class Orchestrator:
         except Exception:
             logger.debug("Could not record pipeline session for %s", key, exc_info=True)
 
-    def _remove_worktree(self, path: Path | None) -> None:
-        """Remove the per-task worktree at *path*, if any. Never raises."""
+    def _remove_worktree(self, path: Path | None) -> bool:
+        """Remove the per-task worktree at *path*, if any. Never raises.
+
+        Returns ``True`` when the worktree is gone (removed, or there was
+        nothing to remove) and ``False`` when removal genuinely failed, so the
+        hibernation sweep can keep the session live and retry instead of leaking
+        the worktree.
+        """
         if path is None:
-            return
+            return True
         try:
             self.git.remove_worktree(path)
+            return True
         except Exception:
             logger.exception("Failed to remove worktree at %s", path)
+            return False
 
     def _prune_stale_worktrees(self) -> None:
         """Remove worktrees left over from crashed or killed prior runs.

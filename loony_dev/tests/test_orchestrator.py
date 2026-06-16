@@ -281,6 +281,26 @@ class TestPipelineReuseAndHibernation(unittest.TestCase):
         self.git.create_worktree.assert_called_once()
         self.git.sync_worktree_to_upstream.assert_not_called()
 
+    def test_failed_removal_retains_session_for_retry(self) -> None:
+        # Worktree removal is best-effort; if it fails the session must stay
+        # live so a later sweep retries rather than leaking the worktree.
+        task = self._make_task(worktree_key="issue-7", target_branch="issue-7/slug")
+        self.orch.dispatch(self.agent, task)
+        ps = self.orch._pipeline_sessions["issue-7"]
+        self.git.remove_worktree.side_effect = RuntimeError("stale worktree lock")
+
+        now = ps.last_active + self.orch._pipeline_idle_grace_seconds + 1
+        self.orch._hibernate_idle_pipelines(now=now)
+
+        # Removal raised → session retained, still live, for a later retry.
+        self.assertIn("issue-7", self.orch._pipeline_sessions)
+        self.assertTrue(ps.live)
+
+        # A subsequent sweep retries once removal succeeds, and evicts.
+        self.git.remove_worktree.side_effect = None
+        self.orch._hibernate_idle_pipelines(now=now)
+        self.assertNotIn("issue-7", self.orch._pipeline_sessions)
+
 
 class TestPipelineLeaseExclusion(unittest.TestCase):
     """A human drive and a bot task must never co-run on one pipeline (#199)."""
