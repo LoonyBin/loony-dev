@@ -30,6 +30,17 @@ export function setRows(tableId, rows, render, emptyText) {
   for (const row of rows) tbody.appendChild(render(row));
 }
 
+// Build a Material Symbols Outlined glyph span (#186). Decorative by default:
+// aria-hidden so screen readers skip it — the surrounding text carries meaning.
+// If the icon font is blocked, the ligature name shows as plain text.
+export function icon(name) {
+  const el = document.createElement("span");
+  el.className = "material-symbols-outlined";
+  el.setAttribute("aria-hidden", "true");
+  el.textContent = name;
+  return el;
+}
+
 export function formatAge(seconds) {
   const s = Math.max(0, Math.floor(Number(seconds) || 0));
   if (s < 60) return `${s}s`;

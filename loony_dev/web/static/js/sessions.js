@@ -10,7 +10,7 @@
 // Pending (no join_url yet) and offline (process dead) sessions render an
 // explicit state instead of a broken link.
 
-import { formatAge } from "./dom.js";
+import { formatAge, icon } from "./dom.js";
 
 // How fresh the connection file's mtime must be before we flag the session as
 // stale. The remote-control session rewrites it as it runs; a long-idle mtime
@@ -129,7 +129,8 @@ function renderState(card, s) {
   joinLink.href = joinUrl;
   joinLink.target = "_blank";
   joinLink.rel = "noopener noreferrer";
-  joinLink.textContent = "Open session ↗";
+  joinLink.textContent = "Open session ";
+  joinLink.appendChild(icon("open_in_new"));
   card.appendChild(joinLink);
 
   const qrWrap = document.createElement("div");

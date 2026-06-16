@@ -13,6 +13,7 @@
 // times the client reconnects.
 
 import { openModalA11y, closeModalA11y } from "./modal.js";
+import { icon } from "./dom.js";
 
 let active = null; // { ws, taskKey, seen:Set, toolCards:Map } for the open view
 
@@ -87,7 +88,9 @@ function renderThinking(ev) {
 
 function renderToolUse(ev) {
   const el = block("tool");
-  el.appendChild(label(`🔧 ${ev.tool || "tool"}`));
+  const lab = label(ev.tool || "tool");
+  lab.prepend(icon("build"));
+  el.appendChild(lab);
   const args = formatArgs(ev.args);
   if (args) {
     const pre = document.createElement("pre");
