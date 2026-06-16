@@ -116,6 +116,42 @@ class GitRepo:
         self._run("fetch", "origin", branch)
         self._run("branch", "-f", branch, f"origin/{branch}")
 
+    def sync_worktree_to_upstream(self, path: Path, branch: str) -> None:
+        """Refresh an existing worktree to its branch's upstream state.
+
+        Runs ``git fetch origin <branch>`` + ``git reset --hard origin/<branch>``
+        with ``cwd=path`` — i.e. *inside* the worktree. This is the
+        worktree-reuse analogue of :meth:`reset_branch_to_upstream` (issue #198):
+        once a pipeline holds a persistent worktree, that helper's ``git branch
+        -f`` refuses to move the branch (it is checked out), so a reused phase
+        syncs from within the worktree instead. The result is the same — the
+        worktree lands on the latest pushed state (the bot's prior push,
+        CodeRabbit, or a human) before the next phase runs.
+        """
+        if not branch.strip():
+            raise ValueError("branch must be non-empty")
+        # ``reset --hard`` moves whatever HEAD points to in this worktree, so a
+        # worktree unexpectedly on another branch (or detached) would have the
+        # *wrong* ref reset onto ``origin/<branch>``. Key unification (#181) keeps
+        # a pipeline's worktree on its branch across every phase, but guard
+        # explicitly rather than silently corrupt the wrong branch.
+        head = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=path, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        if head != branch:
+            raise GitError(
+                f"worktree {path} is on {head!r}, not {branch!r}; refusing to sync"
+            )
+        subprocess.run(
+            ["git", "fetch", "origin", branch],
+            cwd=path, capture_output=True, text=True, check=True,
+        )
+        subprocess.run(
+            ["git", "reset", "--hard", f"origin/{branch}"],
+            cwd=path, capture_output=True, text=True, check=True,
+        )
+
     def has_uncommitted_changes(self) -> bool:
         result = self._run("status", "--porcelain")
         return bool(result.stdout.strip())

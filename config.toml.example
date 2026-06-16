@@ -77,6 +77,11 @@
 # intervention to resume).
 # repeated_failure_threshold = 2
 
+# Seconds a pipeline may sit with no actionable task before its reused worktree
+# is released (the on-disk Claude session is kept for resume). A short or zero
+# grace effectively restores per-task worktree teardown.
+# pipeline_idle_grace_seconds = 300
+
 # When DEFERring a PR review comment that flags a pre-existing latent bug,
 # allow the worker to open a follow-up tracking issue with `gh issue create`.
 # Set to false to require a human to file follow-ups.

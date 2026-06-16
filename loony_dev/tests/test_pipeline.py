@@ -404,6 +404,22 @@ class TestPurity(unittest.TestCase):
                       for p in Pipeline.discover(repo)}
         self.assertEqual(first, second)
 
+    def test_discovery_creates_no_pipeline_sessions(self) -> None:
+        # Lazy instantiation (#198): enumerating pipelines and gathering work must
+        # not materialize any PipelineSession or touch a git worktree — those are
+        # created only when a task is dispatched.
+        repo = _make_repo()
+        issue = _issue(1, labels=["ready-for-development"], repo=repo)
+        pr = _pr(5, branch="feature/x", mergeable="CONFLICTING", repo=repo)
+        with _world(repo, issues=[issue], prs=[pr]):
+            orch = _make_orchestrator(repo, self)
+            batch = orch._find_work(limit=10, claimed=set())
+        # Work was actually found, so the no-session assertion is meaningful
+        # (not vacuously true on an empty gather).
+        self.assertTrue(batch)
+        self.assertEqual(orch._pipeline_sessions, {})
+        orch.git.create_worktree.assert_not_called()
+
     def test_pipeline_holds_no_progress_state(self) -> None:
         repo = _make_repo()
         issue = _issue(1, labels=["ready-for-development"], repo=repo)

@@ -50,7 +50,7 @@ class TestWorktreeLifecycle(unittest.TestCase):
         task.describe.return_value = "do work"
         return task
 
-    def test_successful_task_creates_then_removes_worktree(self) -> None:
+    def test_successful_task_creates_and_retains_worktree(self) -> None:
         task = self._make_task(worktree_key="pr-1", target_branch="feature/x")
         self.agent.execute.return_value = TaskResult(success=True, output="", summary="done")
 
@@ -60,25 +60,26 @@ class TestWorktreeLifecycle(unittest.TestCase):
         self.git.create_worktree.assert_called_once_with(
             branch="feature/x", path=expected_path, base=None,
         )
-        self.git.remove_worktree.assert_called_once_with(expected_path)
+        # The worktree is retained for the pipeline's next phase (issue #198);
+        # removal happens only via the hibernation sweep, never per task.
+        self.git.remove_worktree.assert_not_called()
         # Agent runs inside the worktree, not the base checkout.
         self.assertEqual(self.agent.execute.call_args.kwargs["work_dir"], expected_path)
         task.on_complete.assert_called_once()
         task.on_failure.assert_not_called()
 
-    def test_failing_agent_still_removes_worktree(self) -> None:
+    def test_failing_agent_retains_worktree(self) -> None:
         task = self._make_task(worktree_key="pr-2", target_branch="feature/y")
         self.agent.execute.side_effect = RuntimeError("boom")
 
         self.orch.dispatch(self.agent, task)
 
-        expected_path = self.tmp / ".worktrees" / "owner" / "repo" / "pr-2"
         self.git.create_worktree.assert_called_once()
-        # finally clause removes the worktree even though the agent raised.
-        self.git.remove_worktree.assert_called_once_with(expected_path)
+        # The worktree is retained even though the agent raised (issue #198).
+        self.git.remove_worktree.assert_not_called()
         task.on_failure.assert_called_once()
 
-    def test_unsuccessful_result_still_removes_worktree(self) -> None:
+    def test_unsuccessful_result_retains_worktree(self) -> None:
         task = self._make_task(worktree_key="pr-3", target_branch="feature/z")
         self.agent.execute.return_value = TaskResult(
             success=False, output="", summary="nope",
@@ -86,8 +87,7 @@ class TestWorktreeLifecycle(unittest.TestCase):
 
         self.orch.dispatch(self.agent, task)
 
-        expected_path = self.tmp / ".worktrees" / "owner" / "repo" / "pr-3"
-        self.git.remove_worktree.assert_called_once_with(expected_path)
+        self.git.remove_worktree.assert_not_called()
         task.on_failure.assert_called_once()
         task.on_complete.assert_not_called()
 
@@ -124,7 +124,8 @@ class TestWorktreeLifecycle(unittest.TestCase):
         self.git.create_worktree.assert_called_once_with(
             branch=task.branch_name, path=expected_path, base="main",
         )
-        self.git.remove_worktree.assert_called_once_with(expected_path)
+        # Worktree retained for reuse across the issue's lifecycle (issue #198).
+        self.git.remove_worktree.assert_not_called()
 
     def test_worktree_only_task_forks_throwaway_branch_from_default(self) -> None:
         # A worktree task with neither a target_branch nor a feature branch must
@@ -160,6 +161,125 @@ class TestWorktreeLifecycle(unittest.TestCase):
         self.git.create_worktree.assert_called_once_with(
             branch="issue-5/add-feature", path=expected_path, base="main",
         )
+
+
+class TestPipelineReuseAndHibernation(unittest.TestCase):
+    """Pipeline-scoped worktree reuse + lazy hibernation (issue #198)."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.tmp = Path(self._tmpdir.name)
+        self.git = _make_git(self.tmp)
+        self.agent = MagicMock()
+        # base_dir under tmp so the drive-lease guard reads the same tree.
+        self.orch = Orchestrator(
+            repo=_make_repo(), git=self.git, agents=[self.agent],
+            interval=60, base_dir=self.tmp,
+        )
+        self.git.reset_mock()
+        self.agent.execute.return_value = TaskResult(success=True, output="", summary="ok")
+
+    def _make_task(self, *, worktree_key: str, target_branch: str | None = None) -> MagicMock:
+        task = MagicMock()
+        task.worktree_key = worktree_key
+        task.target_branch = target_branch
+        task.session_key = None
+        task.describe.return_value = "do work"
+        return task
+
+    def _expected(self, key: str) -> Path:
+        return self.tmp / ".worktrees" / "owner" / "repo" / key
+
+    def test_consecutive_tasks_reuse_one_worktree(self) -> None:
+        # Two phases on the same pipeline: the worktree is created once and synced
+        # (not recreated) on the second, and never removed between them.
+        t1 = self._make_task(worktree_key="issue-7", target_branch="issue-7/slug")
+        t2 = self._make_task(worktree_key="issue-7", target_branch="issue-7/slug")
+
+        self.orch.dispatch(self.agent, t1)
+        self.orch.dispatch(self.agent, t2)
+
+        expected = self._expected("issue-7")
+        self.git.create_worktree.assert_called_once_with(
+            branch="issue-7/slug", path=expected, base=None,
+        )
+        self.git.sync_worktree_to_upstream.assert_called_once_with(expected, "issue-7/slug")
+        self.git.remove_worktree.assert_not_called()
+        self.assertEqual(self.agent.execute.call_args.kwargs["work_dir"], expected)
+
+    def test_idle_pipeline_hibernated_after_grace(self) -> None:
+        task = self._make_task(worktree_key="issue-7", target_branch="issue-7/slug")
+        self.orch.dispatch(self.agent, task)
+
+        expected = self._expected("issue-7")
+        self.git.remove_worktree.assert_not_called()
+
+        ps = self.orch._pipeline_sessions["issue-7"]
+        now = ps.last_active + self.orch._pipeline_idle_grace_seconds + 1
+        self.orch._hibernate_idle_pipelines(now=now)
+
+        self.git.remove_worktree.assert_called_once_with(expected)
+        self.assertNotIn("issue-7", self.orch._pipeline_sessions)
+
+    def test_within_grace_not_hibernated(self) -> None:
+        task = self._make_task(worktree_key="issue-7", target_branch="issue-7/slug")
+        self.orch.dispatch(self.agent, task)
+
+        ps = self.orch._pipeline_sessions["issue-7"]
+        now = ps.last_active + self.orch._pipeline_idle_grace_seconds - 1
+        self.orch._hibernate_idle_pipelines(now=now)
+
+        self.git.remove_worktree.assert_not_called()
+        self.assertIn("issue-7", self.orch._pipeline_sessions)
+
+    def test_inflight_pipeline_not_hibernated(self) -> None:
+        task = self._make_task(worktree_key="issue-7", target_branch="issue-7/slug")
+        self.orch.dispatch(self.agent, task)
+        ps = self.orch._pipeline_sessions["issue-7"]
+
+        # Simulate a task in flight on the same pipeline (its identity is the key).
+        inflight = self._make_task(worktree_key="issue-7")
+        self.orch._inflight[MagicMock()] = (inflight, self.agent)
+
+        now = ps.last_active + self.orch._pipeline_idle_grace_seconds + 1
+        self.orch._hibernate_idle_pipelines(now=now)
+
+        self.git.remove_worktree.assert_not_called()
+        self.assertIn("issue-7", self.orch._pipeline_sessions)
+
+    def test_drive_lease_blocks_hibernation(self) -> None:
+        from loony_dev import pipeline_lease
+
+        task = self._make_task(worktree_key="issue-7", target_branch="issue-7/slug")
+        self.orch.dispatch(self.agent, task)
+        ps = self.orch._pipeline_sessions["issue-7"]
+
+        # A human interrogation holds the pipeline (#199) — never reclaim it.
+        pipeline_lease.acquire_pipeline_lease(
+            self.tmp, "owner/repo", "issue-7", holder=pipeline_lease.HOLDER_DRIVE,
+        )
+        now = ps.last_active + self.orch._pipeline_idle_grace_seconds + 1
+        self.orch._hibernate_idle_pipelines(now=now)
+
+        self.git.remove_worktree.assert_not_called()
+        self.assertIn("issue-7", self.orch._pipeline_sessions)
+
+    def test_recreate_after_hibernation_uses_fresh_create(self) -> None:
+        # After hibernation a later phase rebuilds the pipeline lazily and
+        # recreates (not syncs) the worktree at the canonical path.
+        task = self._make_task(worktree_key="issue-7", target_branch="issue-7/slug")
+        self.orch.dispatch(self.agent, task)
+        ps = self.orch._pipeline_sessions["issue-7"]
+        now = ps.last_active + self.orch._pipeline_idle_grace_seconds + 1
+        self.orch._hibernate_idle_pipelines(now=now)
+        self.git.reset_mock()
+
+        self.orch.dispatch(self.agent, self._make_task(
+            worktree_key="issue-7", target_branch="issue-7/slug",
+        ))
+        self.git.create_worktree.assert_called_once()
+        self.git.sync_worktree_to_upstream.assert_not_called()
 
 
 class TestPipelineLeaseExclusion(unittest.TestCase):
