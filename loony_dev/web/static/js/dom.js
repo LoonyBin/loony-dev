@@ -65,3 +65,12 @@ export function goRepo(repo) {
   if (store) store.goRepo(repo);
   else location.hash = `repo/${repo}`;
 }
+
+// Open the Issue ▸ PR pipeline-detail view (#190) for `repo` ("owner/name") and
+// `taskKey` (the snapshot row's task_key). Falls back to the URL hash if Alpine
+// has not started yet.
+export function goPipeline(repo, taskKey) {
+  const store = window.Alpine && window.Alpine.store("app");
+  if (store) store.goPipeline(repo, taskKey);
+  else location.hash = `pipeline/${repo}/${taskKey}`;
+}

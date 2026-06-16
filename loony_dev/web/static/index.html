@@ -101,16 +101,30 @@
       // from the gear flyout but is not a rail item, and the per-repo drill-down
       // is reached by tapping a card (handled by the `repo/` hash prefix below).
       const VALID = new Set([...NAV.map((n) => n.id), "skills"]);
-      // The per-repo drill-down (#158) is not a nav item — it is reached by
-      // tapping a repo and lives at `#repo/<owner>/<name>`. Parse the hash into
-      // a {view, repo} pair so the detail route round-trips through the URL.
+      // The per-repo drill-down (#158) and the Issue ▸ PR pipeline detail (#190)
+      // are not nav items — they are reached by tapping a repo card / a task row
+      // and live at `#repo/<owner>/<name>` and
+      // `#pipeline/<owner>/<name>/<task_key>`. Parse the hash into a
+      // {view, repo, pipelineRoute} triple so both detail routes round-trip
+      // through the URL.
       const parseHash = () => {
         const h = location.hash.replace(/^#/, "");
+        if (h.startsWith("pipeline/")) {
+          // owner/name/task_key — owner+name are the first two segments, the
+          // rest is the task_key (issue-N / pr-P; no slashes in practice).
+          const parts = h.slice("pipeline/".length).split("/");
+          const repo = parts.slice(0, 2).join("/");
+          const taskKey = parts.slice(2).join("/");
+          if (repo && taskKey) {
+            return { view: "pipeline", repo, pipelineRoute: taskKey };
+          }
+          return { view: "overview", repo: null, pipelineRoute: null };
+        }
         if (h.startsWith("repo/")) {
           const repo = h.slice("repo/".length);
-          return { view: repo ? "repo" : "overview", repo: repo || null };
+          return { view: repo ? "repo" : "overview", repo: repo || null, pipelineRoute: null };
         }
-        return { view: VALID.has(h) ? h : "overview", repo: null };
+        return { view: VALID.has(h) ? h : "overview", repo: null, pipelineRoute: null };
       };
       const systemDark = window.matchMedia
         && window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -124,6 +138,8 @@
         nav: NAV,
         view: initial.view,
         repo: initial.repo,
+        // The task_key of the pipeline-detail (#190) view, when active.
+        pipelineRoute: initial.pipelineRoute,
         stuckCount: 0,
         // Live SSE health. Starts true (optimistic) so the "reconnecting…"
         // indicator only appears once the stream actually drops; app.js flips
@@ -141,19 +157,30 @@
           if (!VALID.has(view)) view = "overview";
           this.view = view;
           this.repo = null;
+          this.pipelineRoute = null;
           if (location.hash.replace(/^#/, "") !== view) location.hash = view;
         },
         goRepo(repo) {
           if (!repo) { this.go("overview"); return; }
           this.view = "repo";
           this.repo = repo;
+          this.pipelineRoute = null;
           const target = "repo/" + repo;
+          if (location.hash.replace(/^#/, "") !== target) location.hash = target;
+        },
+        goPipeline(repo, taskKey) {
+          if (!repo || !taskKey) { this.go("overview"); return; }
+          this.view = "pipeline";
+          this.repo = repo;
+          this.pipelineRoute = taskKey;
+          const target = "pipeline/" + repo + "/" + taskKey;
           if (location.hash.replace(/^#/, "") !== target) location.hash = target;
         },
         syncFromHash() {
           const s = parseHash();
           this.view = s.view;
           this.repo = s.repo;
+          this.pipelineRoute = s.pipelineRoute;
         },
         toggleTheme() {
           this.setTheme(this.theme === "dark" ? "light" : "dark");
@@ -547,6 +574,70 @@
 
         <h3>Log <span id="repo-log-title" class="muted"></span></h3>
         <pre id="repo-log" class="log-pane">Loading…</pre>
+      </section>
+
+      <!-- Issue ▸ PR pipeline detail (#190): a per-pipeline view with a
+           lifecycle stepper, an inline "jump in & steer" panel (conversation +
+           reply, reusing the existing inject/observe/attach paths), and a right
+           sidebar (activity timeline, linked issue/PR cards, worktree info).
+           Reached by tapping a task in the Sessions table; not a nav item. The
+           issueDetail module fills the dynamic slots and streams the
+           conversation while open. -->
+      <section class="view pipeline-detail" x-show="$store.app.view === 'pipeline'"
+               x-effect="window.issueDetail && window.issueDetail.show($store.app.view === 'pipeline' ? $store.app.repo : null, $store.app.view === 'pipeline' ? $store.app.pipelineRoute : null)">
+        <!-- Breadcrumb: Fleet ▸ repo ▸ #N. The JS module renders the segments
+             (the #N is parsed from the task_key) and wires their navigation. -->
+        <nav id="pipeline-breadcrumb" class="breadcrumb" aria-label="Breadcrumb"></nav>
+
+        <div class="pipeline-header">
+          <span id="pipeline-detail-repo" class="tag neutral"></span>
+          <h2 id="pipeline-detail-title">Pipeline</h2>
+          <span class="spacer"></span>
+          <span id="pipeline-detail-state" class="statepill"></span>
+        </div>
+
+        <!-- Lifecycle stepper: Issue → Plan → Implement → PR → Review → Merge,
+             with a conflict-detour badge. Filled by deriveStage(). -->
+        <div id="pipeline-stepper" class="stepper" role="list" aria-label="Lifecycle"></div>
+
+        <div class="detail-2col">
+          <!-- Main: jump in & steer. Inline conversation + reply + control row. -->
+          <div class="card pipeline-steer">
+            <h3>Jump in &amp; steer</h3>
+            <div id="pipeline-conv" class="observe-conv" tabindex="0"
+                 aria-label="Worker conversation"></div>
+            <div class="pipeline-reply">
+              <textarea id="pipeline-reply-text" rows="3"
+                aria-describedby="pipeline-reply-error"
+                placeholder="Reply to steer the bot's next turn (runs as an operator turn)…"></textarea>
+              <div class="editor-actions">
+                <button id="pipeline-reply-send" class="ld-btn sm primary" type="button">Send reply</button>
+              </div>
+              <div id="pipeline-reply-error" class="entry-error" role="alert" aria-live="assertive"></div>
+            </div>
+            <!-- Control row: the centralized #200 seam. Observe/Interrupt/live
+                 terminal are live; Take over / Pause / Reassign are disabled
+                 stubs with seam tooltips. Rendered by renderControls(). -->
+            <div id="pipeline-controls" class="pipeline-controls" role="group"
+                 aria-label="Worker controls"></div>
+          </div>
+
+          <!-- Sidebar: timeline + linked cards + worktree info. -->
+          <aside class="pipeline-sidebar">
+            <div class="card">
+              <h3>Activity</h3>
+              <div id="pipeline-timeline" class="timeline"></div>
+            </div>
+            <div class="card">
+              <h3>Linked</h3>
+              <div id="pipeline-linked"></div>
+            </div>
+            <div class="card">
+              <h3>Worktree</h3>
+              <div id="pipeline-worktree"></div>
+            </div>
+          </aside>
+        </div>
       </section>
 
       <!-- Sessions: remote-control sessions (join URL + QR land in #157) plus

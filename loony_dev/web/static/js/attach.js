@@ -10,7 +10,7 @@
 //               drive a live terminal).
 // xterm.js is loaded from a CDN (no build step), mirroring the htmx/Alpine setup.
 
-import { cell, setRows, icon } from "./dom.js";
+import { cell, setRows, icon, goPipeline } from "./dom.js";
 import { apiText } from "./api.js";
 import { openModalA11y, closeModalA11y } from "./modal.js";
 import { openObserve } from "./observe.js";
@@ -65,7 +65,10 @@ function closeAttachModal() {
   }
 }
 
-function openTerminal(taskKey) {
+// Exported (issue #190) so the pipeline-detail view can reuse the live-PTY
+// terminal as its take-over fallback when a session is attachable. Behaviour is
+// unchanged from the Sessions-table Attach button.
+export function openTerminal(taskKey) {
   const modal = document.getElementById("attach-modal");
   const host = document.getElementById("attach-term");
   const title = document.getElementById("attach-title");
@@ -134,6 +137,18 @@ function renderTaskSession(s) {
   const actions = document.createElement("td");
   actions.dataset.label = "Action";
 
+  // Open is the entry point to the Issue ▸ PR detail view (#190): the
+  // full-page stepper + timeline + steer surface for this pipeline. Routed by
+  // task_key (the snapshot row id); the detail view reads pipeline_key off it.
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "action";
+  open.textContent = "Open";
+  open.title = "Open the Issue ▸ PR detail view";
+  open.disabled = !s.repo;
+  open.addEventListener("click", () => goPipeline(s.repo, s.task_key));
+  actions.appendChild(open);
+
   // Observe is the default surface: it renders the conversation from the JSONL
   // transcript with no live process required, so it works for parked sessions
   // between turns as well as active ones (#202).
@@ -176,6 +191,17 @@ export function render(taskSessions) {
 
 // --- One-shot "send guidance" (inject) -------------------------------------
 
+// Shared inject helper (issue #190): POST an operator-tagged turn the
+// orchestrator runs next. Reused by the Steer modal here and by the
+// pipeline-detail reply input, so both drive the single canonical endpoint.
+export function injectTurn(taskKey, prompt) {
+  return apiText(`/api/sessions/${encodeURIComponent(taskKey)}/inject`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+}
+
 function openSteer(taskKey) {
   const modal = document.getElementById("steer-modal");
   const title = document.getElementById("steer-title");
@@ -214,11 +240,7 @@ async function submitSteer() {
   // idempotent, so a rapid double-click would enqueue duplicate operator turns.
   if (send) send.disabled = true;
   try {
-    await apiText(`/api/sessions/${encodeURIComponent(taskKey)}/inject`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt }),
-    });
+    await injectTurn(taskKey, prompt);
     closeSteer();
   } catch (e) {
     if (err) {
