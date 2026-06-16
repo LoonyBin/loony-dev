@@ -212,16 +212,17 @@ def list_entries(kind_name: str, *, global_root: Path, base_dir: Path,
         return []
 
     root = claude_dir.resolve()
+    is_command = not kind.is_dir
     views: list[EntryView] = []
     if kind.is_dir:
         for child in sorted(container.iterdir()):
             content_path = child / kind.content_name  # type: ignore[operator]
             if child.is_dir() and content_path.is_file() and _contained(root, content_path):
-                views.append(_view(child.name, content_path))
+                views.append(_view(child.name, content_path, is_command))
     else:
         for content_path in sorted(container.glob("*.md")):
             if content_path.is_file() and _contained(root, content_path):
-                views.append(_view(content_path.stem, content_path))
+                views.append(_view(content_path.stem, content_path, is_command))
     return views
 
 
@@ -238,10 +239,13 @@ def _contained(root: Path, content_path: Path) -> bool:
 def _read_head(content_path: Path) -> str:
     """Return the first ``_META_HEAD_BYTES`` of *content_path* as text, or ""."""
     try:
-        with content_path.open("r", encoding="utf-8", errors="replace") as fh:
-            return fh.read(_META_HEAD_BYTES)
+        with content_path.open("rb") as fh:
+            raw = fh.read(_META_HEAD_BYTES)
     except OSError:
         return ""
+    # Read in binary so the cap bounds *bytes* (multibyte UTF-8 would let a
+    # text-mode char cap read past the intended I/O window), then decode.
+    return raw.decode("utf-8", errors="replace")
 
 
 def _parse_frontmatter(head: str) -> dict[str, str]:
@@ -255,10 +259,17 @@ def _parse_frontmatter(head: str) -> dict[str, str]:
     if not head.startswith("---\n") and not head.startswith("---\r\n"):
         return {}
     lines = head.splitlines()
-    fields: dict[str, str] = {}
-    for line in lines[1:]:
+    # Require a closing fence within the head. Without it the block is truncated
+    # or malformed, and parsing onward would mis-read body lines as metadata.
+    end_idx = None
+    for i, line in enumerate(lines[1:], start=1):
         if line.strip() == "---":
+            end_idx = i
             break
+    if end_idx is None:
+        return {}
+    fields: dict[str, str] = {}
+    for line in lines[1:end_idx]:
         if not line[:1].strip() and line.strip():
             # Indented (nested) line — skip; only top-level scalars are parsed.
             continue
@@ -272,7 +283,8 @@ def _parse_frontmatter(head: str) -> dict[str, str]:
     return fields
 
 
-def _derive_metadata(name: str, head: str) -> tuple[str | None, str, str | None, str | None]:
+def _derive_metadata(name: str, head: str, is_command: bool
+                     ) -> tuple[str | None, str, str | None, str | None]:
     """Return ``(description, owner, trigger, phase)`` derived from *head*.
 
     ``owner`` is always concrete: ``"trixy"`` when the managed marker is present
@@ -289,16 +301,21 @@ def _derive_metadata(name: str, head: str) -> tuple[str | None, str, str | None,
         if match:
             trigger = match.group(1).strip() or None
 
-    phase = fm.get("phase") or _KNOWN_COMMAND_PHASES.get(name)
+    # The known-command phase map keys off command names, so it applies only to
+    # the commands kind — never to a skill that merely shares a command's name.
+    phase = fm.get("phase")
+    if phase is None and is_command:
+        phase = _KNOWN_COMMAND_PHASES.get(name)
     return description, owner, trigger, phase
 
 
-def _view(name: str, content_path: Path) -> EntryView:
+def _view(name: str, content_path: Path, is_command: bool) -> EntryView:
     try:
         size = content_path.stat().st_size
     except OSError:
         size = 0
-    description, owner, trigger, phase = _derive_metadata(name, _read_head(content_path))
+    description, owner, trigger, phase = _derive_metadata(
+        name, _read_head(content_path), is_command)
     return EntryView(
         name=name,
         path=str(content_path),
@@ -329,13 +346,13 @@ def write_entry(kind_name: str, name: str, content: str, *, global_root: Path,
                 base_dir: Path, scope: str = "global", owner: str | None = None,
                 repo: str | None = None) -> EntryView:
     """Create or overwrite an entry's content file (idempotent) and return its view."""
-    _kind, entry_dir, content_path = _resolve_paths(
+    kind, entry_dir, content_path = _resolve_paths(
         kind_name, name, global_root=global_root, base_dir=base_dir,
         scope=scope, owner=owner, repo=repo,
     )
     entry_dir.mkdir(parents=True, exist_ok=True)
     content_path.write_text(content, encoding="utf-8")
-    return _view(name, content_path)
+    return _view(name, content_path, not kind.is_dir)
 
 
 def delete_entry(kind_name: str, name: str, *, global_root: Path, base_dir: Path,

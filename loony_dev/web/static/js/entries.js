@@ -283,8 +283,10 @@ async function deleteNamed(entryName) {
 }
 
 // Drawer Delete: error stays in the open drawer; success closes + refreshes.
+// In edit mode delete the entry that was loaded (selectedEntry), not the typed
+// name — the user may have edited the name field before pressing Delete.
 async function deleteFromDrawer() {
-  const entryName = (entryEls().name.value || "").trim();
+  const entryName = selectedEntry || (entryEls().name.value || "").trim();
   showEntryError("");
   const err = await deleteNamed(entryName);
   if (err) { showEntryError(err); return; }

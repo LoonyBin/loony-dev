@@ -518,6 +518,13 @@ class EntriesTestCase(unittest.TestCase):
         self.assertEqual(by_name["plan-issue"].phase, "planning")
         self.assertEqual(by_name["fix-ci"].phase, "ci")
 
+    def test_phase_mapping_does_not_apply_to_skills(self) -> None:
+        # A skill that merely shares a known command's name must not inherit that
+        # command's phase chip — the map keys off command names only.
+        entries.write_entry("skills", "plan-issue", "no frontmatter\n", **self._kw())
+        (view,) = entries.list_entries("skills", **self._kw())
+        self.assertIsNone(view.phase)
+
     def test_trigger_extracted_from_use_when_clause(self) -> None:
         body = "---\ndescription: A tool. Use when the build breaks.\n---\n"
         entries.write_entry("skills", "rescue", body, **self._kw())
