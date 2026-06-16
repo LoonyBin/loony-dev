@@ -82,7 +82,7 @@ class TestForTask(unittest.TestCase):
             )
 
 
-class TestIdleState(unittest.TestCase):
+class TestLiveState(unittest.TestCase):
 
     def _ps(self) -> PipelineSession:
         return PipelineSession(
@@ -90,23 +90,11 @@ class TestIdleState(unittest.TestCase):
             worktree_path=ROOT / "issue-7",
         )
 
-    def test_mark_active_sets_stamp(self) -> None:
+    def test_defaults_not_live(self) -> None:
+        # A freshly derived session owns no worktree until the first task
+        # materializes it; reclamation flips ``live`` back off.
         ps = self._ps()
-        ps.mark_active(now=123.0)
-        self.assertEqual(ps.last_active, 123.0)
-
-    def test_is_idle_requires_live(self) -> None:
-        ps = self._ps()
-        ps.mark_active(now=0.0)
-        # Not live yet → never idle, even past the grace window.
-        self.assertFalse(ps.is_idle(now=1000.0, grace=300.0))
-
-    def test_is_idle_requires_grace_elapsed(self) -> None:
-        ps = self._ps()
-        ps.live = True
-        ps.mark_active(now=0.0)
-        self.assertFalse(ps.is_idle(now=299.0, grace=300.0))
-        self.assertTrue(ps.is_idle(now=300.0, grace=300.0))
+        self.assertFalse(ps.live)
 
 
 if __name__ == "__main__":

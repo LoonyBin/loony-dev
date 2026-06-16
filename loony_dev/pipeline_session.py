@@ -4,10 +4,12 @@ A :class:`PipelineSession` is the long-lived owner object the orchestrator keeps
 for each *active* pipeline (``issue-N`` / ``pr-P``). Consecutive tasks on one
 pipeline (implement → CI fix → review → conflict) **reuse** its single git
 worktree and deterministic Claude session id instead of paying a per-task
-create/trust/install/teardown cycle. When a pipeline goes idle for a grace
-period the orchestrator *hibernates* it — the live worktree is released while the
-on-disk session transcript and registry entry are retained, so a later phase (or
-on-demand interrogation, #199) can resume cheaply at the canonical path.
+create/trust/install/teardown cycle. The worktree is retained for the whole
+issue/PR cycle — so the operator can ``cd`` into it and inspect what the bot did
+at any point between phases — and is released only once the pipeline reaches a
+terminal GitHub state (PR merged/closed, or issue closed with no PR), leaving the
+on-disk session transcript and registry entry behind for on-demand
+interrogation (#199).
 
 It is a plain state object — **not** a process. There is no PTY here; agent turns
 still run via ``claude -p``. The orchestrator owns the git mutations (serialized
@@ -20,7 +22,6 @@ the next tick rebuilds it lazily.
 """
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -35,8 +36,11 @@ class PipelineSession:
 
     ``branch``/``base`` pin how the worktree is first created; ``session_id`` is
     the deterministic id agent turns ``--resume``. ``live`` is ``True`` while the
-    worktree exists on disk, and ``last_active`` is a :func:`time.monotonic`
-    stamp the hibernation sweep measures its idle grace against.
+    worktree exists on disk. The worktree is retained for the whole issue/PR
+    cycle and released only when the pipeline reaches a terminal GitHub state
+    (the orchestrator's ``_reclaim_completed_pipelines``), so there is no idle
+    timer here — the operator can inspect the worktree at any point between
+    phases.
     """
 
     pipeline_key: str
@@ -46,7 +50,6 @@ class PipelineSession:
     session_id: str | None = None
     session_key: str | None = None
     live: bool = False
-    last_active: float = 0.0
 
     @classmethod
     def for_task(
@@ -96,11 +99,3 @@ class PipelineSession:
             session_id=session_id,
             session_key=session_key,
         )
-
-    def mark_active(self, now: float | None = None) -> None:
-        """Stamp the pipeline as just-active (defaults to ``time.monotonic()``)."""
-        self.last_active = time.monotonic() if now is None else now
-
-    def is_idle(self, now: float, grace: float) -> bool:
-        """True if the worktree is live and has been idle at least *grace* secs."""
-        return self.live and (now - self.last_active) >= grace

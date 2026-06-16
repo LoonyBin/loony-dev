@@ -36,25 +36,6 @@ from loony_dev.session import session_id_for
 
 logger = logging.getLogger(__name__)
 
-# Default idle grace before a pipeline's live worktree is released (issue #198).
-_DEFAULT_PIPELINE_IDLE_GRACE_SECONDS = 300.0
-
-
-def _pipeline_idle_grace(config) -> float:
-    """Read ``pipeline_idle_grace_seconds`` from ``[worker]`` (flat fallback)."""
-    worker_cfg = config.settings.get("worker")
-    if isinstance(worker_cfg, dict) and "pipeline_idle_grace_seconds" in worker_cfg:
-        raw = worker_cfg["pipeline_idle_grace_seconds"]
-    else:
-        raw = config.settings.get(
-            "pipeline_idle_grace_seconds", _DEFAULT_PIPELINE_IDLE_GRACE_SECONDS,
-        )
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return _DEFAULT_PIPELINE_IDLE_GRACE_SECONDS
-
-
 # Task classes ordered by priority (lowest number = highest priority).
 # Since #197 the orchestrator sources work from pipelines (one ``next_task`` per
 # pipeline, see ``loony_dev/pipeline.py``) rather than scanning these directly;
@@ -99,11 +80,6 @@ class Orchestrator:
         self._shutdown_requested: bool = False
         self._graceful_shutdown: bool = False
 
-        # Seconds a pipeline may sit with no actionable task before its live
-        # worktree is released (issue #198). A short or zero grace effectively
-        # restores per-task teardown, a useful safety valve.
-        self._pipeline_idle_grace_seconds = _pipeline_idle_grace(config)
-
         # Thread pool that runs the per-task worktree lifecycle + agent
         # execution concurrently. The tick loop itself stays single-threaded;
         # only dispatched work fans out here.
@@ -123,7 +99,8 @@ class Orchestrator:
         # session id that consecutive phases share. This mirrors ``_inflight``:
         # an in-memory cache whose durable truth stays GitHub + the on-disk
         # worktree/session/registry, so a crash empties it and the next tick
-        # rebuilds it lazily. Created on first task, released on hibernation.
+        # rebuilds it lazily. Created on first task, released once the pipeline
+        # reaches a terminal GitHub state.
         self._pipeline_sessions: dict[str, PipelineSession] = {}
         self._pipeline_sessions_lock = threading.Lock()
 
@@ -278,10 +255,12 @@ class Orchestrator:
         try:
             self._dispatch_tick()
         finally:
-            # Reclaim live worktrees from pipelines idle past the grace period
-            # (issue #198). Runs every tick — including the early-return paths
-            # above — so an idle steady state never accumulates worktrees.
-            self._hibernate_idle_pipelines()
+            # Reclaim worktrees of pipelines that have reached a terminal GitHub
+            # state — PR merged/closed, or issue closed with no PR (issue #198).
+            # Runs every tick (including the early-return paths above). A live
+            # pipeline's worktree is kept for the whole cycle so the operator can
+            # ``cd`` in and inspect it at any point between phases.
+            self._reclaim_completed_pipelines()
 
     def _dispatch_tick(self) -> None:
         slots = self._free_slots()
@@ -467,11 +446,9 @@ class Orchestrator:
                     self.base_dir, self.repo.name, pkey, holder=pipeline_lease.HOLDER_BOT,
                 )
             # The worktree is NOT torn down here anymore (issue #198): it is
-            # retained for the pipeline's next phase and reclaimed only by the
-            # idle hibernation sweep. Bump last-active so the grace counts from
-            # this phase's completion, not its start.
-            if ps is not None:
-                ps.mark_active()
+            # retained for the pipeline's next phase and reclaimed only once the
+            # pipeline reaches a terminal GitHub state (see
+            # ``_reclaim_completed_pipelines``).
 
     def _pipeline_session_for(self, task: Task) -> PipelineSession | None:
         """Get-or-create the :class:`PipelineSession` owning *task*'s worktree.
@@ -553,38 +530,47 @@ class Orchestrator:
                 ps.worktree_path, target,
             )
             self.git.sync_worktree_to_upstream(ps.worktree_path, target)
-        ps.mark_active()
         return ps.worktree_path
 
-    def _hibernate_idle_pipelines(self, *, now: float | None = None) -> None:
-        """Release live worktrees of pipelines idle past the grace period (#198).
+    def _reclaim_completed_pipelines(self) -> None:
+        """Release worktrees of pipelines that reached a terminal GitHub state (#198).
 
-        A pipeline is hibernated when it is **not** in-flight, **not** held by a
-        human drive lease (issue #199), and has had no task for at least
-        ``_pipeline_idle_grace_seconds``. Hibernation removes the live worktree
-        only — the on-disk session transcript and registry entry are retained so
-        a later phase or interrogation recreates the worktree cheaply at the
-        canonical path. The in-flight + drive guards close the race against a
-        concurrently running task or an active interrogation. Never raises.
+        A pipeline's worktree is retained for the whole issue/PR cycle so the
+        operator can ``cd`` in and inspect it at any point between phases — there
+        is deliberately no idle grace. It is reclaimed only once the work is
+        truly done:
+
+        - its PR is merged, or
+        - its PR is closed without merging, or
+        - it has no PR and its originating issue is closed.
+
+        A pipeline that is **in-flight** or held by a human **drive** lease
+        (issue #199) is always kept, even if its GitHub state already looks
+        terminal — in-flight wins for safety. Reclamation removes the live
+        worktree only; the on-disk session transcript and registry entry are
+        retained. Never raises (best-effort housekeeping).
         """
         if not self._pipeline_sessions:
             return
-        now = time.monotonic() if now is None else now
-        grace = self._pipeline_idle_grace_seconds
         claimed = self._claimed_keys()
         with self._pipeline_sessions_lock:
             items = list(self._pipeline_sessions.items())
         for key, ps in items:
             if key in claimed:
                 continue  # in-flight or held by a human drive — leave it live
-            if not ps.is_idle(now, grace):
+            try:
+                done = self._pipeline_is_complete(key)
+            except Exception:
+                logger.debug("Could not resolve terminal state for pipeline %s", key, exc_info=True)
                 continue
-            logger.info("Hibernating idle pipeline %s — releasing worktree %s", key, ps.worktree_path)
+            if not done:
+                continue
+            logger.info("Reclaiming completed pipeline %s — releasing worktree %s", key, ps.worktree_path)
             with self._git_lock:
                 removed = self._remove_worktree(ps.worktree_path)
             if not removed:
                 # Worktree removal is best-effort and failed (e.g. a stale lock);
-                # keep the session live so a later sweep retries rather than
+                # keep the session live so a later tick retries rather than
                 # silently leaking the worktree and dropping our handle to it.
                 logger.warning(
                     "Worktree removal failed for pipeline %s — retaining session for retry", key,
@@ -593,6 +579,34 @@ class Orchestrator:
             ps.live = False
             with self._pipeline_sessions_lock:
                 self._pipeline_sessions.pop(key, None)
+
+    def _pipeline_is_complete(self, pipeline_key: str) -> bool:
+        """True if *pipeline_key*'s issue/PR has reached a terminal GitHub state.
+
+        Resolves the originating work from the key (``issue-N`` → issue ``N``;
+        ``pr-P`` → PR ``P``) and queries its state directly — a completed
+        pipeline no longer appears in the open-issue/open-PR discovery scan, so
+        its terminal state must be fetched on demand here.
+        """
+        from loony_dev.github import Issue, PullRequest
+
+        if pipeline_key.startswith("pr-"):
+            pr_number = int(pipeline_key[len("pr-"):])
+            state = PullRequest.terminal_state(pr_number, repo=self.repo)
+            return state in ("merged", "closed")
+
+        if pipeline_key.startswith("issue-"):
+            issue_number = int(pipeline_key[len("issue-"):])
+            pr_number = self.repo.find_pr_for_issue(issue_number)
+            if pr_number is not None:
+                state = PullRequest.terminal_state(pr_number, repo=self.repo)
+                # While the PR is still open, the pipeline is in flight regardless
+                # of the issue's own state.
+                return state in ("merged", "closed")
+            return Issue.is_closed(issue_number, repo=self.repo)
+
+        # Unrecognised key shape — never auto-reclaim it.
+        return False
 
     def _record_pipeline_session(
         self, task: Task, key: str, worktree_path: Path, branch: str,
@@ -625,8 +639,8 @@ class Orchestrator:
 
         Returns ``True`` when the worktree is gone (removed, or there was
         nothing to remove) and ``False`` when removal genuinely failed, so the
-        hibernation sweep can keep the session live and retry instead of leaking
-        the worktree.
+        reclaim pass can keep the session live and retry instead of leaking the
+        worktree.
         """
         if path is None:
             return True

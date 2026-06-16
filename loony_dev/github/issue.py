@@ -186,6 +186,17 @@ class Issue(GitHubItem):
         return cls._from_api(data, repo)
 
     @classmethod
+    def is_closed(cls, number: int, *, repo: Repo) -> bool:
+        """Return True if issue *number* is closed.
+
+        A lightweight lifecycle read (just ``state``) used by the worktree
+        reclaimer (#198) to release a pipeline that has no PR once its
+        originating issue is closed.
+        """
+        data = repo.client.gh_json("issue", "view", str(number), "--json", "state")
+        return isinstance(data, dict) and str(data.get("state", "")).upper() == "CLOSED"
+
+    @classmethod
     def list(cls, *, label: str, repo: Repo) -> list[Issue]:
         """List open issues with the given label."""
         data = repo.client.gh_json(

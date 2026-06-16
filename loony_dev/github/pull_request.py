@@ -67,6 +67,25 @@ class PullRequest(GitHubItem):
         return cls._from_api(data, repo)
 
     @classmethod
+    def terminal_state(cls, number: int, *, repo: Repo) -> str:
+        """Return ``"merged"``, ``"closed"`` (without merge), or ``"open"``.
+
+        A lightweight lifecycle read (no full ``_from_api`` model) used by the
+        worktree reclaimer (#198) to decide whether a pipeline's work is truly
+        done. ``mergedAt`` is authoritative for a merge; otherwise the raw
+        ``state`` distinguishes a close from an open PR.
+        """
+        data = repo.client.gh_json(
+            "pr", "view", str(number), "--json", "state,mergedAt",
+        )
+        if isinstance(data, dict):
+            if data.get("mergedAt"):
+                return "merged"
+            if str(data.get("state", "")).upper() == "CLOSED":
+                return "closed"
+        return "open"
+
+    @classmethod
     def list_open(cls, *, repo: Repo) -> list[PullRequest]:
         """Fetch all open PRs.
 

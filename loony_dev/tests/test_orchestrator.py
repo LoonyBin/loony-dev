@@ -4,7 +4,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from loony_dev.git import WorktreeInfo
 from loony_dev.models import TaskResult
@@ -61,7 +61,7 @@ class TestWorktreeLifecycle(unittest.TestCase):
             branch="feature/x", path=expected_path, base=None,
         )
         # The worktree is retained for the pipeline's next phase (issue #198);
-        # removal happens only via the hibernation sweep, never per task.
+        # removal happens only on terminal-state reclamation, never per task.
         self.git.remove_worktree.assert_not_called()
         # Agent runs inside the worktree, not the base checkout.
         self.assertEqual(self.agent.execute.call_args.kwargs["work_dir"], expected_path)
@@ -163,8 +163,8 @@ class TestWorktreeLifecycle(unittest.TestCase):
         )
 
 
-class TestPipelineReuseAndHibernation(unittest.TestCase):
-    """Pipeline-scoped worktree reuse + lazy hibernation (issue #198)."""
+class TestPipelineReuseAndReclamation(unittest.TestCase):
+    """Pipeline-scoped worktree reuse + terminal-state reclamation (issue #198)."""
 
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -208,97 +208,116 @@ class TestPipelineReuseAndHibernation(unittest.TestCase):
         self.git.remove_worktree.assert_not_called()
         self.assertEqual(self.agent.execute.call_args.kwargs["work_dir"], expected)
 
-    def test_idle_pipeline_hibernated_after_grace(self) -> None:
-        task = self._make_task(worktree_key="issue-7", target_branch="issue-7/slug")
-        self.orch.dispatch(self.agent, task)
+    def _seed_pipeline(self, key: str) -> None:
+        """Dispatch one task so *key*'s pipeline session is live with a worktree."""
+        self.orch.dispatch(
+            self.agent, self._make_task(worktree_key=key, target_branch=f"{key}/slug"),
+        )
+        self.git.reset_mock()
 
-        expected = self._expected("issue-7")
+    def test_workspace_persists_across_consecutive_phases(self) -> None:
+        # No idle grace, no timing injection: the worktree survives across
+        # ticks while the pipeline's work is still open.
+        self._seed_pipeline("issue-7")
+        with patch(
+            "loony_dev.github.PullRequest.terminal_state", return_value="open",
+        ):
+            self.orch.repo.find_pr_for_issue.return_value = 42
+            for _ in range(5):
+                self.orch._reclaim_completed_pipelines()
         self.git.remove_worktree.assert_not_called()
+        self.assertIn("issue-7", self.orch._pipeline_sessions)
 
-        ps = self.orch._pipeline_sessions["issue-7"]
-        now = ps.last_active + self.orch._pipeline_idle_grace_seconds + 1
-        self.orch._hibernate_idle_pipelines(now=now)
-
-        self.git.remove_worktree.assert_called_once_with(expected)
+    def test_workspace_reclaimed_on_pr_merged(self) -> None:
+        self._seed_pipeline("issue-7")
+        self.orch.repo.find_pr_for_issue.return_value = 42
+        with patch(
+            "loony_dev.github.PullRequest.terminal_state", return_value="merged",
+        ):
+            self.orch._reclaim_completed_pipelines()
+        self.git.remove_worktree.assert_called_once_with(self._expected("issue-7"))
         self.assertNotIn("issue-7", self.orch._pipeline_sessions)
 
-    def test_within_grace_not_hibernated(self) -> None:
-        task = self._make_task(worktree_key="issue-7", target_branch="issue-7/slug")
-        self.orch.dispatch(self.agent, task)
+    def test_workspace_reclaimed_on_pr_closed_without_merge(self) -> None:
+        self._seed_pipeline("issue-7")
+        self.orch.repo.find_pr_for_issue.return_value = 42
+        with patch(
+            "loony_dev.github.PullRequest.terminal_state", return_value="closed",
+        ):
+            self.orch._reclaim_completed_pipelines()
+        self.git.remove_worktree.assert_called_once_with(self._expected("issue-7"))
+        self.assertNotIn("issue-7", self.orch._pipeline_sessions)
 
-        ps = self.orch._pipeline_sessions["issue-7"]
-        now = ps.last_active + self.orch._pipeline_idle_grace_seconds - 1
-        self.orch._hibernate_idle_pipelines(now=now)
+    def test_workspace_reclaimed_on_issue_closed_with_no_pr(self) -> None:
+        self._seed_pipeline("issue-7")
+        self.orch.repo.find_pr_for_issue.return_value = None
+        with patch("loony_dev.github.Issue.is_closed", return_value=True):
+            self.orch._reclaim_completed_pipelines()
+        self.git.remove_worktree.assert_called_once_with(self._expected("issue-7"))
+        self.assertNotIn("issue-7", self.orch._pipeline_sessions)
 
+    def test_external_pr_pipeline_reclaimed_on_merge(self) -> None:
+        # A ``pr-P`` pipeline (externally opened PR, no originating issue)
+        # resolves its terminal state from the PR directly.
+        self._seed_pipeline("pr-9")
+        with patch(
+            "loony_dev.github.PullRequest.terminal_state", return_value="merged",
+        ) as ts:
+            self.orch._reclaim_completed_pipelines()
+        ts.assert_called_once()
+        self.assertEqual(ts.call_args.args[0], 9)
+        self.git.remove_worktree.assert_called_once_with(self._expected("pr-9"))
+        self.assertNotIn("pr-9", self.orch._pipeline_sessions)
+
+    def test_not_reclaimed_while_in_flight(self) -> None:
+        # In-flight wins for safety: keep the worktree even if GitHub looks done.
+        self._seed_pipeline("issue-7")
+        self.orch._inflight[MagicMock()] = (
+            self._make_task(worktree_key="issue-7"), self.agent,
+        )
+        self.orch.repo.find_pr_for_issue.return_value = 42
+        with patch(
+            "loony_dev.github.PullRequest.terminal_state", return_value="merged",
+        ):
+            self.orch._reclaim_completed_pipelines()
         self.git.remove_worktree.assert_not_called()
         self.assertIn("issue-7", self.orch._pipeline_sessions)
 
-    def test_inflight_pipeline_not_hibernated(self) -> None:
-        task = self._make_task(worktree_key="issue-7", target_branch="issue-7/slug")
-        self.orch.dispatch(self.agent, task)
-        ps = self.orch._pipeline_sessions["issue-7"]
-
-        # Simulate a task in flight on the same pipeline (its identity is the key).
-        inflight = self._make_task(worktree_key="issue-7")
-        self.orch._inflight[MagicMock()] = (inflight, self.agent)
-
-        now = ps.last_active + self.orch._pipeline_idle_grace_seconds + 1
-        self.orch._hibernate_idle_pipelines(now=now)
-
-        self.git.remove_worktree.assert_not_called()
-        self.assertIn("issue-7", self.orch._pipeline_sessions)
-
-    def test_drive_lease_blocks_hibernation(self) -> None:
+    def test_not_reclaimed_while_drive_lease_held(self) -> None:
         from loony_dev import pipeline_lease
 
-        task = self._make_task(worktree_key="issue-7", target_branch="issue-7/slug")
-        self.orch.dispatch(self.agent, task)
-        ps = self.orch._pipeline_sessions["issue-7"]
-
+        self._seed_pipeline("issue-7")
         # A human interrogation holds the pipeline (#199) — never reclaim it.
         pipeline_lease.acquire_pipeline_lease(
             self.tmp, "owner/repo", "issue-7", holder=pipeline_lease.HOLDER_DRIVE,
         )
-        now = ps.last_active + self.orch._pipeline_idle_grace_seconds + 1
-        self.orch._hibernate_idle_pipelines(now=now)
-
+        self.orch.repo.find_pr_for_issue.return_value = 42
+        with patch(
+            "loony_dev.github.PullRequest.terminal_state", return_value="merged",
+        ):
+            self.orch._reclaim_completed_pipelines()
         self.git.remove_worktree.assert_not_called()
         self.assertIn("issue-7", self.orch._pipeline_sessions)
 
-    def test_recreate_after_hibernation_uses_fresh_create(self) -> None:
-        # After hibernation a later phase rebuilds the pipeline lazily and
-        # recreates (not syncs) the worktree at the canonical path.
-        task = self._make_task(worktree_key="issue-7", target_branch="issue-7/slug")
-        self.orch.dispatch(self.agent, task)
-        ps = self.orch._pipeline_sessions["issue-7"]
-        now = ps.last_active + self.orch._pipeline_idle_grace_seconds + 1
-        self.orch._hibernate_idle_pipelines(now=now)
-        self.git.reset_mock()
-
-        self.orch.dispatch(self.agent, self._make_task(
-            worktree_key="issue-7", target_branch="issue-7/slug",
-        ))
-        self.git.create_worktree.assert_called_once()
-        self.git.sync_worktree_to_upstream.assert_not_called()
-
     def test_failed_removal_retains_session_for_retry(self) -> None:
         # Worktree removal is best-effort; if it fails the session must stay
-        # live so a later sweep retries rather than leaking the worktree.
-        task = self._make_task(worktree_key="issue-7", target_branch="issue-7/slug")
-        self.orch.dispatch(self.agent, task)
+        # live so a later tick retries rather than leaking the worktree.
+        self._seed_pipeline("issue-7")
         ps = self.orch._pipeline_sessions["issue-7"]
+        self.orch.repo.find_pr_for_issue.return_value = 42
         self.git.remove_worktree.side_effect = RuntimeError("stale worktree lock")
 
-        now = ps.last_active + self.orch._pipeline_idle_grace_seconds + 1
-        self.orch._hibernate_idle_pipelines(now=now)
+        with patch(
+            "loony_dev.github.PullRequest.terminal_state", return_value="merged",
+        ):
+            self.orch._reclaim_completed_pipelines()
+            # Removal raised → session retained, still live, for a later retry.
+            self.assertIn("issue-7", self.orch._pipeline_sessions)
+            self.assertTrue(ps.live)
 
-        # Removal raised → session retained, still live, for a later retry.
-        self.assertIn("issue-7", self.orch._pipeline_sessions)
-        self.assertTrue(ps.live)
-
-        # A subsequent sweep retries once removal succeeds, and evicts.
-        self.git.remove_worktree.side_effect = None
-        self.orch._hibernate_idle_pipelines(now=now)
+            # A later tick retries once removal succeeds, and evicts.
+            self.git.remove_worktree.side_effect = None
+            self.orch._reclaim_completed_pipelines()
         self.assertNotIn("issue-7", self.orch._pipeline_sessions)
 
 
