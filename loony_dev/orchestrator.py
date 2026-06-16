@@ -31,6 +31,7 @@ from loony_dev.agents.coding import CodingAgent
 from loony_dev.agents.claude_session import trust_directory
 from loony_dev.commands import install_commands
 from loony_dev import pipeline_lease, session_registry
+from loony_dev.pipeline_session import PipelineSession
 from loony_dev.session import session_id_for
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,16 @@ class Orchestrator:
         # (index/refs/worktree list). Agent execution runs OUTSIDE this lock,
         # inside the isolated worktree, so real concurrency is preserved.
         self._git_lock = threading.Lock()
+
+        # Long-lived owner objects for active pipelines (issue #198), keyed by
+        # pipeline key (``issue-N`` / ``pr-P``). Each owns a reusable worktree +
+        # session id that consecutive phases share. This mirrors ``_inflight``:
+        # an in-memory cache whose durable truth stays GitHub + the on-disk
+        # worktree/session/registry, so a crash empties it and the next tick
+        # rebuilds it lazily. Created on first task, released once the pipeline
+        # reaches a terminal GitHub state.
+        self._pipeline_sessions: dict[str, PipelineSession] = {}
+        self._pipeline_sessions_lock = threading.Lock()
 
         repo_short_name = repo.name.split("/", 1)[1] if "/" in repo.name else repo.name
         self.worktree_root = git.work_dir / ".worktrees" / repo.owner / repo_short_name
@@ -177,6 +188,22 @@ class Orchestrator:
         finally:
             # Always join the pool, even if a rollback above raised.
             self._pool.shutdown(wait=True)
+            # Release every retained pipeline worktree (issue #198) so a clean
+            # shutdown leaves no live worktrees behind. Best-effort: the startup
+            # prune reclaims any that survive a crash instead.
+            self._release_all_pipeline_worktrees()
+
+    def _release_all_pipeline_worktrees(self) -> None:
+        """Remove all retained pipeline worktrees. Never raises (shutdown path)."""
+        with self._pipeline_sessions_lock:
+            sessions = list(self._pipeline_sessions.values())
+            self._pipeline_sessions.clear()
+        for ps in sessions:
+            if not ps.live:
+                continue
+            with self._git_lock:
+                self._remove_worktree(ps.worktree_path)
+            ps.live = False
 
     def _free_slots(self) -> int:
         """Number of pool slots not currently occupied by in-flight tasks."""
@@ -225,6 +252,17 @@ class Orchestrator:
         self.repo.evict_stale_permission_cache()
         self.repo.evict_stale_check_runs_cache()
 
+        try:
+            self._dispatch_tick()
+        finally:
+            # Reclaim worktrees of pipelines that have reached a terminal GitHub
+            # state — PR merged/closed, or issue closed with no PR (issue #198).
+            # Runs every tick (including the early-return paths above). A live
+            # pipeline's worktree is kept for the whole cycle so the operator can
+            # ``cd`` in and inspect it at any point between phases.
+            self._reclaim_completed_pipelines()
+
+    def _dispatch_tick(self) -> None:
         slots = self._free_slots()
         if slots <= 0:
             logger.debug("Pool saturated (%d in flight) — skipping gather.", self.max_concurrent)
@@ -355,7 +393,11 @@ class Orchestrator:
         ``_git_lock``; agent execution runs outside it for real concurrency.
         """
         logger.debug("Task description:\n%s", task.describe())
-        worktree_path: Path | None = None
+        # The pipeline's long-lived owner (issue #198): created lazily on the
+        # first task for this key, reused by every later phase. ``None`` for
+        # tasks with no worktree (e.g. cleanup), which run against the base
+        # checkout exactly as before.
+        ps = self._pipeline_session_for(task)
         try:
             # ── Prepare worktree (mutates the shared base checkout) ──────────
             # All of this touches the base checkout's index/refs/worktree list
@@ -370,53 +412,17 @@ class Orchestrator:
                 self.git.ensure_main_up_to_date()
 
                 target = task.target_branch
-                if target:
-                    logger.info("Resetting branch %r to upstream state before task.", target)
-                    self.git.reset_branch_to_upstream(target)
-
-                # Each task runs in its own worktree so stray state never lands
-                # in the base checkout. Tasks with no worktree_key (e.g. cleanup)
-                # run against the base checkout directly.
-                work_dir = self.git.work_dir
-                key = task.worktree_key
-                if key is not None:
-                    worktree_path = self.worktree_root / key
-                    worktree_path.parent.mkdir(parents=True, exist_ok=True)
-                    branch, base = self._worktree_branch_and_base(task, key, target)
-                    logger.info(
-                        "Creating worktree for task at %s (branch=%s, base=%s)",
-                        worktree_path, branch, base,
-                    )
-                    self.git.create_worktree(branch=branch, path=worktree_path, base=base)
-                    # Pre-trust the fresh worktree so the interactive ClaudeSession
-                    # does not block on claude's folder-trust dialog (which
-                    # --dangerously-skip-permissions does not bypass). New worktree
-                    # paths are always untrusted; without this, session startup
-                    # hangs and every task times out. See #178.
-                    trust_directory(worktree_path)
-                    # Record (session_id → worktree_path) so a parked pipeline can
-                    # be resumed on demand into a fresh PTY (issue #199). This is
-                    # the exact cwd the upcoming turn writes its transcript to, so
-                    # a later resume lands in the same cwd and the JSONL is found
-                    # (guards the #177 cross-worktree class). Real turns run via
-                    # ``claude -p``, not the bridge, so it is recorded here rather
-                    # than relying on ``publish_session`` firing.
-                    self._record_pipeline_session(task, key, worktree_path, branch)
-                    # Install the bundled slash commands into the worktree's
-                    # .claude/commands/ so agent turns can invoke them (#166).
-                    # Each worktree is a separate working tree, so the base
-                    # checkout's commands (installed at startup) are not visible
-                    # here — install them per worktree. Exclude them locally so
-                    # `git add -A` never sweeps the generated files into the PR.
-                    try:
-                        install_commands(worktree_path)
-                        self.git.add_local_exclude(worktree_path, ".claude/commands/")
-                    except OSError as exc:
-                        logger.warning(
-                            "Failed to install slash commands into worktree %s: %s",
-                            worktree_path, exc,
-                        )
-                    work_dir = worktree_path
+                if ps is not None:
+                    # Lazy create-or-reuse: the first phase materializes the
+                    # worktree; later phases reuse it, syncing in place instead.
+                    work_dir = self._ensure_pipeline_worktree(ps, task, target)
+                else:
+                    # A no-worktree task that still pins a branch refreshes that
+                    # ref from the base checkout, just as before.
+                    if target:
+                        logger.info("Resetting branch %r to upstream state before task.", target)
+                        self.git.reset_branch_to_upstream(target)
+                    work_dir = self.git.work_dir
 
             # ── Execute (concurrent — runs inside the isolated worktree) ─────
             if isinstance(task, IssueTask) and isinstance(agent, CodingAgent):
@@ -439,9 +445,168 @@ class Orchestrator:
                 pipeline_lease.release_pipeline_lease(
                     self.base_dir, self.repo.name, pkey, holder=pipeline_lease.HOLDER_BOT,
                 )
-            # Worktree removal mutates the base checkout's worktree list too.
+            # The worktree is NOT torn down here anymore (issue #198): it is
+            # retained for the pipeline's next phase and reclaimed only once the
+            # pipeline reaches a terminal GitHub state (see
+            # ``_reclaim_completed_pipelines``).
+
+    def _pipeline_session_for(self, task: Task) -> PipelineSession | None:
+        """Get-or-create the :class:`PipelineSession` owning *task*'s worktree.
+
+        Returns ``None`` for tasks with no ``worktree_key`` (they run against the
+        base checkout). The map is the in-memory owner registry; a missing entry
+        is built lazily here — never during pipeline discovery — so an idle
+        pipeline holds no live resources (issue #198).
+        """
+        key = task.worktree_key
+        if key is None:
+            return None
+        with self._pipeline_sessions_lock:
+            ps = self._pipeline_sessions.get(key)
+            if ps is None:
+                ps = PipelineSession.for_task(
+                    task,
+                    worktree_root=self.worktree_root,
+                    repo_name=self.repo.name,
+                    default_branch=self.git.default_branch,
+                )
+                self._pipeline_sessions[key] = ps
+            return ps
+
+    def _ensure_pipeline_worktree(
+        self, ps: PipelineSession, task: Task, target: str | None,
+    ) -> Path:
+        """Materialize *ps*'s worktree on first use, or sync it on reuse.
+
+        Caller holds ``_git_lock`` (this mutates the base checkout's worktree
+        list / refs). First creation does the one-time setup — folder-trust,
+        session-registry record, slash-command install — that later phases skip.
+        """
+        if not ps.live:
+            if target:
+                logger.info("Resetting branch %r to upstream state before task.", target)
+                self.git.reset_branch_to_upstream(target)
+            ps.worktree_path.parent.mkdir(parents=True, exist_ok=True)
+            logger.info(
+                "Creating worktree for pipeline %s at %s (branch=%s, base=%s)",
+                ps.pipeline_key, ps.worktree_path, ps.branch, ps.base,
+            )
+            self.git.create_worktree(branch=ps.branch, path=ps.worktree_path, base=ps.base)
+            # Pre-trust the fresh worktree so the interactive ClaudeSession does
+            # not block on claude's folder-trust dialog (which
+            # --dangerously-skip-permissions does not bypass). New worktree paths
+            # are always untrusted; without this, session startup hangs and every
+            # task times out. See #178.
+            trust_directory(ps.worktree_path)
+            # Record (session_id → worktree_path) so a parked pipeline can be
+            # resumed on demand into a fresh PTY (issue #199). This is the exact
+            # cwd the upcoming turn writes its transcript to, so a later resume
+            # lands in the same cwd and the JSONL is found (guards the #177
+            # cross-worktree class). Real turns run via ``claude -p``, not the
+            # bridge, so it is recorded here rather than relying on
+            # ``publish_session`` firing.
+            self._record_pipeline_session(task, ps.pipeline_key, ps.worktree_path, ps.branch)
+            # Install the bundled slash commands into the worktree's
+            # .claude/commands/ so agent turns can invoke them (#166). Each
+            # worktree is a separate working tree, so the base checkout's commands
+            # (installed at startup) are not visible here — install them per
+            # worktree. Exclude them locally so `git add -A` never sweeps the
+            # generated files into the PR.
+            try:
+                install_commands(ps.worktree_path)
+                self.git.add_local_exclude(ps.worktree_path, ".claude/commands/")
+            except OSError as exc:
+                logger.warning(
+                    "Failed to install slash commands into worktree %s: %s",
+                    ps.worktree_path, exc,
+                )
+            ps.live = True
+        elif target:
+            # Reuse: the persistent worktree holds the branch checked out, so
+            # ``reset_branch_to_upstream``'s ``git branch -f`` would refuse it —
+            # sync from inside the worktree instead (issue #198).
+            logger.info(
+                "Syncing reused worktree %s to upstream %s before task.",
+                ps.worktree_path, target,
+            )
+            self.git.sync_worktree_to_upstream(ps.worktree_path, target)
+        return ps.worktree_path
+
+    def _reclaim_completed_pipelines(self) -> None:
+        """Release worktrees of pipelines that reached a terminal GitHub state (#198).
+
+        A pipeline's worktree is retained for the whole issue/PR cycle so the
+        operator can ``cd`` in and inspect it at any point between phases — there
+        is deliberately no idle grace. It is reclaimed only once the work is
+        truly done:
+
+        - its PR is merged, or
+        - its PR is closed without merging, or
+        - it has no PR and its originating issue is closed.
+
+        A pipeline that is **in-flight** or held by a human **drive** lease
+        (issue #199) is always kept, even if its GitHub state already looks
+        terminal — in-flight wins for safety. Reclamation removes the live
+        worktree only; the on-disk session transcript and registry entry are
+        retained. Never raises (best-effort housekeeping).
+        """
+        if not self._pipeline_sessions:
+            return
+        claimed = self._claimed_keys()
+        with self._pipeline_sessions_lock:
+            items = list(self._pipeline_sessions.items())
+        for key, ps in items:
+            if key in claimed:
+                continue  # in-flight or held by a human drive — leave it live
+            try:
+                done = self._pipeline_is_complete(key)
+            except Exception:
+                logger.debug("Could not resolve terminal state for pipeline %s", key, exc_info=True)
+                continue
+            if not done:
+                continue
+            logger.info("Reclaiming completed pipeline %s — releasing worktree %s", key, ps.worktree_path)
             with self._git_lock:
-                self._remove_worktree(worktree_path)
+                removed = self._remove_worktree(ps.worktree_path)
+            if not removed:
+                # Worktree removal is best-effort and failed (e.g. a stale lock);
+                # keep the session live so a later tick retries rather than
+                # silently leaking the worktree and dropping our handle to it.
+                logger.warning(
+                    "Worktree removal failed for pipeline %s — retaining session for retry", key,
+                )
+                continue
+            ps.live = False
+            with self._pipeline_sessions_lock:
+                self._pipeline_sessions.pop(key, None)
+
+    def _pipeline_is_complete(self, pipeline_key: str) -> bool:
+        """True if *pipeline_key*'s issue/PR has reached a terminal GitHub state.
+
+        Resolves the originating work from the key (``issue-N`` → issue ``N``;
+        ``pr-P`` → PR ``P``) and queries its state directly — a completed
+        pipeline no longer appears in the open-issue/open-PR discovery scan, so
+        its terminal state must be fetched on demand here.
+        """
+        from loony_dev.github import Issue, PullRequest
+
+        if pipeline_key.startswith("pr-"):
+            pr_number = int(pipeline_key[len("pr-"):])
+            state = PullRequest.terminal_state(pr_number, repo=self.repo)
+            return state in ("merged", "closed")
+
+        if pipeline_key.startswith("issue-"):
+            issue_number = int(pipeline_key[len("issue-"):])
+            pr_number = self.repo.find_pr_for_issue(issue_number)
+            if pr_number is not None:
+                state = PullRequest.terminal_state(pr_number, repo=self.repo)
+                # While the PR is still open, the pipeline is in flight regardless
+                # of the issue's own state.
+                return state in ("merged", "closed")
+            return Issue.is_closed(issue_number, repo=self.repo)
+
+        # Unrecognised key shape — never auto-reclaim it.
+        return False
 
     def _record_pipeline_session(
         self, task: Task, key: str, worktree_path: Path, branch: str,
@@ -469,38 +634,22 @@ class Orchestrator:
         except Exception:
             logger.debug("Could not record pipeline session for %s", key, exc_info=True)
 
-    def _worktree_branch_and_base(
-        self, task: Task, key: str, target: str | None,
-    ) -> tuple[str, str | None]:
-        """Decide the branch and start-ref for a task's worktree.
+    def _remove_worktree(self, path: Path | None) -> bool:
+        """Remove the per-task worktree at *path*, if any. Never raises.
 
-        A worktree maps 1:1 to a branch, and the base checkout is pinned to the
-        default branch, so no worktree may reuse the default branch directly.
-
-        - PR tasks operate on an existing branch (``target``); fork from it.
-        - PlanningTask and IssueTask both own the issue's feature branch
-          (``issue-N/<slug>``) and create it from the default branch. Planning
-          establishes the branch; implementation reuses it. Sharing the branch
-          (and the ``issue-N`` worktree) keeps planning -> implementation a
-          single cwd with no cross-worktree session reuse (#181).
-        - Everything else (a worktree task with neither a target branch nor a
-          feature branch) forks a throwaway branch named after ``key`` from the
-          default branch. It is never pushed and is discarded with the worktree.
+        Returns ``True`` when the worktree is gone (removed, or there was
+        nothing to remove) and ``False`` when removal genuinely failed, so the
+        reclaim pass can keep the session live and retry instead of leaking the
+        worktree.
         """
-        if target:
-            return target, None
-        if isinstance(task, (PlanningTask, IssueTask)):
-            return task.branch_name, self.git.default_branch
-        return key, self.git.default_branch
-
-    def _remove_worktree(self, path: Path | None) -> None:
-        """Remove the per-task worktree at *path*, if any. Never raises."""
         if path is None:
-            return
+            return True
         try:
             self.git.remove_worktree(path)
+            return True
         except Exception:
             logger.exception("Failed to remove worktree at %s", path)
+            return False
 
     def _prune_stale_worktrees(self) -> None:
         """Remove worktrees left over from crashed or killed prior runs.

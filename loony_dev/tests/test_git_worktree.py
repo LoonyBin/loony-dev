@@ -280,5 +280,48 @@ class TestRemoveWorktree(unittest.TestCase):
         self.assertEqual(mock_run.call_args_list[1].args[0], ["git", "worktree", "prune"])
 
 
+class TestSyncWorktreeToUpstream(unittest.TestCase):
+    """Reuse-path upstream sync runs inside the worktree (issue #198)."""
+
+    def setUp(self) -> None:
+        self.repo = GitRepo(Path("/repo"), default_branch="main")
+
+    def test_fetches_then_hard_resets_inside_worktree(self) -> None:
+        wt = Path("/repo/.worktrees/owner/repo/issue-7")
+        with patch(
+            "subprocess.run",
+            side_effect=[_proc(0, stdout="issue-7/slug\n"), _proc(0), _proc(0)],
+        ) as mock_run:
+            self.repo.sync_worktree_to_upstream(wt, "issue-7/slug")
+
+        self.assertEqual(mock_run.call_count, 3)
+        head_call, fetch_call, reset_call = mock_run.call_args_list
+        # HEAD is read from inside the worktree to confirm the branch first.
+        self.assertEqual(head_call.args[0], ["git", "rev-parse", "--abbrev-ref", "HEAD"])
+        self.assertEqual(head_call.kwargs["cwd"], wt)
+        self.assertEqual(fetch_call.args[0], ["git", "fetch", "origin", "issue-7/slug"])
+        self.assertEqual(fetch_call.kwargs["cwd"], wt)
+        self.assertTrue(fetch_call.kwargs["check"])
+        self.assertEqual(reset_call.args[0], ["git", "reset", "--hard", "origin/issue-7/slug"])
+        self.assertEqual(reset_call.kwargs["cwd"], wt)
+        self.assertTrue(reset_call.kwargs["check"])
+
+    def test_refuses_when_worktree_on_other_branch(self) -> None:
+        # A worktree on a different branch must never have its ref reset onto
+        # origin/<branch> — sync raises instead of fetching/resetting.
+        wt = Path("/repo/.worktrees/owner/repo/issue-7")
+        with patch(
+            "subprocess.run", side_effect=[_proc(0, stdout="some-other-branch\n")],
+        ) as mock_run:
+            with self.assertRaises(GitError):
+                self.repo.sync_worktree_to_upstream(wt, "issue-7/slug")
+        # Only the HEAD probe ran; no fetch/reset was attempted.
+        self.assertEqual(mock_run.call_count, 1)
+
+    def test_empty_branch_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            self.repo.sync_worktree_to_upstream(Path("/repo/wt/x"), "")
+
+
 if __name__ == "__main__":
     unittest.main()

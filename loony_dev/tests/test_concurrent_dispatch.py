@@ -108,10 +108,13 @@ class TestConcurrentCompletion(unittest.TestCase):
         _drain(orch)
         orch._pool.shutdown(wait=True)
 
-        # Both worktrees created at distinct paths and both removed.
+        # Both worktrees created at distinct paths. They are retained for the
+        # pipelines' next phases (issue #198) — not torn down per task — so the
+        # just-run tick (still within the idle grace) removes neither.
         self.assertEqual(len(created), 2)
         self.assertEqual(len(set(created)), 2)
-        self.assertEqual(sorted(removed), sorted(created))
+        self.assertEqual(removed, [])
+        self.assertEqual(set(orch._pipeline_sessions), {"issue-1", "issue-2"})
 
         # Each task got exactly one lease and one success callback, no failures.
         for t in (t1, t2):
