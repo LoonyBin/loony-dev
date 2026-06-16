@@ -491,17 +491,64 @@
                x-effect="window.repoDetail && window.repoDetail.show($store.app.view === 'repo' ? $store.app.repo : null)">
         <button class="back-link" type="button" @click="$store.app.go('overview')">
           <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>All repos</button>
-        <h2 id="repo-detail-title" x-text="$store.app.repo || 'Repo'"></h2>
 
-        <div class="detail-grid">
-          <div class="card" id="repo-worker-card">
-            <h3>Worker</h3>
-            <div id="repo-worker-body"></div>
-          </div>
-          <div class="card" id="repo-session-card">
-            <h3>Remote-control session</h3>
+        <!-- Live header: repo title + right-aligned quick actions. The actions
+             are populated by repoDetail.js so they can carry per-repo deep-links
+             (New issue / Search code) and disabled-with-tooltip placeholders for
+             actions with no backend yet (Spin up worker / Resync main). -->
+        <div class="live-head">
+          <h2 id="repo-detail-title" x-text="$store.app.repo || 'Repo'"></h2>
+          <div id="repo-quick-actions" class="quick-actions" role="group"
+               aria-label="Repo quick actions"></div>
+        </div>
+
+        <!-- Three-region Live screen (#189): center session panel + ~284px
+             sidebar. Quick actions sit above; the legacy worktrees / stuck /
+             log regions remain below as a secondary signal block. -->
+        <div class="live-grid">
+          <!-- Center: the per-repo remote-control session. The header carries
+               persistent/GitHub meta + liveness; the body embeds the reused
+               #157 session card (renderSessionCard, compact variant). -->
+          <section class="card live-session" aria-labelledby="repo-session-title">
+            <div class="live-session-head">
+              <div>
+                <div class="eyebrow">Live session</div>
+                <h3 id="repo-session-title" class="live-session-repo"></h3>
+              </div>
+              <div id="repo-session-liveness"></div>
+            </div>
+            <div id="repo-session-meta" class="live-session-meta"></div>
             <div id="repo-session-body"></div>
-          </div>
+          </section>
+
+          <!-- Right sidebar: Repos switcher, repo context, recent commits,
+               workers in this repo. All rendered from the live snapshot with
+               honest placeholders where the snapshot has no backing data. -->
+          <aside class="live-sidebar" aria-label="Repo sidebar">
+            <div class="card subtle live-panel">
+              <div class="live-panel-head">
+                <h3>Repos</h3>
+                <button id="repo-connect-btn" class="ld-btn sm ghost" type="button"
+                        disabled title="No endpoint yet — follow-up">+ Connect repo</button>
+              </div>
+              <div id="repo-repos-list" class="repos-switch"></div>
+            </div>
+
+            <div class="card subtle live-panel">
+              <h3>Repo context</h3>
+              <div id="repo-context"></div>
+            </div>
+
+            <div class="card subtle live-panel">
+              <h3>Recent commits</h3>
+              <div id="repo-commits"></div>
+            </div>
+
+            <div class="card subtle live-panel">
+              <h3>Workers in this repo</h3>
+              <div id="repo-workers"></div>
+            </div>
+          </aside>
         </div>
 
         <h3>Worktrees</h3>
