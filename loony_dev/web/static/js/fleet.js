@@ -631,7 +631,7 @@ function renderRepoSidebar(rows) {
 
   host.innerHTML = "";
   const head = el("div", "fleet-repos-head");
-  head.appendChild(el("span", "eyebrow", "Repos"));
+  head.appendChild(el("span", "eyebrow", "Filter by repo"));
   if (state.repo) {
     const clear = el("button", "fleet-clear", "Clear");
     clear.type = "button";
@@ -667,6 +667,17 @@ function renderRepoSidebar(rows) {
     }
     host.appendChild(list);
   }
+
+  // "Connect repo" (#240): the mock shows an outline button beneath the repo
+  // list. There is no connect-repo endpoint yet, so this is a disabled stub with
+  // the same honest tooltip as the Live sidebar's "+ Connect repo" affordance —
+  // matching the project's honest-placeholder convention.
+  const connect = el("button", "ld-btn sm outline fleet-repos-connect", "Connect repo");
+  connect.type = "button";
+  connect.disabled = true;
+  connect.title = "No endpoint yet — follow-up";
+  connect.prepend(icon("add"));
+  host.appendChild(connect);
 
   // The explanatory note: repos filter the worklist; they don't navigate.
   const note = el("p", "fleet-repos-note");

@@ -316,10 +316,13 @@ def _derive_metadata(name: str, head: str, is_command: bool,
         if match:
             trigger = match.group(1).strip() or None
 
-    # The known-command phase map keys off command names, so it applies only to
-    # the commands kind — never to a skill that merely shares a command's name.
+    # The known-command phase map keys off the loony-dev entry names. It applies
+    # to commands (loony installs commands into repos) and to *managed* skills —
+    # a managed `plan-issue` genuinely is the planning agent, so the phase is
+    # real. A hand-authored skill that merely shares a command's name is not
+    # managed and stays None, preserving the original guard's intent (#240).
     phase = fm.get("phase")
-    if phase is None and is_command:
+    if phase is None and (is_command or managed):
         phase = _KNOWN_COMMAND_PHASES.get(name)
     return description, owner, trigger, phase, icon, managed
 
