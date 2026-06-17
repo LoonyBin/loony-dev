@@ -273,7 +273,7 @@ function repoWorkerRows(repo, state) {
     const key = s.pipeline_key || s.task_key;
     if (!key || byKey.has(key)) continue;
     const pipe = s.pipeline_key
-      ? pipelines.find((p) => p.pipeline_key === s.pipeline_key)
+      ? pipelines.find((p) => p.pipeline_key === s.pipeline_key && p.repo === repo)
       : null;
     byKey.set(key, {
       task_key: s.task_key,

@@ -305,8 +305,8 @@ def recent_commits(
     single place validation + failures live (the route is a thin mapper). It
     raises :class:`CheckoutNotFoundError` for an invalid path segment or a
     missing/non-git checkout, and :class:`GitCommandError` when ``git`` itself
-    fails. A repo with a valid but empty log returns ``[]`` (a real, not-failed
-    result).
+    fails or emits a record that breaks the parse contract. A repo with a valid
+    but empty log returns ``[]`` (a real, not-failed result).
     """
     for segment in (owner, name):
         if (
@@ -345,7 +345,12 @@ def recent_commits(
             continue
         parts = line.split(_COMMIT_FIELD_SEP)
         if len(parts) != 6:
-            continue  # malformed record (e.g. a subject smuggling the separator)
+            # A record with the wrong field count means our parse contract broke
+            # (e.g. a subject smuggling the separator byte). Fail loudly per the
+            # "raise on failure" convention rather than returning a partial list.
+            raise GitCommandError(
+                f"git log parse failed for {owner}/{name}: malformed record {line!r}"
+            )
         sha, short_sha, subject, author, date_iso, rel_date = parts
         commits.append(
             CommitView(
