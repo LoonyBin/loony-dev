@@ -552,7 +552,7 @@
         <header class="screen-head">
           <div class="screen-head-text">
             <h2 id="repo-detail-title" x-text="$store.app.repo || 'Repo'"></h2>
-            <p class="screen-head-sub">Watch and steer this repo's live agent session.</p>
+            <p class="screen-head-sub">Always-on session — one per repo, living on main. Watch and steer this repo's agent, separate from the per-issue worker worktrees.</p>
           </div>
           <div id="repo-quick-actions" class="screen-head-controls quick-actions" role="group"
                aria-label="Repo quick actions"></div>
@@ -575,6 +575,21 @@
             </div>
             <div id="repo-session-meta" class="live-session-meta"></div>
             <div id="repo-session-body"></div>
+
+            <!-- The design's chat + Send bar, present but disabled until an
+                 in-dashboard PTY drive bridge is reliable (#224 keeps driving on
+                 Claude's hosted relay — use the Open session link / QR above).
+                 Static markup; no JS. Both controls carry the same explanatory
+                 tooltip so the greyed affordance reads as intentional. -->
+            <div class="live-steer-bar"
+                 title="Driving from the dashboard isn't wired up yet — open the relay session above (join link / QR) to steer this repo.">
+              <input class="live-steer-input" type="text" disabled
+                     placeholder='Ask about the repo, or "open an issue to…"'
+                     aria-label="Steer this repo (disabled)"
+                     title="Driving from the dashboard isn't wired up yet — open the relay session above (join link / QR) to steer this repo." />
+              <button class="ld-btn sm primary" type="button" disabled
+                      title="Driving from the dashboard isn't wired up yet — open the relay session above (join link / QR) to steer this repo.">Send</button>
+            </div>
           </section>
 
           <!-- Right sidebar: Repos switcher, repo context, recent commits,
@@ -607,29 +622,39 @@
           </aside>
         </div>
 
-        <h3>Worktrees</h3>
-        <div class="table-wrap">
-          <table id="repo-worktrees" class="data-table">
-            <thead><tr><th>Branch</th><th>HEAD</th><th>Path</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
+        <!-- The legacy worktrees / stuck / log blocks are collapsed into a
+             secondary "Diagnostics" section (#224), closed by default so they
+             stay available for debugging without crowding the primary surface.
+             All inner IDs are preserved so repoDetail.js / streamLog keep
+             working unchanged; the log SSE tails into the (hidden) <pre>
+             regardless of whether the panel is open. -->
+        <details class="diagnostics-section">
+          <summary>Diagnostics</summary>
 
-        <div id="repo-stuck-section" hidden>
-          <h3>Stuck processes</h3>
+          <h3>Worktrees</h3>
           <div class="table-wrap">
-            <table id="repo-stuck" class="data-table">
-              <thead><tr>
-                <th>Task</th><th>PID</th><th>Cmdline</th>
-                <th>Age</th><th>Blocked on</th><th>Action</th>
-              </tr></thead>
+            <table id="repo-worktrees" class="data-table">
+              <thead><tr><th>Branch</th><th>HEAD</th><th>Path</th></tr></thead>
               <tbody></tbody>
             </table>
           </div>
-        </div>
 
-        <h3>Log <span id="repo-log-title" class="muted"></span></h3>
-        <pre id="repo-log" class="log-pane">Loading…</pre>
+          <div id="repo-stuck-section" hidden>
+            <h3>Stuck processes</h3>
+            <div class="table-wrap">
+              <table id="repo-stuck" class="data-table">
+                <thead><tr>
+                  <th>Task</th><th>PID</th><th>Cmdline</th>
+                  <th>Age</th><th>Blocked on</th><th>Action</th>
+                </tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <h3>Log <span id="repo-log-title" class="muted"></span></h3>
+          <pre id="repo-log" class="log-pane">Loading…</pre>
+        </details>
       </section>
 
       <!-- Issue ▸ PR pipeline detail (#190): a per-pipeline view with a
@@ -730,16 +755,17 @@
            observe modals below) so it composes regardless of where the nav puts
            this view. -->
       <section class="view" x-show="$store.app.view === 'skills'">
-        <!-- ScreenHead (#222): title + restored subtitle, with the primary "New"
-             affordance in the right-aligned controls slot. #entry-new preserved. -->
+        <!-- ScreenHead (#222/#226): "Skills library" title + the design subtitle,
+             with the primary "Author skill" affordance in the right-aligned
+             controls slot. #entry-new preserved (label set by kind in entries.js). -->
         <header class="screen-head">
           <div class="screen-head-text">
-            <h2>skills &amp; commands</h2>
-            <p class="screen-head-sub">Author and edit the slash commands and skills your agents run.</p>
+            <h2>Skills library</h2>
+            <p class="screen-head-sub">Worker &amp; manager behaviour is composed from named skills. Each fires on a trigger and runs at a stage of the lifecycle.</p>
           </div>
           <div class="screen-head-controls">
             <button id="entry-new" class="ld-btn md primary" type="button">
-              <span class="material-symbols-outlined" aria-hidden="true">add</span>New
+              <span class="material-symbols-outlined" aria-hidden="true">add</span><span id="entry-new-label">Author skill</span>
             </button>
           </div>
         </header>
@@ -890,6 +916,29 @@
       </div>
       <label class="drawer-field">Name
         <input id="entry-name" type="text" placeholder="entry-name (no slashes)" />
+      </label>
+      <!-- Structured frontmatter fields (#226): conveniences layered over the raw
+           Content textarea. Populated from the content's frontmatter on open and
+           merged back into its `---` block on save — the CRUD contract (raw
+           markdown PUT) is unchanged. -->
+      <div class="drawer-field-row">
+        <label class="drawer-field">Owner
+          <input id="entry-owner" type="text" placeholder="bot login or manager name" />
+        </label>
+        <label class="drawer-field">Lifecycle phase
+          <input id="entry-phase" type="text" list="entry-phase-options" placeholder="e.g. development" />
+          <datalist id="entry-phase-options">
+            <option value="planning"></option>
+            <option value="development"></option>
+            <option value="ci"></option>
+            <option value="review"></option>
+            <option value="conflict"></option>
+            <option value="stuck"></option>
+          </datalist>
+        </label>
+      </div>
+      <label class="drawer-field">Trigger
+        <input id="entry-trigger" type="text" placeholder="what this fires on" />
       </label>
       <label class="drawer-field drawer-field-grow">Content
         <textarea id="entry-content" placeholder="Paste or edit markdown (with frontmatter) here…"></textarea>

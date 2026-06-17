@@ -89,9 +89,13 @@ class EntryView:
     # optional: a frontmatter-less or unreadable file lists with these None
     # (listing never raises). The read/write/delete paths are unaffected.
     description: str | None = None   # frontmatter `description`
-    owner: str | None = None         # "trixy" (managed marker present) / "capo"
+    owner: str | None = None         # frontmatter `owner`, else the bot login when managed
     trigger: str | None = None       # "triggers on …" clause, when derivable
     phase: str | None = None         # lifecycle phase, when derivable
+    icon: str | None = None          # frontmatter `icon` (material-symbols glyph), when set
+    # True iff the loony-dev managed marker is present — the structural signal the
+    # card renders the bot-avatar style from (rather than matching a literal name).
+    managed: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -199,8 +203,13 @@ def _resolve_paths(kind_name: str, name: str, *, global_root: Path, base_dir: Pa
 
 def list_entries(kind_name: str, *, global_root: Path, base_dir: Path,
                  scope: str = "global", owner: str | None = None,
-                 repo: str | None = None) -> list[EntryView]:
+                 repo: str | None = None,
+                 bot_name: str | None = None) -> list[EntryView]:
     """Return every installed entry of *kind_name* in the given scope.
+
+    *bot_name* (the configured GitHub bot login) names the owner of managed
+    entries that lack an explicit ``owner`` frontmatter field; pass ``None`` (the
+    default) to leave such entries' owner unresolved.
 
     Returns ``[]`` (never raises) when the container directory is absent.
     Results are sorted by name.
@@ -218,11 +227,11 @@ def list_entries(kind_name: str, *, global_root: Path, base_dir: Path,
         for child in sorted(container.iterdir()):
             content_path = child / kind.content_name  # type: ignore[operator]
             if child.is_dir() and content_path.is_file() and _contained(root, content_path):
-                views.append(_view(child.name, content_path, is_command))
+                views.append(_view(child.name, content_path, is_command, bot_name))
     else:
         for content_path in sorted(container.glob("*.md")):
             if content_path.is_file() and _contained(root, content_path):
-                views.append(_view(content_path.stem, content_path, is_command))
+                views.append(_view(content_path.stem, content_path, is_command, bot_name))
     return views
 
 
@@ -283,17 +292,23 @@ def _parse_frontmatter(head: str) -> dict[str, str]:
     return fields
 
 
-def _derive_metadata(name: str, head: str, is_command: bool
-                     ) -> tuple[str | None, str, str | None, str | None]:
-    """Return ``(description, owner, trigger, phase)`` derived from *head*.
+def _derive_metadata(name: str, head: str, is_command: bool,
+                     bot_name: str | None = None
+                     ) -> tuple[str | None, str | None, str | None, str | None, str | None, bool]:
+    """Return ``(description, owner, trigger, phase, icon, managed)`` from *head*.
 
-    ``owner`` is always concrete: ``"trixy"`` when the managed marker is present
-    in the head (a loony-dev-installed file), else ``"capo"`` (hand-authored).
+    ``managed`` is the structural signal: ``True`` when the loony-dev managed
+    marker is present (a loony-dev-installed file). ``owner`` is the explicit
+    frontmatter ``owner`` when set, else the configured bot login (*bot_name*)
+    for a managed file, else ``None`` (hand-authored, owner unknown). The card
+    renders the bot-avatar style from ``managed``, never from the literal name.
     The remaining fields are surfaced when derivable and ``None`` otherwise.
     """
     fm = _parse_frontmatter(head)
     description = fm.get("description") or None
-    owner = "trixy" if MANAGED_MARKER in head else "capo"
+    managed = MANAGED_MARKER in head
+    owner = fm.get("owner") or (bot_name if managed else None)
+    icon = fm.get("icon") or None
 
     trigger = fm.get("trigger") or None
     if trigger is None and description:
@@ -306,16 +321,17 @@ def _derive_metadata(name: str, head: str, is_command: bool
     phase = fm.get("phase")
     if phase is None and is_command:
         phase = _KNOWN_COMMAND_PHASES.get(name)
-    return description, owner, trigger, phase
+    return description, owner, trigger, phase, icon, managed
 
 
-def _view(name: str, content_path: Path, is_command: bool) -> EntryView:
+def _view(name: str, content_path: Path, is_command: bool,
+          bot_name: str | None = None) -> EntryView:
     try:
         size = content_path.stat().st_size
     except OSError:
         size = 0
-    description, owner, trigger, phase = _derive_metadata(
-        name, _read_head(content_path), is_command)
+    description, owner, trigger, phase, icon, managed = _derive_metadata(
+        name, _read_head(content_path), is_command, bot_name)
     return EntryView(
         name=name,
         path=str(content_path),
@@ -325,6 +341,8 @@ def _view(name: str, content_path: Path, is_command: bool) -> EntryView:
         owner=owner,
         trigger=trigger,
         phase=phase,
+        icon=icon,
+        managed=managed,
     )
 
 
