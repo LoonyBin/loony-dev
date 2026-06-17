@@ -6,11 +6,12 @@
 // paths), and a right sidebar (activity timeline, linked issue/PR cards,
 // worktree info).
 //
-// Navigation is driven by the Alpine store: index.html's `x-effect` calls
-// show(repo|null, taskKey|null) whenever the active view/pipeline changes.
-// Consolidated state arrives via update(snapshot) from the app-shell
-// orchestrator (the #155 /api/events stream); we filter it to the current
-// pipeline. Modeled on repoDetail.js.
+// Navigation is driven by the Alpine store: app.js's wireDetailViews() effect
+// calls show(repo|null, taskKey|null) whenever the active view/pipeline changes
+// (issue #239 moved this off a load-order-fragile inline x-effect). Consolidated
+// state arrives via update(snapshot) from the app-shell orchestrator (the #155
+// /api/events stream); we filter it to the current pipeline. Modeled on
+// repoDetail.js.
 //
 // DATA SOURCES (issue #225). Two live feeds back this page:
 //   1. The SSE snapshot's worker signals (workers / worktrees / sessions /
@@ -776,9 +777,9 @@ function onConvStatus(_text, kind) {
   }
 }
 
-// Called by index.html's x-effect when the active view/pipeline changes. Manages
-// the (single) conversation stream and triggers a render. Idempotent for the
-// same pipeline so a re-render never restarts the stream.
+// Called by app.js's wireDetailViews() effect when the active view/pipeline
+// changes. Manages the (single) conversation stream and triggers a render.
+// Idempotent for the same pipeline so a re-render never restarts the stream.
 function show(repo, taskKey) {
   const key = repo && taskKey ? `${repo} ${taskKey}` : null;
   if (key === currentKey) return;
@@ -832,7 +833,7 @@ export function update(snapshot) {
 }
 
 export function init() {
-  // Exposed on window so the Alpine `x-effect` in index.html can drive show(),
+  // Exposed on window so app.js's wireDetailViews() effect can drive show(),
   // and so #200 can reach setDriveState without re-importing the module.
   window.issueDetail = { show, setDriveState };
 
