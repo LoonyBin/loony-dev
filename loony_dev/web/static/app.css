@@ -981,7 +981,9 @@ button.action:hover,
 .fleet-metric-label {
   font-size: var(--fs-0);
   font-weight: 700;
-  text-transform: uppercase;
+  /* The mock's `.stat-l` has no text-transform: the metric labels render in the
+     lowercase copy fleet.js already supplies ("repos online", "need you"), not
+     forced UPPERCASE (#240). The kanban .fleet-col-title stays uppercase. */
   letter-spacing: var(--track-eyebrow);
   color: var(--text-muted);
 }
@@ -1251,6 +1253,8 @@ button.action:hover,
 }
 .fleet-repo.active .fleet-repo-count { color: var(--accent-ink); }
 .fleet-repo-list { display: flex; flex-direction: column; gap: 2px; }
+/* "Connect repo" (#240): full-width outline stub beneath the repo list. */
+.fleet-repos-connect { width: 100%; margin-top: var(--sp-3); }
 /* The explanatory note: repos filter the worklist, they don't navigate. */
 .fleet-repos-note {
   margin: var(--sp-3) 0 0;
@@ -1269,9 +1273,7 @@ button.action:hover,
 
 /* Mobile Fleet — the "glance + triage" companion (#192). The worker-pool card
    spans the full width (so utilisation stays scannable) and the metric grid
-   reflows from 3 columns to 2. The board itself is a .data-table, so it has
-   already collapsed to tap-through cards at 560px; the metric cards remain the
-   triage entry points. */
+   reflows from 3 columns to 2. The metric cards remain the triage entry points. */
 @media (max-width: 720px) {
   .fleet-stats { gap: var(--sp-2); margin-bottom: var(--sp-3); }
   .fleet-pool { flex: 1 1 100%; }
@@ -1284,6 +1286,55 @@ button.action:hover,
      pinned above the board with its eyebrow heading. */
   .fleet-triage { display: block; margin-bottom: var(--sp-4); }
   .fleet-triage .eyebrow { margin-bottom: var(--sp-2); }
+
+  /* Board reflow (#240): collapse the 7-column board to compact tap-through
+     cards at the Fleet mobile breakpoint (720px) rather than the generic
+     .data-table 560px — otherwise the 561–720px band keeps the desktop table
+     and overflows horizontally, clipping columns. Scoped to .fleet-table so the
+     other data-tables keep their own 560px collapse. */
+  .fleet-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .fleet-table tr {
+    display: block;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    margin-bottom: var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+  }
+  .fleet-table td {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: var(--sp-4);
+    border: none;
+    padding: var(--sp-2) 0;
+  }
+  .fleet-table td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+  /* Compact per the mock: drop the redundant Worker (always the single trixy
+     bot) and the Skill-running rows, so each card reduces to #num + title,
+     Repo, Stage, Updated and the Review/chevron action. */
+  .fleet-table td[data-label="Worker"],
+  .fleet-table td[data-label="Skill running"] { display: none; }
+  /* The action cell carries an empty data-label; suppress its blank ::before and
+     right-align the Review button / chevron. */
+  .fleet-table td.fleet-action-cell { justify-content: flex-end; }
+  .fleet-table td.fleet-action-cell::before { content: none; }
+  /* The single empty-state row spans all columns — keep its message left-aligned
+     with no label pseudo-element. */
+  .fleet-table td.fleet-empty-row { justify-content: flex-start; }
+  .fleet-table td.fleet-empty-row::before { content: none; }
 }
 
 /* ---- Repo detail (#158) ---------------------------------------------- */

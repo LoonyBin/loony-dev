@@ -1043,12 +1043,21 @@ class EntriesTestCase(unittest.TestCase):
         self.assertEqual(by_name["plan-issue"].phase, "planning")
         self.assertEqual(by_name["fix-ci"].phase, "ci")
 
-    def test_phase_mapping_does_not_apply_to_skills(self) -> None:
-        # A skill that merely shares a known command's name must not inherit that
-        # command's phase chip — the map keys off command names only.
+    def test_phase_mapping_does_not_apply_to_unmanaged_skills(self) -> None:
+        # A *hand-authored* skill that merely shares a known command's name must
+        # not inherit that command's phase chip — only managed entries map (#240).
         entries.write_entry("skills", "plan-issue", "no frontmatter\n", **self._kw())
         (view,) = entries.list_entries("skills", **self._kw())
         self.assertIsNone(view.phase)
+
+    def test_phase_mapping_applies_to_managed_skills(self) -> None:
+        # A *managed* skill named after a known command genuinely is that agent,
+        # so the phase chip is real and surfaces on the skills tab (#240).
+        body = f"{entries.MANAGED_MARKER}\n\nno frontmatter\n"
+        entries.write_entry("skills", "plan-issue", body, **self._kw())
+        (view,) = entries.list_entries("skills", **self._kw())
+        self.assertTrue(view.managed)
+        self.assertEqual(view.phase, "planning")
 
     def test_trigger_extracted_from_use_when_clause(self) -> None:
         body = "---\ndescription: A tool. Use when the build breaks.\n---\n"
