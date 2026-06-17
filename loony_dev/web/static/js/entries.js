@@ -89,9 +89,13 @@ function parseFrontmatter(content) {
   return {};  // no closing fence => malformed, treat as no frontmatter
 }
 
-// Quote a value only when YAML would otherwise mis-parse it.
+// Emit a scalar value literally. The backend parser
+// (loony_dev/web/entries.py:_parse_frontmatter) strips wrapper quotes but never
+// unescapes, so JSON-style escaping would persist stray backslashes in saved
+// metadata. Only collapse newlines, which would break the single-line
+// `key: value` frontmatter format.
 function fmValue(v) {
-  return /^[\w .,@/#&()+-]*$/.test(v) ? v : JSON.stringify(v);
+  return String(v).replace(/\r?\n/g, " ");
 }
 
 // Merge the given top-level scalars into content's `---` block (updating keys in
@@ -232,7 +236,7 @@ function renderOwnerBadge(e) {
     const label = document.createElement("span");
     label.className = "skill-owner-name";
     label.textContent = e.owner || "managed";
-    badge.title = `${e.owner || "loony-dev"} (loony-dev managed)`;
+    badge.title = `${e.owner || "managed"} (managed entry)`;
     badge.append(av, label);
     return badge;
   }
