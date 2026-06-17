@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-density="compact">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -41,6 +41,9 @@
       }
       pin("loony-theme", "data-theme", ["dark", "light"]);
       pin("loony-accent", "data-accent", ["blue", "violet", "emerald", "slate"]);
+      // Density defaults to compact via the <html data-density="compact"> attr
+      // (#222); a stored preference (e.g. an explicit "comfortable") still wins
+      // because pin() overrides the attribute when a valid value is saved.
       pin("loony-density", "data-density", ["comfortable", "compact"]);
       pin("loony-pulse", "data-pulse", ["on", "off"]);
       try {
@@ -159,7 +162,7 @@
         // script already applied (so the controls match the rendered look).
         collapsed: root.getAttribute("data-rail") === "collapsed",
         accent: root.getAttribute("data-accent") || "blue",
-        density: root.getAttribute("data-density") || "comfortable",
+        density: root.getAttribute("data-density") || "compact",
         pulse: root.getAttribute("data-pulse") !== "off",
         go(view) {
           if (!VALID.has(view)) view = "fleet";
@@ -298,8 +301,18 @@
           :aria-label="$store.app.collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
           data-tooltip="loony-dev"
         >
-          <span class="rail-logo material-symbols-outlined" aria-hidden="true">deployed_code</span>
-          <span class="rail-brand-text">loony-dev <span class="brand-sub">dashboard</span></span>
+          <!-- 3×3 dot-grid brand mark (#222): nine CSS dots, accent-colored, no
+               new asset/font so it stays crisp at both rail widths. -->
+          <span class="rail-mark" aria-hidden="true">
+            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+          </span>
+          <span class="rail-brand-text">loony-dev <span class="brand-sub">agent console</span></span>
+          <!-- Hover/focus collapse hint (#222): a chevron that points the way the
+               brand will fold. Purely a visual affordance — the whole brand
+               button already toggles collapse, so the chevron inherits the click
+               and aria stays on the button. -->
+          <span class="rail-collapse-chevron material-symbols-outlined" aria-hidden="true"
+                x-text="$store.app.collapsed ? 'chevron_right' : 'chevron_left'">chevron_left</span>
         </button>
       </div>
 
@@ -384,6 +397,9 @@
               role="menu"
               aria-label="Settings"
             >
+              <!-- Non-interactive cap header (#222): names the menu, mirrors the
+                   rail-nav eyebrow treatment. -->
+              <div class="menu-cap" role="presentation">Settings</div>
               <button class="menu-item" role="menuitem"
                       @click="$store.app.go('skills'); open = false">
                 <span class="material-symbols-outlined" aria-hidden="true">extension</span>
@@ -433,7 +449,16 @@
           </div>
         </div>
 
-        <h2>Fleet</h2>
+        <!-- ScreenHead (#222): title + restored intro subtitle + a right-aligned
+             controls slot (empty on Fleet — the Board/Kanban toggle + badge
+             filters stay in the .fleet-toolbar below). -->
+        <header class="screen-head">
+          <div class="screen-head-text">
+            <h2>fleet</h2>
+            <p class="screen-head-sub">Every issue and PR your agents are working, across all connected repos.</p>
+          </div>
+          <div class="screen-head-controls"></div>
+        </header>
 
         <!-- Stat strip: fleet.js fills this with .stat cards (incl. the
              double-height worker-pool dot-grid). -->
@@ -518,15 +543,20 @@
         <button class="back-link" type="button" @click="$store.app.go('fleet')">
           <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>All repos</button>
 
-        <!-- Live header: repo title + right-aligned quick actions. The actions
-             are populated by repoDetail.js so they can carry per-repo deep-links
-             (New issue / Search code) and disabled-with-tooltip placeholders for
-             actions with no backend yet (Spin up worker / Resync main). -->
-        <div class="live-head">
-          <h2 id="repo-detail-title" x-text="$store.app.repo || 'Repo'"></h2>
-          <div id="repo-quick-actions" class="quick-actions" role="group"
+        <!-- Live header via the shared ScreenHead (#222): repo title + restored
+             subtitle, with the quick-actions bar in the right-aligned controls
+             slot. The actions are populated by repoDetail.js so they can carry
+             per-repo deep-links (New issue / Search code) and disabled-with-
+             tooltip placeholders for actions with no backend yet (Spin up worker
+             / Resync main). #repo-detail-title / #repo-quick-actions IDs preserved. -->
+        <header class="screen-head">
+          <div class="screen-head-text">
+            <h2 id="repo-detail-title" x-text="$store.app.repo || 'Repo'"></h2>
+            <p class="screen-head-sub">Watch and steer this repo's live agent session.</p>
+          </div>
+          <div id="repo-quick-actions" class="screen-head-controls quick-actions" role="group"
                aria-label="Repo quick actions"></div>
-        </div>
+        </header>
 
         <!-- Three-region Live screen (#189): center session panel + ~284px
              sidebar. Quick actions sit above; the legacy worktrees / stuck /
@@ -615,12 +645,20 @@
              (the #N is parsed from the task_key) and wires their navigation. -->
         <nav id="pipeline-breadcrumb" class="breadcrumb" aria-label="Breadcrumb"></nav>
 
-        <div class="pipeline-header">
-          <span id="pipeline-detail-repo" class="tag neutral"></span>
-          <h2 id="pipeline-detail-title">Pipeline</h2>
-          <span class="spacer"></span>
-          <span id="pipeline-detail-state" class="statepill"></span>
-        </div>
+        <!-- ScreenHead (#222): the breadcrumb above is the route trail; this is
+             the head proper — repo tag + title + restored subtitle, with the
+             live statepill in the right-aligned controls slot. The
+             #pipeline-detail-* IDs are preserved (issueDetail.js fills them). -->
+        <header class="screen-head">
+          <div class="screen-head-text">
+            <span id="pipeline-detail-repo" class="tag neutral"></span>
+            <h2 id="pipeline-detail-title">Pipeline</h2>
+            <p class="screen-head-sub">Follow this pipeline from issue through to a merged PR.</p>
+          </div>
+          <div class="screen-head-controls">
+            <span id="pipeline-detail-state" class="statepill"></span>
+          </div>
+        </header>
 
         <!-- Lifecycle stepper: Issue → Plan → Implement → PR → Review → Merge,
              with a conflict-detour badge. Filled by deriveStage(). -->
@@ -683,12 +721,19 @@
            observe modals below) so it composes regardless of where the nav puts
            this view. -->
       <section class="view" x-show="$store.app.view === 'skills'">
-        <div class="skills-head">
-          <h2>Skills &amp; Commands</h2>
-          <button id="entry-new" class="ld-btn md primary" type="button">
-            <span class="material-symbols-outlined" aria-hidden="true">add</span>New
-          </button>
-        </div>
+        <!-- ScreenHead (#222): title + restored subtitle, with the primary "New"
+             affordance in the right-aligned controls slot. #entry-new preserved. -->
+        <header class="screen-head">
+          <div class="screen-head-text">
+            <h2>skills &amp; commands</h2>
+            <p class="screen-head-sub">Author and edit the slash commands and skills your agents run.</p>
+          </div>
+          <div class="screen-head-controls">
+            <button id="entry-new" class="ld-btn md primary" type="button">
+              <span class="material-symbols-outlined" aria-hidden="true">add</span>New
+            </button>
+          </div>
+        </header>
         <div class="controls">
           <label>Kind
             <select id="entry-kind">

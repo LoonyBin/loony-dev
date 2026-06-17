@@ -302,6 +302,82 @@ class WebAppTestCase(unittest.TestCase):
         body = self.client.get("/").text
         self.assertIn('id="pipeline-log"', body)
 
+    def test_index_screen_head_restores_per_screen_subtitles(self) -> None:
+        # The shell fidelity pass (#222) reintroduces the design's ScreenHead
+        # pattern (title + descriptive subtitle + right-aligned controls slot) on
+        # every primary screen, restoring the intro copy the rework dropped.
+        body = self.client.get("/").text
+        # The shared head + subtitle classes ship and replace the old bespoke
+        # .live-head / .skills-head / .pipeline-header heads.
+        self.assertIn('class="screen-head"', body)
+        self.assertIn('class="screen-head-sub"', body)
+        self.assertNotIn('class="live-head"', body)
+        self.assertNotIn('class="skills-head"', body)
+        self.assertNotIn('class="pipeline-header"', body)
+        # A distinctive slice of each restored subtitle pins the copy in place.
+        self.assertIn("across all connected repos", body)        # Fleet
+        self.assertIn("Watch and steer this repo", body)         # Live
+        self.assertIn("through to a merged PR", body)            # Issue ▸ PR
+        self.assertIn("slash commands and skills your agents run", body)  # Skills
+        # The IDs the JS modules read/write survive the head refactor.
+        self.assertIn('id="repo-detail-title"', body)
+        self.assertIn('id="repo-quick-actions"', body)
+        self.assertIn('id="pipeline-detail-title"', body)
+        self.assertIn('id="pipeline-detail-repo"', body)
+        self.assertIn('id="pipeline-detail-state"', body)
+        self.assertIn('id="entry-new"', body)
+
+    def test_index_lowercases_screen_titles(self) -> None:
+        # The design treats the screen titles as lowercase display labels (#222).
+        body = self.client.get("/").text
+        self.assertIn("<h2>fleet</h2>", body)
+        self.assertIn("<h2>skills &amp; commands</h2>", body)
+        # The old title-case headings are gone.
+        self.assertNotIn("<h2>Fleet</h2>", body)
+        self.assertNotIn("<h2>Skills &amp; Commands</h2>", body)
+
+    def test_index_rail_brand_mark_and_tagline(self) -> None:
+        # Rail/brand polish (#222): a 3×3 dot-grid brand mark, the "agent console"
+        # tagline (not "dashboard"), and a hover collapse chevron.
+        body = self.client.get("/").text
+        self.assertIn('class="rail-mark"', body)
+        self.assertIn('class="brand-sub">agent console<', body)
+        # The old Material Symbols logo + "dashboard" tagline are gone from the rail.
+        self.assertNotIn(">deployed_code<", body)
+        self.assertNotIn('class="brand-sub">dashboard<', body)
+        # The collapse chevron is bound to the collapsed state.
+        self.assertIn('class="rail-collapse-chevron', body)
+        self.assertIn("$store.app.collapsed ? 'chevron_right' : 'chevron_left'", body)
+
+    def test_index_density_defaults_to_compact(self) -> None:
+        # Tweaks (#222): the document defaults to compact density (a stored
+        # preference still wins via the pre-paint pin), and the Alpine store seeds
+        # its fallback from the same default.
+        body = self.client.get("/").text
+        self.assertIn('data-density="compact"', body)
+        self.assertIn('root.getAttribute("data-density") || "compact"', body)
+
+    def test_index_gear_menu_has_settings_cap(self) -> None:
+        # Tweaks (#222): the gear flyout gains a non-interactive "Settings" cap
+        # header above its items.
+        body = self.client.get("/").text
+        self.assertIn('class="menu-cap"', body)
+        self.assertIn('class="menu-cap" role="presentation">Settings<', body)
+
+    def test_app_css_ships_screen_head_and_brand_rules(self) -> None:
+        # The shell polish (#222) is CSS-dominant; assert the structural hooks
+        # ship and the folded-away bespoke head rules are gone.
+        css = self.client.get("/static/app.css").text
+        self.assertIn(".screen-head", css)
+        self.assertIn(".screen-head-sub", css)
+        self.assertIn(".rail-mark", css)
+        self.assertIn(".rail-collapse-chevron", css)
+        self.assertIn(".menu-cap", css)
+        # The three bespoke head selectors folded into .screen-head.
+        self.assertNotIn(".live-head {", css)
+        self.assertNotIn(".skills-head {", css)
+        self.assertNotIn(".pipeline-header {", css)
+
     def test_index_declares_responsive_viewport(self) -> None:
         # The mobile companion pass (#192) needs the responsive viewport meta so
         # phones lay out at device width instead of a zoomed-out desktop page.

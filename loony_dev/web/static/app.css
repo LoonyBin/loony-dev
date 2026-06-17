@@ -304,8 +304,42 @@ section.view > h2:first-child { margin-top: 0; }
 }
 .rail-brand:hover { background: var(--surface-2); }
 .rail-brand:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.rail-logo { font-size: 1.5rem; color: var(--accent); flex: none; }
 .rail-brand-text { overflow: hidden; text-overflow: ellipsis; }
+
+/* 3×3 dot-grid brand mark (#222): nine accent dots laid out on a grid. CSS-only
+   so it stays crisp at both the expanded and collapsed (72px) rail widths and
+   needs no new asset/font. */
+.rail-mark {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: 3px;
+  width: 1.4rem;
+  height: 1.4rem;
+  flex: none;
+}
+.rail-mark i {
+  display: block;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* Hover/focus collapse chevron (#222): a quiet affordance pinned to the right
+   edge of the brand button, revealed on hover/focus. It points the way the rail
+   will fold; the brand button itself owns the toggle + aria. */
+.rail-collapse-chevron {
+  margin-left: auto;
+  flex: none;
+  font-size: 1.1rem;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.rail-brand:hover .rail-collapse-chevron,
+.rail-brand:focus-visible .rail-collapse-chevron { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .rail-collapse-chevron { transition: none; }
+}
 
 /* "Operate" section label above the primary nav (#221). Uppercase micro label,
    hidden when the rail is icon-only (tooltips carry the labels there). */
@@ -459,6 +493,18 @@ section.view > h2:first-child { margin-top: 0; }
 .pref-desc { color: var(--text-muted); font-size: var(--fs-1); }
 
 .gear-menu { display: flex; flex-direction: column; gap: 2px; }
+/* Non-interactive "Settings" cap header on the gear menu (#222): an uppercase
+   micro-label with a divider, mirroring the .rail-nav-eyebrow treatment. */
+.menu-cap {
+  padding: var(--sp-1) var(--sp-3) var(--sp-2);
+  font-size: var(--fs-0);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--track-eyebrow);
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
 .menu-item {
   display: flex;
   align-items: center;
@@ -501,6 +547,7 @@ main {
 /* Hide every text label; icons + controls remain, identified by tooltips. */
 [data-rail="collapsed"] .rail-nav-eyebrow,
 [data-rail="collapsed"] .rail-brand-text,
+[data-rail="collapsed"] .rail-collapse-chevron,
 [data-rail="collapsed"] .nav-label,
 [data-rail="collapsed"] .operator-id,
 [data-rail="collapsed"] .stuck-pill-text,
@@ -1141,16 +1188,44 @@ button.action:hover,
 .kv dd { margin: 0; word-break: break-word; }
 .join-link { display: inline-block; margin-top: var(--sp-2); text-decoration: none; }
 
-/* ---- Repo-detail Live screen (#189) ---------------------------------- */
-/* Header: title on the left, right-aligned quick-actions bar. */
-.live-head {
+/* ---- ScreenHead (#222) ----------------------------------------------- */
+/* The single per-screen header pattern: a title + descriptive subtitle on the
+   left, a right-aligned controls slot on the right. It restores the per-screen
+   intro copy the rework dropped and replaces the three bespoke heads
+   (.live-head / .skills-head / .pipeline-header) with one convention. The row
+   wraps so the controls drop below the text on narrow widths. */
+.screen-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: var(--sp-4);
   flex-wrap: wrap;
+  margin-bottom: var(--sp-4);
 }
-.live-head h2 { margin: 0; }
+.screen-head-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+.screen-head-text h2 { margin: 0; }
+/* The restored per-screen intro copy. */
+.screen-head-sub {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-2);
+}
+.screen-head-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+/* ---- Repo-detail Live screen (#189) ---------------------------------- */
+/* The Live head uses the shared ScreenHead; its controls slot is the quick-
+   actions bar (repoDetail.js fills #repo-quick-actions). */
 .quick-actions {
   display: flex;
   justify-content: flex-end;
@@ -1354,15 +1429,8 @@ button.action:hover,
 .session-note-offline { color: var(--danger); font-style: normal; }
 
 /* ---- Skills & Commands library (#191) ------------------------------- */
-/* Header row: the section title plus the primary "New" affordance. */
-.skills-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-  flex-wrap: wrap;
-}
-.skills-head h2 { margin: 0; }
+/* The Skills head uses the shared ScreenHead (#222); its controls slot is the
+   primary "New" affordance (#entry-new). */
 
 /* Card grid — mirrors .repo-grid / .session-grid (auto-fill minmax). */
 .skill-grid {
@@ -1854,14 +1922,8 @@ button.action:hover,
 .breadcrumb .crumb.current { color: var(--text-muted); cursor: default; }
 .breadcrumb .crumb-sep { color: var(--text-muted); }
 
-.pipeline-header {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--sp-3);
-  margin-bottom: var(--sp-4);
-}
-.pipeline-header h2 { margin: 0; }
+/* The pipeline head uses the shared ScreenHead (#222); the breadcrumb above is
+   the route trail, the statepill sits in the head's right-aligned controls slot. */
 
 /* Drive-state pill modifiers — reserved for the #200 seam (observe/drive/busy).
    They re-tint the statepill so a parked vs. busy vs. live drive reads at a
