@@ -33,6 +33,10 @@ function validateKind(value) {
   return value;
 }
 
+// Default icon-tile glyph per kind, when the entry omits an `icon` frontmatter
+// field. A material-symbols-outlined name.
+const KIND_ICONS = { skills: "bolt", commands: "terminal" };
+
 function entryEls() {
   return {
     kind: document.getElementById("entry-kind"),
@@ -40,16 +44,97 @@ function entryEls() {
     repoLabel: document.getElementById("entry-repo-label"),
     repo: document.getElementById("entry-repo"),
     name: document.getElementById("entry-name"),
+    owner: document.getElementById("entry-owner"),
+    trigger: document.getElementById("entry-trigger"),
+    phase: document.getElementById("entry-phase"),
     content: document.getElementById("entry-content"),
     error: document.getElementById("entry-error"),
     modal: document.getElementById("entry-modal"),
     modalTitle: document.getElementById("entry-modal-title"),
+    newLabel: document.getElementById("entry-new-label"),
   };
 }
 
 // Singular noun for the current kind, for drawer titles ("New skill").
 function kindNoun() {
   return entryEls().kind.value === "commands" ? "command" : "skill";
+}
+
+// Material-symbols glyph for an entry's icon tile: an explicit `icon` field
+// wins, else the per-kind default.
+function entryIcon(e) {
+  return e.icon || KIND_ICONS[entryEls().kind.value] || "bolt";
+}
+
+// --- Frontmatter round-trip helpers ----------------------------------------
+// Minimal, flat top-level scalar handling only — mirrors the backend parser
+// (loony_dev/web/entries.py:_parse_frontmatter), which is all the cards read.
+
+// Parse a leading `---`-fenced block into { key: value }. No fence => {}.
+function parseFrontmatter(content) {
+  const text = content || "";
+  if (!/^---\r?\n/.test(text)) return {};
+  const lines = text.split(/\r?\n/);
+  const fields = {};
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === "---") return fields;  // closing fence
+    const line = lines[i];
+    if (/^\s/.test(line)) continue;                 // skip nested/indented lines
+    const idx = line.indexOf(":");
+    if (idx < 0) continue;
+    const key = line.slice(0, idx).trim();
+    if (!key || key.startsWith("#")) continue;
+    fields[key] = line.slice(idx + 1).trim().replace(/^['"]|['"]$/g, "");
+  }
+  return {};  // no closing fence => malformed, treat as no frontmatter
+}
+
+// Quote a value only when YAML would otherwise mis-parse it.
+function fmValue(v) {
+  return /^[\w .,@/#&()+-]*$/.test(v) ? v : JSON.stringify(v);
+}
+
+// Merge the given top-level scalars into content's `---` block (updating keys in
+// place, appending new ones, creating a block when none exists). A key whose
+// value is empty/blank is removed. Other frontmatter lines are preserved.
+function mergeFrontmatter(content, updates) {
+  const text = content || "";
+  const set = {};
+  for (const [k, v] of Object.entries(updates)) set[k] = (v == null ? "" : String(v).trim());
+
+  const hasFence = /^---\r?\n/.test(text);
+  let head = [];
+  let body = text;
+  if (hasFence) {
+    const lines = text.split(/\r?\n/);
+    let end = -1;
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i].trim() === "---") { end = i; break; }
+    }
+    if (end >= 0) {
+      head = lines.slice(1, end);
+      body = lines.slice(end + 1).join("\n");
+    }
+  }
+
+  const seen = new Set();
+  const out = [];
+  for (const line of head) {
+    if (/^\s/.test(line) || line.indexOf(":") < 0) { out.push(line); continue; }
+    const key = line.slice(0, line.indexOf(":")).trim();
+    if (Object.prototype.hasOwnProperty.call(set, key)) {
+      seen.add(key);
+      if (set[key]) out.push(`${key}: ${fmValue(set[key])}`);  // drop when blank
+    } else {
+      out.push(line);
+    }
+  }
+  for (const [k, v] of Object.entries(set)) {
+    if (!seen.has(k) && v) out.push(`${k}: ${fmValue(v)}`);
+  }
+
+  if (!out.length) return body;  // nothing left to fence — emit a bare body
+  return `---\n${out.join("\n")}\n---\n${body.startsWith("\n") ? body : "\n" + body}`;
 }
 
 function entryScopeParams() {
@@ -125,28 +210,65 @@ async function refreshEntries() {
   }
 }
 
-// Build one library card: monospace name + owner avatar, description, an
-// optional "triggers on …" line, and an optional lifecycle-phase tag, with
-// per-card Edit / Delete actions. Reuses the #186 .avatar / .tag / .ld-btn
-// primitives rather than inventing parallel classes.
+function mi(name) {
+  const i = document.createElement("span");
+  i.className = "material-symbols-outlined";
+  i.setAttribute("aria-hidden", "true");
+  i.textContent = name;
+  return i;
+}
+
+// The card's owner badge (#226): a managed entry renders the bot-avatar style
+// (avatar + login), keyed off the structural `managed` flag — never a literal
+// name. A hand-authored entry with an explicit owner shows a manager tag; with
+// no owner, a neutral "hand-authored" tag.
+function renderOwnerBadge(e) {
+  if (e.managed) {
+    const badge = document.createElement("span");
+    badge.className = "skill-owner";
+    const av = document.createElement("span");
+    av.className = "avatar bot";
+    av.textContent = (e.owner || "?").charAt(0).toUpperCase();
+    const label = document.createElement("span");
+    label.className = "skill-owner-name";
+    label.textContent = e.owner || "managed";
+    badge.title = `${e.owner || "loony-dev"} (loony-dev managed)`;
+    badge.append(av, label);
+    return badge;
+  }
+  const tag = document.createElement("span");
+  if (e.owner) {
+    tag.className = "tag blue";
+    tag.title = `${e.owner} (manager)`;
+    tag.append(mi("hub"), document.createTextNode(e.owner));
+  } else {
+    tag.className = "tag ghost";
+    tag.title = "Hand-authored";
+    tag.textContent = "hand-authored";
+  }
+  return tag;
+}
+
+// Build one library card (#226): an accent icon tile + monospace name + owner
+// badge head row, a description, a hairline divider, a "Triggers on" eyebrow +
+// trigger / ghost phase-tag row, then per-card Edit / Delete actions. Reuses the
+// #186 .avatar / .tag / .eyebrow / .ld-btn primitives.
 function renderCard(e) {
   const card = document.createElement("div");
   card.className = "skill-card";
 
   const head = document.createElement("div");
   head.className = "skill-card-head";
+  const ident = document.createElement("div");
+  ident.className = "skill-ident";
+  const tile = document.createElement("span");
+  tile.className = "skill-icon";
+  tile.appendChild(mi(entryIcon(e)));
   const name = document.createElement("span");
   name.className = "skill-name";
   name.textContent = e.name;
-  head.appendChild(name);
-  if (e.owner) {
-    const isTrixy = e.owner === "trixy";
-    const av = document.createElement("span");
-    av.className = `avatar ${isTrixy ? "trixy" : "capo"}`;
-    av.textContent = e.owner.charAt(0).toUpperCase();
-    av.title = isTrixy ? "trixy (loony-dev managed)" : "capo (hand-authored)";
-    head.appendChild(av);
-  }
+  ident.append(tile, name);
+  head.append(ident, renderOwnerBadge(e));
   card.appendChild(head);
 
   if (e.description) {
@@ -157,21 +279,29 @@ function renderCard(e) {
     card.appendChild(desc);
   }
 
-  if (e.trigger) {
-    const trig = document.createElement("p");
-    trig.className = "skill-trigger";
-    trig.textContent = `triggers on ${e.trigger}`;
-    trig.title = e.trigger;
-    card.appendChild(trig);
-  }
-
-  if (e.phase) {
+  if (e.trigger || e.phase) {
+    card.appendChild(document.createElement("hr")).className = "skill-divider";
     const meta = document.createElement("div");
     meta.className = "skill-card-meta";
-    const tag = document.createElement("span");
-    tag.className = `tag ${PHASE_COLORS[e.phase] || "neutral"}`;
-    tag.textContent = e.phase;
-    meta.appendChild(tag);
+    const trig = document.createElement("div");
+    trig.className = "skill-trigger";
+    if (e.trigger) {
+      const eyebrow = document.createElement("span");
+      eyebrow.className = "eyebrow";
+      eyebrow.textContent = "Triggers on";
+      const val = document.createElement("span");
+      val.className = "skill-trigger-value";
+      val.textContent = e.trigger;
+      val.title = e.trigger;
+      trig.append(eyebrow, val);
+    }
+    meta.appendChild(trig);
+    if (e.phase) {
+      const tag = document.createElement("span");
+      tag.className = `tag ${PHASE_COLORS[e.phase] || "ghost"}`;
+      tag.textContent = e.phase;
+      meta.appendChild(tag);
+    }
     card.appendChild(meta);
   }
 
@@ -198,8 +328,11 @@ function renderCard(e) {
 
 // Reset the editor fields without touching the grid or the drawer visibility.
 function resetEditor() {
-  const { name, content } = entryEls();
+  const { name, owner, trigger, phase, content } = entryEls();
   name.value = "";
+  owner.value = "";
+  trigger.value = "";
+  phase.value = "";
   content.value = "";
   selectedEntry = null;
   showEntryError("");
@@ -224,7 +357,14 @@ function closeDrawer() {
 
 function newEntry() {
   resetEditor();
-  openDrawer(`New ${kindNoun()}`, entryEls().name);
+  openDrawer(`Author ${kindNoun()}`, entryEls().name);
+}
+
+// Keep the ScreenHead primary button label tracking the current kind
+// ("Author skill" / "Author command").
+function syncNewLabel() {
+  const { newLabel } = entryEls();
+  if (newLabel) newLabel.textContent = `Author ${kindNoun()}`;
 }
 
 function openEdit(name) {
@@ -234,7 +374,7 @@ function openEdit(name) {
 }
 
 async function loadEntry(name) {
-  const { kind, name: nameInput, content } = entryEls();
+  const { kind, name: nameInput, owner, trigger, phase, content } = entryEls();
   showEntryError("");
   try {
     const k = validateKind(kind.value);
@@ -242,6 +382,10 @@ async function loadEntry(name) {
     const data = await getJSON(`/api/${k}/${encodeURIComponent(name)}?${params}`);
     nameInput.value = data.name;
     content.value = data.content;
+    const fm = parseFrontmatter(data.content);
+    owner.value = fm.owner || "";
+    trigger.value = fm.trigger || "";
+    phase.value = fm.phase || "";
     selectedEntry = data.name;
   } catch (err) {
     showEntryError(`Failed to load: ${err.message}`);
@@ -249,17 +393,25 @@ async function loadEntry(name) {
 }
 
 async function saveEntry() {
-  const { kind, name, content } = entryEls();
+  const { kind, name, owner, trigger, phase, content } = entryEls();
   const entryName = (name.value || "").trim();
   showEntryError("");
   if (!entryName) { showEntryError("Name is required."); return; }
   try {
     const k = validateKind(kind.value);
     const params = entryScopeParams();
+    // Fold the structured fields back into the content's frontmatter so the
+    // cards re-render the metadata. The raw-markdown PUT contract is unchanged.
+    const body = mergeFrontmatter(content.value, {
+      owner: owner.value,
+      trigger: trigger.value,
+      phase: phase.value,
+    });
+    content.value = body;
     await apiText(`/api/${k}/${encodeURIComponent(entryName)}?${params}`, {
       method: "PUT",
       headers: { "Content-Type": "text/markdown" },
-      body: content.value,
+      body,
     });
     closeDrawer();
     await refreshEntries();
@@ -305,7 +457,7 @@ async function confirmDelete(name) {
 
 export function init() {
   const els = entryEls();
-  els.kind.addEventListener("change", () => { resetEditor(); refreshEntries(); });
+  els.kind.addEventListener("change", () => { syncNewLabel(); resetEditor(); refreshEntries(); });
   els.scope.addEventListener("change", () => { updateRepoPicker(); resetEditor(); refreshEntries(); });
   els.repo.addEventListener("change", () => { resetEditor(); refreshEntries(); });
   document.getElementById("entry-new").addEventListener("click", newEntry);
@@ -313,6 +465,7 @@ export function init() {
   document.getElementById("entry-delete").addEventListener("click", deleteFromDrawer);
   document.getElementById("entry-cancel").addEventListener("click", closeDrawer);
   document.getElementById("entry-cancel-2").addEventListener("click", closeDrawer);
+  syncNewLabel();
   updateRepoPicker();
   refreshEntries();
 }

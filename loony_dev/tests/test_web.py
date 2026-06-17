@@ -390,7 +390,7 @@ class WebAppTestCase(unittest.TestCase):
         self.assertIn("across all connected repos", body)        # Fleet
         self.assertIn("Watch and steer this repo", body)         # Live
         self.assertIn("through to a merged PR", body)            # Issue ▸ PR
-        self.assertIn("slash commands and skills your agents run", body)  # Skills
+        self.assertIn("runs at a stage of the lifecycle", body)  # Skills library (#226)
         # The IDs the JS modules read/write survive the head refactor.
         self.assertIn('id="repo-detail-title"', body)
         self.assertIn('id="repo-quick-actions"', body)
@@ -403,10 +403,12 @@ class WebAppTestCase(unittest.TestCase):
         # The design treats the screen titles as lowercase display labels (#222).
         body = self.client.get("/").text
         self.assertIn("<h2>fleet</h2>", body)
-        self.assertIn("<h2>skills &amp; commands</h2>", body)
+        # Skills is titled "Skills library" per the design mock (#226) — a
+        # sentence-case display label, not the lowercased convention.
+        self.assertIn("<h2>Skills library</h2>", body)
         # The old title-case headings are gone.
         self.assertNotIn("<h2>Fleet</h2>", body)
-        self.assertNotIn("<h2>Skills &amp; Commands</h2>", body)
+        self.assertNotIn("<h2>skills &amp; commands</h2>", body)
 
     def test_index_rail_brand_mark_and_tagline(self) -> None:
         # Rail/brand polish (#222): a 3×3 dot-grid brand mark, the "agent console"
@@ -777,17 +779,34 @@ class EntriesTestCase(unittest.TestCase):
         entries.write_entry("skills", "deploy", body, **self._kw())
         (view,) = entries.list_entries("skills", **self._kw())
         self.assertEqual(view.description, "Deploy the service")
-        self.assertEqual(view.owner, "capo")  # no managed marker => hand-authored
+        self.assertIsNone(view.owner)  # no managed marker, no owner fm => unknown
+        self.assertFalse(view.managed)
         self.assertEqual(view.trigger, "a release tag is pushed")
 
-    def test_owner_is_trixy_when_managed_marker_present(self) -> None:
+    def test_managed_marker_sets_managed_and_owner_to_bot_name(self) -> None:
         body = (
             "---\ndescription: do it\n---\n"
             f"{entries.MANAGED_MARKER}\n\nbody\n"
         )
         entries.write_entry("commands", "ship", body, **self._kw())
-        (view,) = entries.list_entries("commands", **self._kw())
+        (view,) = entries.list_entries("commands", **self._kw(), bot_name="trixy")
+        self.assertTrue(view.managed)
         self.assertEqual(view.owner, "trixy")
+
+    def test_managed_owner_unresolved_without_bot_name(self) -> None:
+        body = f"{entries.MANAGED_MARKER}\n\nbody\n"
+        entries.write_entry("commands", "ship", body, **self._kw())
+        (view,) = entries.list_entries("commands", **self._kw())
+        self.assertTrue(view.managed)
+        self.assertIsNone(view.owner)  # bot_name not supplied
+
+    def test_explicit_owner_frontmatter_wins(self) -> None:
+        # An explicit `owner:` beats both the bot name and the marker default.
+        body = f"---\nowner: capo\n---\n{entries.MANAGED_MARKER}\n\nbody\n"
+        entries.write_entry("commands", "ship", body, **self._kw())
+        (view,) = entries.list_entries("commands", **self._kw(), bot_name="trixy")
+        self.assertTrue(view.managed)
+        self.assertEqual(view.owner, "capo")
 
     def test_phase_from_known_command_mapping(self) -> None:
         entries.write_entry("commands", "plan-issue", "no frontmatter\n", **self._kw())
@@ -817,7 +836,8 @@ class EntriesTestCase(unittest.TestCase):
         self.assertIsNone(view.description)
         self.assertIsNone(view.trigger)
         self.assertIsNone(view.phase)
-        self.assertEqual(view.owner, "capo")
+        self.assertIsNone(view.owner)
+        self.assertFalse(view.managed)
 
     def test_write_round_trips_frontmatter_verbatim(self) -> None:
         # Editing in the drawer must never strip metadata: read-back equals write.
@@ -891,6 +911,26 @@ class EntriesApiTestCase(unittest.TestCase):
             "/api/skills", params={"scope": "repo", "owner": "acme", "repo": "widgets"}
         ).json()
         self.assertEqual([e["name"] for e in listed], ["lint"])
+
+    def test_list_serializes_managed_and_resolved_owner(self) -> None:
+        # A managed entry surfaces managed=true and the resolved bot login; the
+        # bot-name resolver is stubbed so the read-only route never touches `gh`.
+        self.client.put("/api/commands/ship", content=f"{entries.MANAGED_MARKER}\nbody\n")
+        with mock.patch.object(routes, "_resolve_bot_name", return_value="trixy"):
+            listed = self.client.get("/api/commands").json()
+        (entry,) = listed
+        self.assertTrue(entry["managed"])
+        self.assertEqual(entry["owner"], "trixy")
+
+    def test_list_tolerates_bot_name_resolution_failure(self) -> None:
+        # If `gh` is unavailable the resolver yields None and the list still 200s.
+        self.client.put("/api/commands/ship", content=f"{entries.MANAGED_MARKER}\nbody\n")
+        with mock.patch.object(routes, "_resolve_bot_name", return_value=None):
+            resp = self.client.get("/api/commands")
+        self.assertEqual(resp.status_code, 200)
+        (entry,) = resp.json()
+        self.assertTrue(entry["managed"])
+        self.assertIsNone(entry["owner"])
 
     def test_delete_unknown_404(self) -> None:
         self.assertEqual(self.client.delete("/api/skills/ghost").status_code, 404)

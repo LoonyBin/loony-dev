@@ -721,16 +721,17 @@
            observe modals below) so it composes regardless of where the nav puts
            this view. -->
       <section class="view" x-show="$store.app.view === 'skills'">
-        <!-- ScreenHead (#222): title + restored subtitle, with the primary "New"
-             affordance in the right-aligned controls slot. #entry-new preserved. -->
+        <!-- ScreenHead (#222/#226): "Skills library" title + the design subtitle,
+             with the primary "Author skill" affordance in the right-aligned
+             controls slot. #entry-new preserved (label set by kind in entries.js). -->
         <header class="screen-head">
           <div class="screen-head-text">
-            <h2>skills &amp; commands</h2>
-            <p class="screen-head-sub">Author and edit the slash commands and skills your agents run.</p>
+            <h2>Skills library</h2>
+            <p class="screen-head-sub">Worker &amp; manager behaviour is composed from named skills. Each fires on a trigger and runs at a stage of the lifecycle.</p>
           </div>
           <div class="screen-head-controls">
             <button id="entry-new" class="ld-btn md primary" type="button">
-              <span class="material-symbols-outlined" aria-hidden="true">add</span>New
+              <span class="material-symbols-outlined" aria-hidden="true">add</span><span id="entry-new-label">Author skill</span>
             </button>
           </div>
         </header>
@@ -881,6 +882,29 @@
       </div>
       <label class="drawer-field">Name
         <input id="entry-name" type="text" placeholder="entry-name (no slashes)" />
+      </label>
+      <!-- Structured frontmatter fields (#226): conveniences layered over the raw
+           Content textarea. Populated from the content's frontmatter on open and
+           merged back into its `---` block on save — the CRUD contract (raw
+           markdown PUT) is unchanged. -->
+      <div class="drawer-field-row">
+        <label class="drawer-field">Owner
+          <input id="entry-owner" type="text" placeholder="bot login or manager name" />
+        </label>
+        <label class="drawer-field">Lifecycle phase
+          <input id="entry-phase" type="text" list="entry-phase-options" placeholder="e.g. development" />
+          <datalist id="entry-phase-options">
+            <option value="planning"></option>
+            <option value="development"></option>
+            <option value="ci"></option>
+            <option value="review"></option>
+            <option value="conflict"></option>
+            <option value="stuck"></option>
+          </datalist>
+        </label>
+      </div>
+      <label class="drawer-field">Trigger
+        <input id="entry-trigger" type="text" placeholder="what this fires on" />
       </label>
       <label class="drawer-field drawer-field-grow">Content
         <textarea id="entry-content" placeholder="Paste or edit markdown (with frontmatter) here…"></textarea>
