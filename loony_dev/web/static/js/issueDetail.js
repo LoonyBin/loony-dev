@@ -548,8 +548,9 @@ function renderControls(row, pipelineKey) {
     onClick: sessionId ? () => interruptSession(sessionId) : null,
   });
 
-  // Live take-over fallback: enabled only when a live PTY bridge exists; reuses
-  // the existing attach terminal.
+  // Open live terminal — attaches to the session's *local* PTY socket
+  // (/api/sessions/{taskKey}/attach), so it genuinely requires a live bridge and
+  // stays gated on `attachable`: with no PTY there is no terminal to open.
   btn("Open live terminal", {
     variant: "soft",
     disabled: !attachable,
@@ -560,16 +561,15 @@ function renderControls(row, pipelineKey) {
   });
 
   // Take over (drive) — #200: resume & drive the pipeline via the #199
-  // interrogate(drive) endpoint. Per #225 (and the unreliable-PTY framing) it is
-  // greyed until a live PTY bridge exists, for consistency with reply/Interrupt;
-  // the driveControl() code path is kept intact behind the gate so re-enabling
-  // parked drive is a one-line change if we later trust the bridge.
+  // interrogate(drive) endpoint. This is the hosted-relay drive path: it resumes
+  // the session into a *fresh* PTY server-side and opens the returned attach_url,
+  // so it does NOT depend on a pre-existing local PTY (relay-drive ≠
+  // local-PTY-steer). Gating it on `attachable` would regress #200's
+  // parked-pipeline drive, so it stays enabled; driveControl() handles a 409
+  // (lease held by an automated task) via the busy pill.
   btn("Take over", {
-    disabled: !attachable,
-    title: attachable
-      ? "Resume the pipeline into a live terminal and drive it (acquires the lease; release returns control to the bot)"
-      : STEER_DISABLED_TIP,
-    onClick: attachable ? () => driveControl(pipelineKey, row && row.repo) : null,
+    title: "Resume the pipeline into a live terminal and drive it (acquires the lease; release returns control to the bot)",
+    onClick: () => driveControl(pipelineKey, row && row.repo),
   });
 
   // Pause / Reassign: no endpoints exist — a separate functional issue.
