@@ -1030,6 +1030,54 @@ button.action:hover,
 }
 .fleet-main { min-width: 0; }
 
+/* Mobile "Needs your call" triage list (#227): hidden on desktop (the board's
+   Review buttons + the "need you" metric serve that role there). The phone
+   breakpoint below flips it to display:block. Card recipe mirrors the board
+   card surface, border-tinted with the blocked hue so the priority subset reads
+   at a glance. */
+.fleet-triage { display: none; }
+/* Respect the `hidden` fallback even at phone widths (the mobile display:block
+   below would otherwise show the empty section before JS populates it, flashing
+   an empty card). fleet.js clears `hidden` once it renders. Same idiom as
+   .banner[hidden]: the attribute selector outranks the bare-class rules. */
+.fleet-triage[hidden] { display: none; }
+.triage-list { display: flex; flex-direction: column; gap: var(--sp-2); }
+.triage-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 44px;
+  text-align: left;
+  font: inherit;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--state-blocked) 32%, var(--border));
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--sp-3);
+  cursor: pointer;
+}
+.triage-card:hover { border-color: var(--accent); }
+.triage-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.triage-title { font-weight: 600; line-height: 1.3; }
+.triage-title-text { overflow-wrap: anywhere; }
+.triage-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  font-size: var(--fs-1);
+  color: var(--text-muted);
+}
+.triage-where { font-variant-numeric: var(--num); }
+.triage-empty {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-2);
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 /* Board card: a header row (count + removable filter chip) over the table. */
 .fleet-board-card {
   background: var(--surface);
@@ -1232,6 +1280,10 @@ button.action:hover,
     grid-template-columns: repeat(2, minmax(0, 1fr));
     grid-template-rows: none;
   }
+  /* The "Needs your call" triage list (#227) surfaces only at phone widths,
+     pinned above the board with its eyebrow heading. */
+  .fleet-triage { display: block; margin-bottom: var(--sp-4); }
+  .fleet-triage .eyebrow { margin-bottom: var(--sp-2); }
 }
 
 /* ---- Repo detail (#158) ---------------------------------------------- */

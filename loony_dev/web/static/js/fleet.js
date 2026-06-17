@@ -509,6 +509,57 @@ function renderBoard(shown, totalRows) {
   for (const r of shown) tbody.appendChild(boardRow(r));
 }
 
+// ---- Mobile triage ----------------------------------------------------------
+
+// The mobile "Needs your call" triage list (#227): a pinned, always-present
+// priority subset of the worklist, shown only at phone widths (CSS owns the
+// breakpoint — see .fleet-triage in app.css). It reuses the exact `needsYou`
+// predicate that drives the board's Review button + the "need you" metric, so
+// the three never diverge. It honours the active repo filter (faceted, like the
+// rest of Fleet) but is deliberately INDEPENDENT of the metric-card selection:
+// it's a fixed triage surface, not a filtered view, so it stays put while the
+// operator pivots the board. Each card taps through to the Issue ▸ PR detail.
+function triageCard(row) {
+  // A native <button> already carries role + keyboard activation, so wire the
+  // click directly rather than via clickable() (which is for non-button nodes).
+  const card = el("button", "triage-card");
+  card.type = "button";
+  card.addEventListener("click", () => goPipeline(row));
+
+  const title = el("div", "triage-title");
+  title.appendChild(el("span", "fleet-num", `#${row.number}`));
+  title.appendChild(document.createTextNode(" "));
+  title.appendChild(el("span", "triage-title-text", row.title));
+  card.appendChild(title);
+
+  const meta = el("div", "triage-meta");
+  meta.appendChild(stageTag(row.stage));
+  meta.appendChild(el("span", "triage-where", `${repoShort(row.repo)} · ${relTime(row.lastUpdate)}`));
+  card.appendChild(meta);
+
+  return card;
+}
+
+function renderTriage(rows) {
+  const host = document.getElementById("fleet-triage");
+  if (!host) return;
+  // Pass the FULL pre-filter rows; the triage list owns its own filtering so a
+  // metric-card selection never empties it. Repo filter still applies (faceted).
+  let items = rows.filter(needsYou);
+  if (state.repo) items = items.filter((r) => r.repo === state.repo);
+
+  host.innerHTML = "";
+  host.hidden = false; // CSS owns visibility; clear the JS-disabled fallback.
+  host.appendChild(el("div", "eyebrow", "Needs your call"));
+  if (!items.length) {
+    host.appendChild(el("p", "triage-empty", "Nothing needs you right now."));
+    return;
+  }
+  const list = el("div", "triage-list");
+  for (const r of items) list.appendChild(triageCard(r));
+  host.appendChild(list);
+}
+
 // ---- Kanban -----------------------------------------------------------------
 
 // Kanban card: a needs-you tag + the issue number up top, the title, then a
@@ -663,6 +714,9 @@ function draw() {
   renderStatStrip(state.snapshot, rows);
   syncControls();
   renderRepoSidebar(rows);
+  // Mobile-only triage list (#227): pass the full pre-filter rows so a
+  // metric-card selection never empties it. CSS shows it at phone widths only.
+  renderTriage(rows);
 
   const board = document.getElementById("fleet-board");
   const kanban = document.getElementById("fleet-kanban");
