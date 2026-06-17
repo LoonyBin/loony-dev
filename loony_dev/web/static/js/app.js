@@ -14,11 +14,9 @@
 // is down and recreate the source ourselves if the browser gives up entirely.
 
 import * as overview from "./overview.js";
-import * as sessions from "./sessions.js";
 import * as fleet from "./fleet.js";
 import * as repoDetail from "./repoDetail.js";
 import * as issueDetail from "./issueDetail.js";
-import * as logs from "./logs.js";
 import * as entries from "./entries.js";
 import * as attach from "./attach.js";
 import * as observe from "./observe.js";
@@ -52,19 +50,17 @@ function applySnapshot(snapshot) {
   }
   const workers = snapshot.workers || [];
   const worktrees = snapshot.worktrees || [];
-  const sess = snapshot.sessions || [];
   const stuck = snapshot.stuck || [];
-  const taskSessions = snapshot.task_sessions || [];
 
   const stuckCount = overview.renderStuck(stuck);
   const store = appStore();
   if (store) store.stuckCount = stuckCount;
 
-  sessions.render(sess);
-  attach.render(taskSessions);
-  // The Overview body is now the Fleet worklist (#188): a cross-repo stat strip
-  // + board/kanban built by joining the snapshot collections on the pipeline
-  // key. Worker / worktree detail still lives in the per-repo drill-down.
+  // Sessions (remote-control grid + per-task table) are folded into Live and the
+  // Issue ▸ PR detail view (#221), so there are no standalone session writers
+  // here anymore — the remote-control card renders per-repo inside repoDetail.
+  // Fleet is the primary destination: a cross-repo stat strip + board/kanban
+  // built by joining the snapshot collections on the pipeline key.
   fleet.render(snapshot);
   repoDetail.update(snapshot);
   issueDetail.update(snapshot);
@@ -77,7 +73,6 @@ function applySnapshot(snapshot) {
   if (next.join("\n") !== knownRepos.join("\n")) {
     knownRepos = next;
     entries.setKnownRepos(next);
-    logs.setRepos(next);
   }
 }
 
@@ -124,7 +119,6 @@ function connect() {
 
 function start() {
   entries.init();
-  logs.init();
   attach.init();
   observe.init();
   repoDetail.init();

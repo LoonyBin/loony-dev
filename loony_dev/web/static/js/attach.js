@@ -1,7 +1,7 @@
 "use strict";
 
-// Per-task attach + steer (issue #164). Renders the worker-owned PTY sessions as
-// a table with two affordances per task:
+// Per-task attach + steer (issue #164). Two affordances, reused by the Issue ▸ PR
+// detail view (#190) since the standalone Sessions table was folded in (#221):
 //   * Attach  — an embedded xterm.js terminal bridged to the session PTY over a
 //               websocket (live observe + steer; read-only while the bot has the
 //               mic, your keystrokes go through between turns, ESC interrupts).
@@ -10,10 +10,9 @@
 //               drive a live terminal).
 // xterm.js is loaded from a CDN (no build step), mirroring the htmx/Alpine setup.
 
-import { cell, setRows, icon, goPipeline } from "./dom.js";
+import { icon } from "./dom.js";
 import { apiText } from "./api.js";
 import { openModalA11y, closeModalA11y } from "./modal.js";
-import { openObserve } from "./observe.js";
 
 let active = null; // { ws, term, taskKey, resizeHandler, onClose } for the open terminal
 
@@ -151,67 +150,6 @@ export function openTerminal(taskKey, { attachUrl, onClose, title: titleText } =
 
   const closeBtn = document.getElementById("attach-close");
   openModalA11y(modal, closeAttachModal, closeBtn, { closeOnEscape: false });
-}
-
-function renderTaskSession(s) {
-  const tr = document.createElement("tr");
-  tr.appendChild(cell(s.task_key, "Task"));
-  tr.appendChild(cell(s.repo, "Repo"));
-  tr.appendChild(cell(s.status || "—", "Status"));
-
-  const actions = document.createElement("td");
-  actions.dataset.label = "Action";
-
-  // Open is the entry point to the Issue ▸ PR detail view (#190): the
-  // full-page stepper + timeline + steer surface for this pipeline. Routed by
-  // task_key (the snapshot row id); the detail view reads pipeline_key off it.
-  const open = document.createElement("button");
-  open.type = "button";
-  open.className = "action";
-  open.textContent = "Open";
-  open.title = "Open the Issue ▸ PR detail view";
-  open.disabled = !s.repo;
-  open.addEventListener("click", () => goPipeline(s.repo, s.task_key));
-  actions.appendChild(open);
-
-  // Observe is the default surface: it renders the conversation from the JSONL
-  // transcript with no live process required, so it works for parked sessions
-  // between turns as well as active ones (#202).
-  const observe = document.createElement("button");
-  observe.type = "button";
-  observe.className = "action";
-  observe.textContent = "Observe";
-  observe.disabled = !s.observable;
-  observe.title = s.observable
-    ? "Render the conversation from the session transcript"
-    : "No transcript recorded for this session yet";
-  observe.addEventListener("click", () => openObserve(s.task_key));
-  actions.appendChild(observe);
-
-  // Attach is the live "drive" terminal — only when a PTY bridge is present.
-  const attach = document.createElement("button");
-  attach.type = "button";
-  attach.className = "action";
-  attach.textContent = "Attach";
-  attach.disabled = !s.attachable;
-  attach.title = s.attachable ? "Open a live terminal" : "No live session bridge";
-  attach.addEventListener("click", () => openTerminal(s.task_key));
-  actions.appendChild(attach);
-
-  const steer = document.createElement("button");
-  steer.type = "button";
-  steer.className = "action";
-  steer.textContent = "Steer";
-  steer.title = "Send one-shot guidance (runs as the next turn)";
-  steer.addEventListener("click", () => openSteer(s.task_key));
-  actions.appendChild(steer);
-
-  tr.appendChild(actions);
-  return tr;
-}
-
-export function render(taskSessions) {
-  setRows("task-sessions", taskSessions || [], renderTaskSession, "No in-flight task sessions.");
 }
 
 // --- One-shot "send guidance" (inject) -------------------------------------

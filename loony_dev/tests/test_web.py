@@ -222,21 +222,30 @@ class WebAppTestCase(unittest.TestCase):
         for path in (
             "/static/app.css",
             "/static/js/app.js",
+            # sessions.js / logs.js stay reachable after the Sessions + Logs
+            # fold-in (#221): repoDetail imports renderSessionCard + streamLog
+            # from them, and issueDetail imports streamLog from logs.js.
             "/static/js/sessions.js",
+            "/static/js/logs.js",
+            "/static/js/repoDetail.js",
             "/static/js/attach.js",
             "/static/js/issueDetail.js",
         ):
             resp = self.client.get(path)
             self.assertEqual(resp.status_code, 200, path)
 
-    def test_index_wires_sessions_view(self) -> None:
-        # The Sessions view renders join URL + QR cards (#157): the shell must
-        # load the client-side QR library and expose the card-grid container the
-        # sessions module renders into.
+    def test_index_folds_session_surface_into_live(self) -> None:
+        # The remote-control session surface moved into the Live screen (#221):
+        # the shell still loads the client-side QR library, but the standalone
+        # Sessions grid is gone — the join URL + QR card now renders into the Live
+        # repo-detail session panel (repoDetail embeds renderSessionCard there).
         body = self.client.get("/").text
         self.assertIn('qrcode-generator', body)
-        self.assertIn('id="sessions"', body)
-        self.assertIn('class="session-grid"', body)
+        self.assertIn('id="repo-session-body"', body)
+        # The standalone Sessions grid + task-sessions table are folded in.
+        self.assertNotIn('id="sessions"', body)
+        self.assertNotIn('class="session-grid"', body)
+        self.assertNotIn('id="task-sessions"', body)
 
     def test_index_wires_pipeline_view(self) -> None:
         # The Issue ▸ PR detail view (#190): the shell must expose the section,
@@ -257,6 +266,41 @@ class WebAppTestCase(unittest.TestCase):
         self.assertIn('id="pipeline-worktree"', body)
         # The detail module is loaded as part of the app shell's module graph.
         self.assertEqual(self.client.get("/static/js/issueDetail.js").status_code, 200)
+
+    def test_index_primary_nav_is_fleet_and_live(self) -> None:
+        # The design IA (#221): primary nav reads Operate / Fleet · Live, with no
+        # standalone Sessions or Logs destinations. Skills stays in the gear menu.
+        body = self.client.get("/").text
+        # The "Operate" eyebrow sits above the rail nav.
+        self.assertIn('class="rail-nav-eyebrow"', body)
+        self.assertIn(">Operate<", body)
+        # Fleet + Live nav entries (the NAV array the rail renders).
+        self.assertIn('{ id: "fleet", label: "Fleet", icon: "dashboard" }', body)
+        self.assertIn('{ id: "live", label: "Live", icon: "sensors" }', body)
+        # The Fleet + Live view sections are wired to the renamed view ids.
+        self.assertIn("$store.app.view === 'fleet'", body)
+        self.assertIn("$store.app.view === 'live'", body)
+        # The old Overview/Sessions/Logs top-level destinations are gone.
+        self.assertNotIn("$store.app.view === 'overview'", body)
+        self.assertNotIn("$store.app.view === 'sessions'", body)
+        self.assertNotIn("$store.app.view === 'logs'", body)
+        self.assertNotIn('id="log-repo"', body)
+        # Skills stays reachable from the gear flyout.
+        self.assertIn("$store.app.go('skills')", body)
+
+    def test_index_hash_migration_maps_legacy_routes(self) -> None:
+        # Back/forward + old bookmarks must still resolve (#221 AC): the served
+        # shell's parseHash carries the legacy-alias map and the live/ + repo/
+        # prefix branches.
+        body = self.client.get("/").text
+        self.assertIn('const ALIASES = { overview: "fleet", sessions: "live", logs: "live" };', body)
+        self.assertIn('h.startsWith("live/") || h.startsWith("repo/")', body)
+
+    def test_index_pipeline_detail_wires_log_pane(self) -> None:
+        # Logs fold-in (#221): the Issue ▸ PR detail view gained a worker-log tail
+        # pane so log tailing is reachable from the detail surface.
+        body = self.client.get("/").text
+        self.assertIn('id="pipeline-log"', body)
 
     def test_index_declares_responsive_viewport(self) -> None:
         # The mobile companion pass (#192) needs the responsive viewport meta so
