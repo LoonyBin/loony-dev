@@ -23,6 +23,7 @@ pipelines (#197).
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import logging
 import shutil
 import signal
@@ -52,7 +53,7 @@ if TYPE_CHECKING:
 from loony_dev.agents.coding import CodingAgent
 from loony_dev.agents.claude_session import trust_directory
 from loony_dev.commands import install_commands
-from loony_dev import pipeline_lease, session_registry
+from loony_dev import pipeline_lease, pipeline_log, session_registry
 from loony_dev.pipeline_session import PipelineSession
 from loony_dev.session import session_id_for
 
@@ -126,8 +127,11 @@ class Orchestrator:
         self._pipeline_sessions: dict[str, PipelineSession] = {}
         self._pipeline_sessions_lock = threading.Lock()
 
-        repo_short_name = repo.name.split("/", 1)[1] if "/" in repo.name else repo.name
-        self.worktree_root = git.work_dir / ".worktrees" / repo.owner / repo_short_name
+        # Short repo name (``repo`` of ``owner/repo``) — the same anchor the
+        # session registry / pipeline lease use to land state under
+        # ``.logs/<owner>/<repo>/``, so worker and web agree on the layout.
+        self._repo_short_name = repo.name.split("/", 1)[1] if "/" in repo.name else repo.name
+        self.worktree_root = git.work_dir / ".worktrees" / repo.owner / self._repo_short_name
         self._prune_stale_worktrees()
 
     def run(self) -> None:
@@ -137,19 +141,43 @@ class Orchestrator:
         signal.signal(signal.SIGQUIT, self._handle_signal)
 
         logger.info("Orchestrator started. Polling every %ds.", self.interval)
-        while not self._shutdown_requested:
-            try:
-                self._tick()
-            except Exception:
-                logger.exception("Error during tick")
+        # Capture per-pipeline records (issue #220): a handler on the root logger
+        # routes any record emitted under an active ``pipeline_log_context`` to
+        # that pipeline's ``pipelines/<slug>.log``, additive to the worker log.
+        handler = self._install_pipeline_log_handler()
+        try:
+            while not self._shutdown_requested:
+                try:
+                    self._tick()
+                except Exception:
+                    logger.exception("Error during tick")
 
-            # Interruptible sleep: check shutdown flag each second.
-            for _ in range(self.interval):
-                if self._shutdown_requested:
-                    break
-                time.sleep(1)
+                # Interruptible sleep: check shutdown flag each second.
+                for _ in range(self.interval):
+                    if self._shutdown_requested:
+                        break
+                    time.sleep(1)
+            # Drain in-flight tasks *while the handler is still attached* so the
+            # records they emit as they finish (terminal callbacks, milestones)
+            # still reach their pipeline logs. Cleanup happens in the finally.
+            self._on_shutdown()
+        finally:
+            logging.getLogger().removeHandler(handler)
+            handler.close()
 
-        self._on_shutdown()
+    def _install_pipeline_log_handler(self) -> pipeline_log.PipelineLogHandler:
+        """Attach the per-pipeline log handler to the root logger (issue #220).
+
+        Anchored on the same ``(base_dir, owner, repo)`` the session registry and
+        pipeline lease use, so pipeline logs land in the ``.logs/<owner>/<repo>/``
+        tree the web process reads. Attaching to the **root** logger captures
+        every module logger beneath a running task.
+        """
+        handler = pipeline_log.PipelineLogHandler(
+            self.base_dir, self.repo.owner, self._repo_short_name,
+        )
+        logging.getLogger().addHandler(handler)
+        return handler
 
     def _handle_signal(self, signum: int, frame: object) -> None:
         # Signal handlers must stay minimal: only flip flags here. All locking,
@@ -413,7 +441,23 @@ class Orchestrator:
         Runs in a pool thread. ``on_start`` (the lease) has already happened in
         the tick thread. Base-checkout git mutations are serialized by
         ``_git_lock``; agent execution runs outside it for real concurrency.
+
+        The whole body runs under :func:`pipeline_log.pipeline_log_context` when
+        the task belongs to a pipeline (issue #220), so every record emitted
+        beneath it is captured into that pipeline's log in addition to the worker
+        log. No-worktree tasks (e.g. cleanup) stay worker-scope only.
         """
+        pkey = task.worktree_key
+        log_ctx = (
+            pipeline_log.pipeline_log_context(pkey)
+            if pkey is not None
+            else contextlib.nullcontext()
+        )
+        with log_ctx:
+            self._execute_task(agent, task)
+
+    def _execute_task(self, agent: Agent, task: Task) -> None:
+        """Prepare the worktree, run the agent, and finalize (see :meth:`_run_task`)."""
         logger.debug("Task description:\n%s", task.describe())
         # The pipeline's long-lived owner (issue #198): created lazily on the
         # first task for this key, reused by every later phase. ``None`` for
@@ -447,10 +491,17 @@ class Orchestrator:
                     work_dir = self.git.work_dir
 
             # ── Execute (concurrent — runs inside the isolated worktree) ─────
+            # Phase-boundary milestones (issue #220) so the per-pipeline log
+            # reads as a stream of lifecycle events, not just incidental records.
+            logger.info("Agent %s starting %s phase.", agent.name, task.task_type)
             if isinstance(task, IssueTask) and isinstance(agent, CodingAgent):
                 result = agent.execute_issue(task, work_dir=work_dir)
             else:
                 result = agent.execute(task, work_dir=work_dir)
+            logger.info(
+                "Agent %s finished %s phase: %s.",
+                agent.name, task.task_type, "success" if result.success else "failure",
+            )
             if result.success:
                 task.on_complete(self.repo, result)
             elif result.rate_limited:

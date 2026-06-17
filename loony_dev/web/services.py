@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from loony_dev import pipeline_lease, session_registry
+from loony_dev import pipeline_lease, pipeline_log, session_registry
 from loony_dev.agents import session_resume
 from loony_dev.git import GitRepo
 
@@ -960,6 +960,128 @@ def tail_log(base_dir: Path, owner: str, repo: str, lines: int) -> list[str]:
     except FileNotFoundError as exc:
         raise LogNotFoundError(f"no log for {owner}/{repo}") from exc
     return [line.rstrip("\n") for line in tail]
+
+
+# ---------------------------------------------------------------------------
+# Per-pipeline log tail / list / activity (issue #220)
+#
+# A worker now writes a second, per-pipeline log (keyed by ``issue-N`` / ``pr-P``)
+# alongside the universal worker log — see :mod:`loony_dev.pipeline_log`. The path
+# is computed forward only (slug the key); the raw key is recovered from a
+# ``<slug>.key`` sidecar, never by reversing the irreversible slug.
+# ---------------------------------------------------------------------------
+
+def _safe_pipeline_log_path(
+    base_dir: Path, owner: str, repo: str, pipeline_key: str
+) -> Path:
+    """Resolve a pipeline log path for ``owner/repo``, rejecting traversal.
+
+    Mirrors :func:`_safe_repo_log_path`: rejects any segment (including
+    *pipeline_key*) containing a path separator, ``.``/``..``, or NUL, then
+    confirms the forward-computed path stays within the repo's ``pipelines/`` dir.
+    """
+    for segment in (owner, repo, pipeline_key):
+        if not segment or segment in (".", "..") or "/" in segment or "\\" in segment or "\x00" in segment:
+            raise LogNotFoundError(f"invalid path segment: {segment!r}")
+
+    pipelines_root = pipeline_log.pipeline_logs_dir(base_dir, owner, repo).resolve()
+    candidate = pipeline_log.pipeline_log_path(base_dir, owner, repo, pipeline_key).resolve()
+    if pipelines_root not in candidate.parents:
+        raise LogNotFoundError("resolved path escapes pipelines directory")
+    return candidate
+
+
+def tail_pipeline_log(
+    base_dir: Path, owner: str, repo: str, pipeline_key: str, lines: int
+) -> list[str]:
+    """Return up to the last *lines* lines of a pipeline's log.
+
+    Raises :class:`LogNotFoundError` for invalid segments or a missing log file.
+    Keeps only the tail in a bounded ``deque`` so memory stays proportional to
+    *lines* rather than file size (mirrors :func:`tail_log`).
+    """
+    log_path = _safe_pipeline_log_path(base_dir, owner, repo, pipeline_key)
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
+            tail: deque[str] = deque(fh, maxlen=max(lines, 0))
+    except FileNotFoundError as exc:
+        raise LogNotFoundError(
+            f"no pipeline log for {owner}/{repo}:{pipeline_key}"
+        ) from exc
+    return [line.rstrip("\n") for line in tail]
+
+
+def list_pipeline_logs(base_dir: Path, owner: str, repo: str) -> list[str]:
+    """Return the raw pipeline keys that have a log under ``owner/repo``.
+
+    Enumerates the ``pipelines/<slug>.key`` sidecars (the forward-only contract)
+    rather than reversing a ``*.log`` stem, which the irreversible slug makes
+    impossible. A log whose sidecar is missing is skipped defensively. Returns
+    keys sorted for a stable scope-picker order.
+    """
+    pipelines_dir = pipeline_log.pipeline_logs_dir(base_dir, owner, repo)
+    if not pipelines_dir.is_dir():
+        return []
+    keys: list[str] = []
+    for sidecar in sorted(pipelines_dir.glob("*.key")):
+        try:
+            key = sidecar.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        # Only surface a key whose log file actually exists (the sidecar is
+        # written at the same moment, but stay defensive against partial state).
+        if key and sidecar.with_suffix(".log").exists():
+            keys.append(key)
+    return keys
+
+
+def pipeline_activity(
+    base_dir: Path, owner: str, repo: str, pipeline_key: str, lines: int
+) -> list[dict]:
+    """Parse a pipeline log's tail into structured activity-timeline events (#220).
+
+    Each well-formed ``asctime [LEVEL] logger: message`` line becomes
+    ``{ts, level, logger, message, actor}``. Lines that don't match the format
+    (e.g. wrapped traceback continuations) fall back to a raw-text event so no
+    content is dropped. ``actor`` attributes the event: the coding/planning
+    agents → ``trixy`` (the bot account), operator-injection records → ``operator``,
+    everything else → ``system``. This is the structured feed #225 consumes.
+    """
+    tail = tail_pipeline_log(base_dir, owner, repo, pipeline_key, lines)
+    return [_parse_activity_line(line) for line in tail]
+
+
+# ``2026-06-17 12:00:00,123 [INFO] loony_dev.agents.coding: message`` — the
+# worker/pipeline log format (cli.py / pipeline_log.DEFAULT_LOG_FORMAT).
+_ACTIVITY_LINE_RE = re.compile(
+    r"^(?P<ts>\S+ \S+) \[(?P<level>[A-Z]+)\] (?P<logger>[^:]+): (?P<message>.*)$"
+)
+
+
+def _activity_actor(logger_name: str, message: str) -> str:
+    """Attribute an activity event to ``trixy`` / ``operator`` / ``system``."""
+    if "agents.planning" in logger_name or "agents.coding" in logger_name:
+        return "trixy"
+    if "operator" in message.lower():
+        return "operator"
+    return "system"
+
+
+def _parse_activity_line(line: str) -> dict:
+    match = _ACTIVITY_LINE_RE.match(line)
+    if not match:
+        # A continuation line (wrapped traceback, multi-line message): keep it
+        # verbatim rather than dropping it.
+        return {"ts": None, "level": None, "logger": None, "message": line, "actor": "system"}
+    logger_name = match.group("logger")
+    message = match.group("message")
+    return {
+        "ts": match.group("ts"),
+        "level": match.group("level"),
+        "logger": logger_name,
+        "message": message,
+        "actor": _activity_actor(logger_name, message),
+    }
 
 
 # ---------------------------------------------------------------------------
