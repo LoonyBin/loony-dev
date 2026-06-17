@@ -410,5 +410,70 @@ class TestStartupSweep(unittest.TestCase):
         git.remove_worktree.assert_not_called()
 
 
+class TestPipelineLogWiring(unittest.TestCase):
+    """The per-pipeline log handler captures records under a task (issue #220)."""
+
+    def setUp(self) -> None:
+        import logging
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.tmp = Path(self._tmpdir.name)
+        self.git = _make_git(self.tmp)
+        self.agent = MagicMock()
+        self.agent.name = "coding"
+        self.orch = _make_orchestrator(self.tmp, self.git, [self.agent])
+        self.git.reset_mock()
+        # The milestone records are INFO; the orchestrator logger inherits the
+        # root level (WARNING by default in tests), so lower it for the test.
+        root = logging.getLogger()
+        self._prev_level = root.level
+        root.setLevel(logging.DEBUG)
+        self.addCleanup(root.setLevel, self._prev_level)
+        self.handler = self.orch._install_pipeline_log_handler()
+        self.addCleanup(self.handler.close)
+        self.addCleanup(logging.getLogger().removeHandler, self.handler)
+
+    def _make_task(self, *, worktree_key, target_branch=None) -> MagicMock:
+        task = MagicMock()
+        task.worktree_key = worktree_key
+        task.target_branch = target_branch
+        task.task_type = "implement"
+        task.describe.return_value = "do work"
+        return task
+
+    def _pipeline_log_path(self, key: str) -> Path:
+        from loony_dev import pipeline_log
+
+        return pipeline_log.pipeline_log_path(self.tmp, "owner", "repo", key)
+
+    def test_task_with_pipeline_writes_log_and_sidecar(self) -> None:
+        from loony_dev import pipeline_log
+
+        task = self._make_task(worktree_key="issue-7", target_branch="issue-7/slug")
+        self.agent.execute.return_value = TaskResult(success=True, output="", summary="done")
+
+        self.orch.dispatch(self.agent, task)
+
+        log_path = self._pipeline_log_path("issue-7")
+        self.assertTrue(log_path.exists())
+        contents = log_path.read_text()
+        self.assertIn("starting implement phase", contents)
+        self.assertIn("finished implement phase: success", contents)
+        sidecar = pipeline_log.pipeline_key_sidecar_path(self.tmp, "owner", "repo", "issue-7")
+        self.assertEqual(sidecar.read_text().strip(), "issue-7")
+
+    def test_no_worktree_task_writes_no_pipeline_log(self) -> None:
+        from loony_dev import pipeline_log
+
+        task = self._make_task(worktree_key=None)
+        self.agent.execute.return_value = TaskResult(success=True, output="", summary="ok")
+
+        self.orch.dispatch(self.agent, task)
+
+        pipelines_dir = pipeline_log.pipeline_logs_dir(self.tmp, "owner", "repo")
+        self.assertFalse(pipelines_dir.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
