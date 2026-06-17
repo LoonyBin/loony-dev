@@ -563,7 +563,10 @@ class WebAppTestCase(unittest.TestCase):
         css = self.client.get("/static/app.css").text
         self.assertIn(".screen-head", css)
         # Screen titles render at the display type scale, not body size.
-        self.assertIn("font-size: var(--fs-display)", css)
+        # Anchor the property to its selector: --fs-display is shared with
+        # other rules (e.g. .fleet-pool-count), so a bare substring would
+        # still pass if .screen-head-text h2 regressed.
+        self.assertIn(".screen-head-text h2 { margin: 0; font-size: var(--fs-display);", css)
         self.assertIn(".screen-head-sub", css)
         self.assertIn(".rail-mark", css)
         self.assertIn(".rail-collapse-chevron", css)
