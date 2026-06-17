@@ -4,14 +4,26 @@ Guidance for Claude Code working in this repo.
 
 ## What this is
 
-`loony-dev` is an agent orchestrator that watches a GitHub repo and dispatches issues to Claude-powered agents. It is **dogfooded**: it runs against its own issues. On GitHub the bot account is **trixy**. Entry point: `loony-dev` CLI (`loony_dev/cli.py`), orchestrator loop in `loony_dev/orchestrator.py`.
+`loony-dev` is an agent orchestrator that watches a GitHub repo and dispatches issues to Claude-powered agents. It is **dogfooded**: it runs against its own issues. On GitHub the bot account is **trixy**. Entry point: the `loony-dev` CLI (`loony_dev/cli.py`), which is a command group — `worker`, `supervisor`, `web`, `setup`, `hook` (there is no bare `loony-dev` command). The orchestrator loop is in `loony_dev/orchestrator.py`.
+
+## Process model
+
+Three long-running process kinds, **coordinating through the filesystem only** — no IPC/sockets between them except the per-session Unix control/attach sockets under the session registry:
+
+- **worker** (`loony-dev worker`, `loony_dev/orchestrator.py`) — the orchestrator loop for one repo. Runs each *pipeline*'s tasks in a per-pipeline git worktree, retained across all phases of one issue (plan → implement → review → CI fix → conflict) and reclaimed only when the work reaches a terminal GitHub state (see "How work is discovered" below); agents shell out to `claude -p`. GitHub label state prevents two workers taking the same item.
+- **supervisor** (`loony-dev supervisor`, `loony_dev/supervisor.py`) — discovers every accessible repo, runs a `worker` per repo under `<base-dir>/<owner>/<repo>`, and restarts crashed children with exponential backoff. Unless `--no-remote-control` is set it also launches one `claude --remote-control` session per repo and captures the claude.ai join URL into a connection file (see below).
+- **web** (`loony-dev web`, `loony_dev/web/`) — a read-only FastAPI dashboard. It derives all state from the on-disk layout under `<base-dir>/.logs/<owner>/<repo>/` and the session registry; it runs as a wholly separate process and shares no memory with workers.
+
+Shared on-disk surfaces are the coordination substrate: logs/PID files under `<base-dir>/.logs/...`, and the **session registry** (`loony_dev/session_registry.py`) at `<base>/.logs/<owner>/<repo>/sessions/<task-slug>/` (`session.json`, `attach.sock`, `injections/`) — a stable, public-ish contract both workers and the dashboard touch.
 
 ## Commands
 
 - Install: `uv pip install -e .`
 - Run tests: `uv run pytest`
 - Run a single test: `uv run pytest loony_dev/tests/test_x.py::test_name`
-- Run the orchestrator: `loony-dev` (from a git repo with a GitHub remote)
+- Run a single-repo worker: `loony-dev worker` (from a git repo with a GitHub remote)
+- Run the multi-repo supervisor: `loony-dev supervisor --base-dir ./workspace`
+- Run the dashboard: `loony-dev web --base-dir ./workspace`
 
 ## How agents run Claude (turn execution)
 
@@ -30,6 +42,12 @@ Guidance for Claude Code working in this repo.
 - Each hook reads its stdin payload, looks up the session's control socket by `session_id`, and writes one event line. Sockets live at `<claude-config>/_loony/sessions/<session_id>/control.sock`; the session binds the listener **before** forking `claude` so an immediate `SessionStart` is never missed.
 - A long *backstop* timeout (`[worker] claude_session_backstop_seconds`, default 600s) on `open`/`send_turn` is a **liveness net only** — it trips when `claude` crashes before firing a hook, never as the primary signal.
 - Migration seam: `[worker] session_events` selects `"hooks"` (default) or the legacy `"jsonl"` poll/parse path (kept for one release, then deleted). The JSONL path needs no hooks, so it omits the `--settings` payload.
+
+**Mic / turn-lock semantics (dashboard steer).** The session has a single input "mic" guarded by `_turn_lock`. A bot `send_turn` holds the lock for the whole turn; *between* turns the human operator owns the input. `operator_write(data)` enforces this and returns one of three outcomes: it passes the keystrokes through to the PTY between turns (`OPERATOR_WRITTEN`); mid-turn it routes a lone ESC to `interrupt()` so a watching human can abort a stuck turn without killing the process (`OPERATOR_INTERRUPTED`); and mid-turn it **refuses** any other keystroke (`OPERATOR_REFUSED`) so operator input can't corrupt a turn in flight. `interrupt()` writes ESC only when a turn is actually running; the check and the ESC write are atomic under the turn-state lock. This is purely the dashboard observe/steer path — it is **not** how agent turns are executed (those run via `claude -p`, above).
+
+## Slash commands (agent prompts)
+
+Agent prompts are packaged as Claude Code **slash commands**, not inline prompt text (#165/#166). The canonical markdown lives in `loony_dev/commands/*.md`; `install_commands` (called at worker startup, `cli.py`) writes/upgrades them into each repo checkout's `<repo>/.claude/commands/<name>.md` (git-excluded — reinstalled each run). An agent turn is dispatched as a short invocation `/<command> <abs-path-to-context.json>` (`claude_quota._command_turn` → `f"/{command} {path}"`); the command body reads the JSON context file (`loony_dev/agents/context_file.py`). If the command file is missing from the worktree, `CommandNotInstalledError` is raised **loudly** rather than silently falling back to an inline prompt — so don't reintroduce inline prompts; edit the canonical `.md` instead.
 
 ## Conventions
 
@@ -60,6 +78,13 @@ Each tick, the orchestrator enumerates **pipelines** rather than scanning six ta
 - `_find_work` (`orchestrator.py`) sources candidates from `_gather_candidates` (one `next_task()` per pipeline), then arbitrates with the unchanged scheduler: global priority order, the `max_concurrent` / `_free_slots` cap, and `_task_identity` in-flight dedupe.
 - The per-task predicates live as module-level helpers (`*_action`) in each `loony_dev/tasks/*.py`; both the legacy `Task.discover()` (kept for unit tests) and `next_task` call the same helpers, so the logic is identical. Because `next_task` is a pure read, a label-reconciliation side effect (dropping a stale `ready-for-planning` once a plan is approved) now lives in `IssueTask.on_start`, not in discovery.
 
+### Pipeline session (worktree retention)
+
+Each active pipeline owns **one** git worktree, not one per task (`loony_dev/pipeline_session.py`, `Orchestrator._pipeline_sessions`, issue #198). It is lazily created on the pipeline's first task and reused — together with a deterministic Claude session id — across every subsequent phase, so consecutive phases of one issue see the same on-disk state and skip the per-task create/trust/install/teardown cycle.
+
+- **Reclamation is driven by terminal GitHub state, not idle time** (`_reclaim_completed_pipelines`, every tick): a pipeline's worktree is released only once its PR is merged, its PR is closed without merging, or — with no PR — its issue is closed. A pipeline that is still in-flight or held by a drive lease (`loony_dev/pipeline_lease.py`, #199) is always kept.
+- **Debuggability is the point:** because the worktree survives between phases, the operator can `cd <base-dir>/<owner>/<repo>/.worktrees/<owner>/<repo>/issue-N` at any point and inspect exactly what the bot did. Retention is for inspection, not performance.
+
 ## Architecture notes
 
 - `loony_dev/agents/` — `planning.py`, `coding.py` (each shells out to the Claude Code CLI with a session id for context continuity).
@@ -67,4 +92,9 @@ Each tick, the orchestrator enumerates **pipelines** rather than scanning six ta
 - `loony_dev/github/` — GitHub API wrappers (REST + GraphQL via `gh`); `issue.py`, `comment.py`, `client.py`, `repo.py`.
 - `loony_dev/git.py` — `GitRepo` with branch + worktree lifecycle helpers.
 - `loony_dev/coderabbit.py` — wraps `coderabbit review --agent`.
-- Active direction: worktree-isolated parallel task execution and a web dashboard replacing the Textual TUI (issues #126–#134).
+- `loony_dev/pipeline.py` — pipeline discovery + `next_task` (see "How work is discovered").
+- `loony_dev/supervisor.py` — multi-repo supervisor (`loony-dev supervisor`): worker-per-repo with backoff restart + the per-repo `claude --remote-control` relay.
+- `loony_dev/web/` — read-only FastAPI dashboard (`loony-dev web`): SSE/WebSocket streaming with an htmx + Alpine + xterm.js front end; all state derived from `<base-dir>/.logs/...`, observe/steer over the `ClaudeSession` bridge.
+- `loony_dev/session_registry.py` — on-disk session contract under `.logs/<owner>/<repo>/sessions/<task-slug>/`, shared by workers and the dashboard.
+
+The framework rework shipped worktree-isolated parallel task execution and the web dashboard, and **removed the Textual TUI** (issues #126–#134). Residual "why we moved off the PTY/TUI" notes are historical, not descriptions of current components.

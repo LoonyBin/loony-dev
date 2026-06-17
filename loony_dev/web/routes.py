@@ -32,7 +32,7 @@ from loony_dev.web import entries, services, streaming, transcript_stream
 # Frame header shared with the worker-side bridge: 1-byte type + 4-byte BE length.
 _FRAME_HEADER = struct.Struct(">BI")
 
-# Default and maximum tail sizes mirror the TUI defaults (tui.py / cli.py).
+# Default and maximum tail sizes mirror the `loony-dev web --tail-lines` default (cli.py).
 DEFAULT_TAIL_LINES = 100
 MAX_TAIL_LINES = 5000
 

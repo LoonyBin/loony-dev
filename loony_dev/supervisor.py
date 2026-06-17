@@ -1,3 +1,28 @@
+"""Multi-repo process supervisor: a worker (and relay) per accessible repo.
+
+``run_supervisor`` discovers every repository the authenticated ``gh`` user can
+reach (filtered by ``--include`` / ``--exclude``), checks each one out under
+``<base-dir>/<owner>/<repo>``, and for each runs two long-lived child processes:
+
+- a :class:`WorkerProcess` — ``loony-dev worker`` for that repo (the
+  orchestrator loop); and
+- unless ``--no-remote-control`` is set, a :class:`RemoteControlProcess` — a
+  ``claude --remote-control`` session in the repo's base checkout. Its PTY output
+  is scanned for the claude.ai join URL, which (with the live PID) is written to
+  an atomically-rewritten **connection file** so the dashboard can surface the
+  join link / QR via ``/api/sessions``.
+
+Both child kinds are health-checked each ``--interval`` and relaunched through
+exponential backoff (``_restart_after_backoff``) when they crash. New repos are
+picked up every ``--refresh-interval``; pending invitations from
+``--accept-invites-from`` users are auto-accepted.
+
+Coordination with the worker and dashboard is **filesystem-only** — logs and PID
+files under ``<base-dir>/.logs/<owner>/<repo>/``, plus the session registry.
+Signals: ``SIGQUIT`` requests a *graceful* shutdown (let in-flight tasks finish,
+no restarts); ``SIGINT`` / ``SIGTERM`` shut down immediately.
+"""
+
 from __future__ import annotations
 
 import fnmatch
@@ -722,7 +747,8 @@ def _restart_after_backoff(
 def run_supervisor() -> None:
     """Discover repositories, check them out, and run a worker for each.
 
-    Runs until interrupted by SIGINT or SIGTERM.
+    Runs until interrupted: ``SIGQUIT`` shuts down gracefully (in-flight tasks
+    finish, no restarts), ``SIGINT`` / ``SIGTERM`` shut down immediately.
     """
     config.settings.base_dir.mkdir(parents=True, exist_ok=True)
     (config.settings.base_dir / ".logs").mkdir(parents=True, exist_ok=True)
