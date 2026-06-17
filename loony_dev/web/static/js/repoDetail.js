@@ -12,11 +12,12 @@
 // repo from the snapshot → an explicit "pick a repo" state — and navigates to it
 // exactly once (see the single-goRepo guard in show()/update()).
 //
-// Navigation is driven by the Alpine store: index.html's `x-effect` calls
-// show(repo|null) whenever the active view/repo changes. Consolidated state
-// arrives via update(state) from the app-shell orchestrator (the #155
-// /api/events stream); we filter it to the current repo. The log tail uses the
-// existing /api/logs/{owner}/{repo}/stream endpoint via streamLog().
+// Navigation is driven by the Alpine store: app.js's wireDetailViews() effect
+// calls show(repo|null) whenever the active view/repo changes (issue #239 moved
+// this off a load-order-fragile inline x-effect). Consolidated state arrives via
+// update(state) from the app-shell orchestrator (the #155 /api/events stream);
+// we filter it to the current repo. The log tail uses the existing
+// /api/logs/{owner}/{repo}/stream endpoint via streamLog().
 //
 // Graceful-degradation contract (#189): every element with no backing snapshot
 // data is visibly non-functional — a disabled .ld-btn with a tooltip, an
@@ -535,12 +536,12 @@ function renderEmptyLive() {
   }
 }
 
-// Called by index.html's x-effect when the active view/repo changes. Manages
-// the (single) log stream and triggers a render. Idempotent for the same repo
-// so a re-render never restarts the log tail.
+// Called by app.js's wireDetailViews() effect when the active view/repo changes.
+// Manages the (single) log stream and triggers a render. Idempotent for the same
+// repo so a re-render never restarts the log tail.
 function show(repo) {
   // Bare #live (no repo) on the Live destination: resolve a default repo and
-  // navigate to it exactly once. goRepo() re-fires the x-effect → show(default),
+  // navigate to it exactly once. goRepo() re-fires the effect → show(default),
   // which falls through to a normal render below; guarding on `def !== current`
   // keeps it to a single navigation. A show(null) that's really a navigate-away
   // (view is no longer 'live') skips this and tears down instead.
@@ -585,7 +586,7 @@ export function update(state) {
 }
 
 export function init() {
-  // Exposed on window so the Alpine `x-effect` in index.html can drive show().
+  // Exposed on window so app.js's wireDetailViews() effect can drive show().
   window.repoDetail = { show };
   // Honour a deep link (#live/owner/name, or bare #live) if Alpine has booted.
   const store = window.Alpine && window.Alpine.store("app");

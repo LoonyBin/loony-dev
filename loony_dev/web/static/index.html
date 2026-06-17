@@ -453,7 +453,7 @@
              Board↔Kanban toggle in the right-aligned controls slot. -->
         <header class="screen-head">
           <div class="screen-head-text">
-            <h2>fleet</h2>
+            <h2>Fleet</h2>
             <p class="screen-head-sub">One operator, many repos — your operational worklist. Click a metric to filter the worklist, click a worker to open its issue ▸ PR session, or filter by repo on the right.</p>
           </div>
           <div class="screen-head-controls">
@@ -517,8 +517,11 @@
            surface. Reached from the Live nav item (bare #live resolves a default
            repo) or by tapping a Fleet/switcher repo row. The view module renders
            into these slots and live-tails this repo's worker log. -->
-      <section class="view repo-detail" x-show="$store.app.view === 'live'"
-               x-effect="window.repoDetail && window.repoDetail.show($store.app.view === 'live' ? $store.app.repo : null)">
+      <!-- View → repoDetail.show() dispatch is driven from app.js (wireDetailViews),
+           not an inline Alpine effect: the effect short-circuited on
+           window.repoDetail before it was assigned and never re-ran (issue #239).
+           x-show still gates visibility here. -->
+      <section class="view repo-detail" x-show="$store.app.view === 'live'">
         <button class="back-link" type="button" @click="$store.app.go('fleet')">
           <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>All repos</button>
 
@@ -643,8 +646,11 @@
            Reached from a Fleet row (Fleet ▸ Issue ▸ PR); not a nav item. The
            issueDetail module fills the dynamic slots, streams the conversation,
            and tails the worker log while open. -->
-      <section class="view pipeline-detail" x-show="$store.app.view === 'pipeline'"
-               x-effect="window.issueDetail && window.issueDetail.show($store.app.view === 'pipeline' ? $store.app.repo : null, $store.app.view === 'pipeline' ? $store.app.pipelineRoute : null)">
+      <!-- View → issueDetail.show() dispatch is driven from app.js (wireDetailViews),
+           not an inline Alpine effect: the effect short-circuited on
+           window.issueDetail before it was assigned and never re-ran (issue #239).
+           x-show still gates visibility here. -->
+      <section class="view pipeline-detail" x-show="$store.app.view === 'pipeline'">
         <!-- Breadcrumb: Fleet ▸ repo ▸ #N. The JS module renders the segments
              (the #N is parsed from the task_key) and wires their navigation. -->
         <nav id="pipeline-breadcrumb" class="breadcrumb" aria-label="Breadcrumb"></nav>

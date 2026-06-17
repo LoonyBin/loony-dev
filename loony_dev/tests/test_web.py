@@ -459,6 +459,43 @@ class WebAppTestCase(unittest.TestCase):
         self.assertIn("/activity", js)                      # activity-timeline feed
         self.assertIn("STEER_DISABLED_TIP", js)             # disabled-until-PTY tooltip
 
+    def test_detail_view_dispatch_is_driven_from_app_js(self) -> None:
+        # #239: the Live and Issue ▸ PR detail screens rendered empty because the
+        # view → module-show() dispatch lived in inline x-effects that guarded on
+        # `window.repoDetail && …` / `window.issueDetail && …`. Alpine evaluated
+        # those once at startup before app.js assigned the globals, so they
+        # short-circuited, tracked no dependencies, and never re-ran — show() was
+        # effectively never called. The dispatch now lives in app.js, after the
+        # init() calls set the globals and with Alpine already started.
+        #
+        # NOTE: these are string-level guards on the served assets, not rendered-
+        # DOM assertions — there is no JS/DOM harness in this repo (no
+        # package.json), which is the same gap that let the original bug merge.
+        # Closing that fully (a headless-JS test runner) is a separate infra issue.
+        body = self.client.get("/").text
+        # The fragile inline-effect pattern is gone from the shell markup.
+        self.assertNotIn("window.repoDetail && window.repoDetail.show", body)
+        self.assertNotIn("window.issueDetail && window.issueDetail.show", body)
+        # No inline x-effect on the two detail-view <section> tags (where the
+        # short-circuiting dispatch lived). Scoped to those tags rather than the
+        # whole body so a legitimate x-effect elsewhere can't trip this guard.
+        def section_open_tag(cls: str) -> str:
+            start = body.index(f'<section class="{cls}"')
+            return body[start:body.index(">", start) + 1]
+        self.assertNotIn("x-effect", section_open_tag("view repo-detail"))
+        self.assertNotIn("x-effect", section_open_tag("view pipeline-detail"))
+        # The view-gating x-show on each detail section survives.
+        self.assertIn("$store.app.view === 'live'", body)
+        self.assertIn("$store.app.view === 'pipeline'", body)
+        # app.js drives the dispatch via an Alpine.effect that calls both modules'
+        # show() gated on the live / pipeline view.
+        js = self.client.get("/static/js/app.js").text
+        self.assertIn("Alpine.effect", js)
+        self.assertIn("window.repoDetail.show", js)
+        self.assertIn("window.issueDetail.show", js)
+        self.assertIn('view === "live"', js)
+        self.assertIn('view === "pipeline"', js)
+
     def test_index_primary_nav_is_fleet_and_live(self) -> None:
         # The design IA (#221): primary nav reads Operate / Fleet · Live, with no
         # standalone Sessions or Logs destinations. Skills stays in the gear menu.
@@ -519,15 +556,16 @@ class WebAppTestCase(unittest.TestCase):
         self.assertIn('id="pipeline-detail-state"', body)
         self.assertIn('id="entry-new"', body)
 
-    def test_index_lowercases_screen_titles(self) -> None:
-        # The design treats the screen titles as lowercase display labels (#222).
+    def test_index_screen_titles_match_design_casing(self) -> None:
+        # The mock's ScreenHead `title` props are title/sentence-case display
+        # headings (ld-*.jsx): "Fleet", "Skills library" — not lowercased.
         body = self.client.get("/").text
-        self.assertIn("<h2>fleet</h2>", body)
+        self.assertIn("<h2>Fleet</h2>", body)
         # Skills is titled "Skills library" per the design mock (#226) — a
         # sentence-case display label, not the lowercased convention.
         self.assertIn("<h2>Skills library</h2>", body)
-        # The old title-case headings are gone.
-        self.assertNotIn("<h2>Fleet</h2>", body)
+        # The lowercased deviation is gone.
+        self.assertNotIn("<h2>fleet</h2>", body)
         self.assertNotIn("<h2>skills &amp; commands</h2>", body)
 
     def test_index_rail_brand_mark_and_tagline(self) -> None:
@@ -563,6 +601,11 @@ class WebAppTestCase(unittest.TestCase):
         # ship and the folded-away bespoke head rules are gone.
         css = self.client.get("/static/app.css").text
         self.assertIn(".screen-head", css)
+        # Screen titles render at the display type scale, not body size.
+        # Anchor the property to its selector: --fs-display is shared with
+        # other rules (e.g. .fleet-pool-count), so a bare substring would
+        # still pass if .screen-head-text h2 regressed.
+        self.assertIn(".screen-head-text h2 { margin: 0; font-size: var(--fs-display);", css)
         self.assertIn(".screen-head-sub", css)
         self.assertIn(".rail-mark", css)
         self.assertIn(".rail-collapse-chevron", css)
