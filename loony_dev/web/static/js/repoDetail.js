@@ -1,10 +1,16 @@
 "use strict";
 
-// Per-repo Live screen (#158 → restyled by #189): the always-on per-repo
-// main-branch session surface. Three regions — header quick-actions, a center
-// session panel (embedding the #157 join-link/QR card), and a ~284px right
+// Live screen (#158 → restyled by #189 → promoted to a primary nav destination
+// by #221): the always-on per-repo main-branch session surface. Three regions —
+// header quick-actions, a center session panel (embedding the #157 join-link/QR
+// card, the folded-in remote-control session surface), and a ~284px right
 // sidebar (Repos switcher, Repo context, Recent commits, Workers here) — over a
 // secondary block of worktrees, scoped stuck processes, and a live log tail.
+//
+// As a primary destination Live is reachable at bare `#live` (no repo): show()
+// then resolves a default repo — last-viewed (localStorage) → first discovered
+// repo from the snapshot → an explicit "pick a repo" state — and navigates to it
+// exactly once (see the single-goRepo guard in show()/update()).
 //
 // Navigation is driven by the Alpine store: index.html's `x-effect` calls
 // show(repo|null) whenever the active view/repo changes. Consolidated state
@@ -26,6 +32,38 @@ import { renderSessionCard } from "./sessions.js";
 let current = null; // repo currently displayed ("owner/name"), or null
 let lastState = null; // latest consolidated snapshot {workers, worktrees, sessions, stuck}
 let stopLog = null; // stop fn for the active log stream
+
+// Persisted last-viewed repo, so re-opening bare #live lands where you left off.
+const LAST_REPO_KEY = "loony-live-repo";
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* ignore */ } };
+
+// Is the Live primary destination currently active? Used to tell a bare-#live
+// show(null) (resolve a default repo) apart from a navigate-away show(null).
+function isLiveView() {
+  const store = window.Alpine && window.Alpine.store("app");
+  return !!(store && store.view === "live");
+}
+
+// The discovered-repo set from a snapshot (workers + worktrees + sessions),
+// sorted. Mirrors renderReposList's union without seeding a current repo.
+function discoveredRepos(state) {
+  return [...new Set([
+    ...((state ? state.workers : []) || []).map((w) => w.repo),
+    ...((state ? state.worktrees : []) || []).map((w) => w.repo),
+    ...((state ? state.sessions : []) || []).map((s) => s.repo),
+  ])].filter(Boolean).sort((a, b) => a.localeCompare(b));
+}
+
+// Resolve a default repo for bare #live: the last-viewed repo (trusted before
+// the first snapshot, validated against the discovered set after), else the
+// first discovered repo, else null (no repos discovered yet).
+function resolveDefaultRepo() {
+  const discovered = discoveredRepos(lastState);
+  const last = lsGet(LAST_REPO_KEY);
+  if (last && (discovered.length === 0 || discovered.includes(last))) return last;
+  return discovered[0] || null;
+}
 
 function muted(text) {
   const p = document.createElement("p");
@@ -394,17 +432,52 @@ function renderAll() {
   setRows("repo-stuck", stuck, renderStuckRow, "");
 }
 
+// The "pick a repo" state for bare #live with no repo resolved yet: keep the
+// switcher live (so repos can be picked as they appear) and explain the empty
+// session panel rather than leaving stale content.
+function renderEmptyLive() {
+  const bar = document.getElementById("repo-quick-actions");
+  if (bar) bar.innerHTML = ""; // no repo → no per-repo deep-links
+  renderReposList(null, lastState);
+  const titleS = document.getElementById("repo-session-title");
+  if (titleS) titleS.textContent = "";
+  const liveEl = document.getElementById("repo-session-liveness");
+  if (liveEl) liveEl.innerHTML = "";
+  const metaEl = document.getElementById("repo-session-meta");
+  if (metaEl) metaEl.innerHTML = "";
+  const body = document.getElementById("repo-session-body");
+  if (body) {
+    body.innerHTML = "";
+    body.appendChild(muted(discoveredRepos(lastState).length
+      ? "Pick a repo from the Repos list to open its Live screen."
+      : "No repos discovered yet."));
+  }
+}
+
 // Called by index.html's x-effect when the active view/repo changes. Manages
 // the (single) log stream and triggers a render. Idempotent for the same repo
 // so a re-render never restarts the log tail.
 function show(repo) {
+  // Bare #live (no repo) on the Live destination: resolve a default repo and
+  // navigate to it exactly once. goRepo() re-fires the x-effect → show(default),
+  // which falls through to a normal render below; guarding on `def !== current`
+  // keeps it to a single navigation. A show(null) that's really a navigate-away
+  // (view is no longer 'live') skips this and tears down instead.
+  if (!repo && isLiveView()) {
+    const def = resolveDefaultRepo();
+    if (def && def !== current) { goRepo(def); return; }
+  }
   if (repo === current) return;
   if (stopLog) {
     stopLog();
     stopLog = null;
   }
   current = repo || null;
-  if (!current) return; // navigated away from the detail view
+  if (!current) {
+    if (isLiveView()) renderEmptyLive(); // bare #live, no default yet
+    return; // otherwise navigated away from the Live view
+  }
+  lsSet(LAST_REPO_KEY, current);
 
   renderAll();
   const pre = document.getElementById("repo-log");
@@ -417,13 +490,20 @@ function show(repo) {
 // repo detail page is open. Never touches the log stream.
 export function update(state) {
   lastState = state;
-  if (current) renderAll();
+  if (current) { renderAll(); return; }
+  // Bare #live opened before any snapshot: now that repos may be discovered,
+  // resolve the default once (same single-goRepo guard via current===null).
+  if (isLiveView()) {
+    const def = resolveDefaultRepo();
+    if (def) { goRepo(def); return; }
+    renderEmptyLive();
+  }
 }
 
 export function init() {
   // Exposed on window so the Alpine `x-effect` in index.html can drive show().
   window.repoDetail = { show };
-  // Honour a deep link (#repo/owner/name) if Alpine has already booted.
+  // Honour a deep link (#live/owner/name, or bare #live) if Alpine has booted.
   const store = window.Alpine && window.Alpine.store("app");
-  if (store && store.view === "repo" && store.repo) show(store.repo);
+  if (store && store.view === "live") show(store.repo || null);
 }

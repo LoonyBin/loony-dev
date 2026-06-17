@@ -307,6 +307,17 @@ section.view > h2:first-child { margin-top: 0; }
 .rail-logo { font-size: 1.5rem; color: var(--accent); flex: none; }
 .rail-brand-text { overflow: hidden; text-overflow: ellipsis; }
 
+/* "Operate" section label above the primary nav (#221). Uppercase micro label,
+   hidden when the rail is icon-only (tooltips carry the labels there). */
+.rail-nav-eyebrow {
+  padding: var(--sp-2) var(--sp-3) var(--sp-1);
+  font-size: var(--fs-0);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--track-eyebrow);
+  color: var(--text-faint, var(--text-muted));
+}
+
 .rail-nav {
   flex: 1 1 auto;
   min-height: 0;
@@ -488,6 +499,7 @@ main {
 
 /* ---- Collapsed rail (icon-only) -------------------------------------- */
 /* Hide every text label; icons + controls remain, identified by tooltips. */
+[data-rail="collapsed"] .rail-nav-eyebrow,
 [data-rail="collapsed"] .rail-brand-text,
 [data-rail="collapsed"] .nav-label,
 [data-rail="collapsed"] .operator-id,
@@ -621,6 +633,8 @@ main {
      so it folds away and the nav + footer fill the bar. */
   .rail-head { order: 3; gap: 0; }
   .rail-brand { display: none; }
+  /* The "Operate" section label has no room on the bottom tab bar. */
+  .rail-nav-eyebrow { display: none; }
   .rail-nav {
     order: 1;
     flex: 1;
