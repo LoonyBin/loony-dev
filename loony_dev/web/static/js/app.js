@@ -117,6 +117,39 @@ function connect() {
   };
 }
 
+// Dispatch the active view → its detail module's show(), and keep dispatching as
+// the route changes. This used to live in two inline `x-effect`s in index.html,
+// but those were load-order fragile (issue #239): Alpine evaluates an x-effect
+// once synchronously at startup, *before* this deferred module assigns
+// window.repoDetail / window.issueDetail. The effects guarded on
+// `window.repoDetail && …`, so that first pass short-circuited before ever
+// reading view/repo — registering zero reactive dependencies and never
+// re-running, so show() was effectively never called and the detail panels
+// stayed empty. Driving the dispatch from here (after init() has set the
+// globals, with Alpine already started) mirrors how Fleet is rendered from
+// applySnapshot() and removes the coupling at the source.
+function wireDetailViews() {
+  const store = appStore();
+  if (!store || !window.Alpine || !window.Alpine.effect) return;
+  window.Alpine.effect(() => {
+    // Read the tracked fields first and unconditionally so Alpine always
+    // registers them as dependencies (even before the module globals exist),
+    // guaranteeing the effect re-runs on every nav click / hashchange.
+    const view = store.view;
+    const repo = store.repo;
+    const pipelineRoute = store.pipelineRoute;
+    if (window.repoDetail) {
+      window.repoDetail.show(view === "live" ? repo : null);
+    }
+    if (window.issueDetail) {
+      window.issueDetail.show(
+        view === "pipeline" ? repo : null,
+        view === "pipeline" ? pipelineRoute : null,
+      );
+    }
+  });
+}
+
 function start() {
   entries.init();
   attach.init();
@@ -124,6 +157,7 @@ function start() {
   repoDetail.init();
   fleet.init();
   issueDetail.init();
+  wireDetailViews();
   connect();
 }
 
