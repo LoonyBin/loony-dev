@@ -505,7 +505,7 @@ class WebAppTestCase(unittest.TestCase):
         self.assertNotIn('class="skills-head"', body)
         self.assertNotIn('class="pipeline-header"', body)
         # A distinctive slice of each restored subtitle pins the copy in place.
-        self.assertIn("across all connected repos", body)        # Fleet
+        self.assertIn("Click a metric to filter the worklist", body)  # Fleet
         self.assertIn("Watch and steer this repo", body)         # Live
         self.assertIn("through to a merged PR", body)            # Issue ▸ PR
         self.assertIn("runs at a stage of the lifecycle", body)  # Skills library (#226)
