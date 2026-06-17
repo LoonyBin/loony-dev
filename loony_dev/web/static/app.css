@@ -41,6 +41,12 @@
      rail itself both read --rail-w, so toggling the token reflows the layout. */
   --rail-w: 236px;
 
+  /* Height reserved for the mobile bottom tab bar (the rail at ≤720px). The bar
+     itself is height:auto, so this is the assumed clearance that <main> and the
+     sticky steer reply both offset against — one token keeps the two in step
+     (#192). Bump it here if the bar's content height changes. */
+  --bottom-bar-h: 5rem;
+
   /* Accent family — the blueprint blue (#186). soft = tinted fill for selected
      rows/pills; ink = a slightly deeper text-on-light accent. */
   --accent: #2667B7;
@@ -574,6 +580,22 @@ main {
    stops the motion. */
 :root[data-pulse="off"] .stream-dot { animation: none; }
 
+/* ---- Breakpoints ----------------------------------------------------- */
+/* Named viewport breakpoints for the responsive / mobile-companion pass
+   (#192). CSS custom properties can't appear inside a media-query condition
+   without a build step, so these are documentation — the px literals in the
+   media queries are the source of truth, repeated against this scheme:
+     - 720px (--bp-mobile): phone. The left rail becomes a bottom tab bar, the
+                            single-column screen reflows kick in, the pipeline
+                            steer panel becomes a full-screen chat, and the
+                            attach / observe / steer overlays go full-bleed.
+     - 560px (--bp-narrow): sub-phone. .data-table rows collapse to stacked
+                            cards — the Fleet board's mobile triage list.
+     - 860px / 56rem:       tablet. Two-column screen bodies (Fleet, Live,
+                            pipeline detail) fold their sidebar one step before
+                            the phone breakpoint so the main panel gets the
+                            width sooner. */
+
 /* ---- Responsive: rail -> bottom bar ---------------------------------- */
 @media (max-width: 720px) {
   .shell { grid-template-columns: 1fr; }
@@ -588,6 +610,9 @@ main {
     align-items: center;
     gap: var(--sp-1);
     padding: var(--sp-1) var(--sp-2);
+    /* Clear the iOS/Android home-indicator gesture area so the tab bar's hit
+       targets are not occluded at the very bottom of the screen. */
+    padding-bottom: max(var(--sp-1), env(safe-area-inset-bottom));
     border-right: none;
     border-top: 1px solid var(--border);
     z-index: 30;
@@ -613,18 +638,30 @@ main {
     border-top: none;
   }
   .rail-operator .operator-id { display: none; }
+  /* The operator identity (name/handle already hidden) folds to just the gear
+     on the bar; drop the avatar too so the footer can't crowd the nav into a
+     horizontal scroll on the narrowest phones. */
+  .rail-operator > .avatar { display: none; }
   .nav-item {
     flex-direction: column;
     gap: 2px;
-    padding: var(--sp-2);
+    padding: var(--sp-2) var(--sp-1);
     min-width: 0;
+    /* Touch target: a thumb-sized hit area for each tab. */
+    min-height: 44px;
+    justify-content: center;
   }
   .nav-label { font-size: 0.68rem; flex: none; }
+  /* The stuck count + reconnecting signals fold to icon-only chips on the bar
+     (their text spans are display:none below); keep them touch-sized. */
   .stuck-pill-text,
   .stream-status-text { display: none; }
+  .stuck-pill { min-height: 44px; padding: var(--sp-1) var(--sp-2); }
+  .stream-status { min-height: 44px; padding: 0 var(--sp-1); }
   /* Both flyouts pop upward, above the bottom bar. */
   .popover { bottom: calc(100% + var(--sp-1)); top: auto; }
-  main { padding: var(--sp-4); padding-bottom: 5rem; }
+  /* Content clears the fixed bar (taller touch targets) plus the safe-area. */
+  main { padding: var(--sp-4); padding-bottom: calc(var(--bottom-bar-h) + env(safe-area-inset-bottom)); }
 }
 
 /* ---- Tables ---------------------------------------------------------- */
@@ -1028,6 +1065,26 @@ button.action:hover,
 /* Sidebar drops under the worklist on narrow viewports. */
 @media (max-width: 860px) {
   .fleet-body { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Mobile Fleet — the "glance + triage" companion (#192). The desktop stat
+   strip reflows into a compact 2-up tile grid; the worker-pool dot-grid card
+   spans the full width so utilisation stays scannable. The board itself is a
+   .data-table, so it has already collapsed to tap-through cards at 560px (the
+   needs-you / running badge filters turn that into the two triage lists). */
+@media (max-width: 720px) {
+  .fleet-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+  .fleet-stats .stat { padding: var(--sp-3); }
+  .fleet-stats .stat-value { font-size: var(--fs-5); }
+  .stat-pool { grid-column: 1 / -1; }
+  /* Badge filters are the primary triage entry points on a phone — give them a
+     thumb-sized hit area and let the toolbar stack above the worklist. */
+  .fleet-toolbar { gap: var(--sp-2); }
+  .fbadge { padding: var(--sp-2) var(--sp-3); }
 }
 
 /* ---- Repo detail (#158) ---------------------------------------------- */
@@ -1874,6 +1931,32 @@ button.action:hover,
 }
 .pipeline-sidebar { display: flex; flex-direction: column; gap: var(--sp-4); }
 
+/* Mobile steer — the worker conversation as a full-screen chat (#192). At phone
+   width the steer card stretches to fill the viewport, its conversation grows
+   to take the space, and the reply box sticks above the bottom tab bar so the
+   send action stays reachable without scrolling. The inject/observe/attach
+   wiring is untouched — this is layout only. The sidebar (timeline / linked /
+   worktree) already stacked below at 56rem, so the chat reads as primary. */
+@media (max-width: 720px) {
+  .pipeline-steer {
+    /* Fill the space between the stepper and the tab bar so the chat dominates
+       the screen rather than floating as a short card. */
+    min-height: calc(100vh - 13rem);
+  }
+  .pipeline-steer .observe-conv {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 50vh;
+  }
+  .pipeline-reply {
+    position: sticky;
+    bottom: calc(var(--bottom-bar-h) + env(safe-area-inset-bottom));
+    background: var(--surface);
+    padding-top: var(--sp-2);
+  }
+  .pipeline-controls { gap: var(--sp-1) var(--sp-2); }
+}
+
 /* linked issue/PR cards — a titled mini-card with a state tag + kv body. */
 .linked-card {
   border: 1px solid var(--border);
@@ -1902,3 +1985,49 @@ button.action:hover,
 .timeline-row .avatar { width: 1.5rem; height: 1.5rem; font-size: var(--fs-0); }
 .timeline-label { flex: 1; min-width: 0; overflow-wrap: break-word; }
 .timeline-time { color: var(--text-muted); font-size: var(--fs-0); white-space: nowrap; }
+
+/* ====================================================================== */
+/* Mobile companion surfaces (#192)                                       */
+/* ---------------------------------------------------------------------- */
+/* Cross-cutting phone-width rules that don't belong to a single component:
+   full-bleed overlays (the "steer a worker" full-screen chat for the
+   modal-driven paths), thumb-sized touch targets on the dense controls, and a
+   couple of overflow guards. Per-screen reflows (rail -> bottom bar, the Fleet
+   glance grid, the pipeline steer chat) live with their components above. */
+@media (max-width: 720px) {
+  /* Full-bleed overlays: the attach terminal, the observe transcript and the
+     send-guidance box each take the whole phone screen so the terminal / chat
+     and its bottom input use every pixel. The Skills editor drawer keeps its
+     own full-height treatment (.modal-drawer-card, higher specificity). */
+  .modal { padding: 0; }
+  .modal-card {
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    max-height: 100%;
+    border-radius: 0;
+    border: none;
+  }
+  .modal-term { width: 100%; }
+  /* Let the flex children fill the now-taller card instead of capping at a
+     fixed viewport fraction. */
+  .modal-card .attach-term,
+  .modal-card .observe-conv { height: auto; }
+
+  /* Touch targets: bump the dense controls to a ~44px hit area so primary
+     actions are reachable with a thumb. */
+  .icon-btn { min-width: 2.75rem; min-height: 2.75rem; }
+  .ld-btn.sm { min-height: 2.4rem; }
+  button.action,
+  .btn { min-height: 2.75rem; }
+  .segmented > button,
+  .segmented > .seg { padding: var(--sp-2) var(--sp-3); }
+  .data-table td .ld-btn,
+  .data-table td button.action,
+  .data-table td .interrupt-btn,
+  .data-table td .kill-btn { min-height: 2.4rem; }
+
+  /* Overflow guard: long monospace/branch strings inside the stacked table
+     cards must wrap rather than push the card wider than the viewport. */
+  .data-table td.cmdline { word-break: break-all; }
+}
