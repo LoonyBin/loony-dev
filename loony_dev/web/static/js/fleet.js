@@ -469,17 +469,21 @@ function boardRow(row) {
   return tr;
 }
 
-// Board card header: "N workers" (no filter) or "N shown" + a removable chip
-// naming the active metric filter (clears back to "all").
-function renderBoardHead(shown) {
+// Board card header: "N workers" (no filter), or the "N workers / M shown"
+// dual-count when a metric filter is active so the total-vs-visible context
+// survives filtering, plus a removable chip naming the filter (clears to "all").
+function renderBoardHead(shown, total) {
   const host = document.getElementById("fleet-board-head");
   if (!host) return;
   host.innerHTML = "";
   const count = el("span", "fleet-board-count");
-  count.appendChild(el("span", "fleet-board-count-n", String(shown.length)));
-  count.appendChild(document.createTextNode(
-    ` ${state.filter === "all" ? "workers" : "shown"}`,
-  ));
+  count.appendChild(el("span", "fleet-board-count-n", String(total)));
+  count.appendChild(document.createTextNode(" workers"));
+  if (state.filter !== "all") {
+    count.appendChild(document.createTextNode(" / "));
+    count.appendChild(el("span", "fleet-board-count-n", String(shown.length)));
+    count.appendChild(document.createTextNode(" shown"));
+  }
   host.appendChild(count);
   if (state.filter !== "all") {
     host.appendChild(chip(FILTER_LABEL[state.filter] || state.filter, () => {
@@ -666,7 +670,7 @@ function draw() {
   if (kanban) kanban.hidden = state.view !== "kanban";
 
   if (state.view === "board") {
-    renderBoardHead(shown);
+    renderBoardHead(shown, rows.length);
     renderBoard(shown, rows.length);
   } else {
     renderKanban(shown);
