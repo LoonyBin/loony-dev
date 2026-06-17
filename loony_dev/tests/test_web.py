@@ -387,6 +387,8 @@ class WebAppTestCase(unittest.TestCase):
             "/static/js/repoDetail.js",
             "/static/js/attach.js",
             "/static/js/issueDetail.js",
+            # fleet.js drives the Fleet worklist + the #227 mobile triage list.
+            "/static/js/fleet.js",
         ):
             resp = self.client.get(path)
             self.assertEqual(resp.status_code, 200, path)
@@ -587,6 +589,33 @@ class WebAppTestCase(unittest.TestCase):
         self.assertIn("env(safe-area-inset-bottom)", css)
         # Full-bleed overlays make the modal card fill the phone screen.
         self.assertIn("max-height: 100%", css)
+
+    def test_app_css_ships_mobile_triage_rules(self) -> None:
+        # The #227 "Needs your call" triage list is hidden by default (desktop)
+        # and flips on inside the phone breakpoint; its card recipe ships too.
+        css = self.client.get("/static/app.css").text
+        self.assertIn(".fleet-triage { display: none; }", css)
+        self.assertIn(".triage-card", css)
+        # The display:block flip lives inside the phone media query.
+        phone = css.split("@media (max-width: 720px)", 1)
+        self.assertEqual(len(phone), 2, "expected a 720px breakpoint")
+        self.assertIn(".fleet-triage { display: block;", phone[1])
+
+    def test_index_ships_fleet_triage_container(self) -> None:
+        # The mobile triage list renders into a labelled container in Fleet.
+        body = self.client.get("/").text
+        self.assertIn('id="fleet-triage"', body)
+        self.assertIn('aria-label="Needs your call"', body)
+
+    def test_fleet_js_renders_needs_you_triage(self) -> None:
+        # fleet.js defines the triage renderer, reuses the existing `needsYou`
+        # predicate (not a re-definition), and taps through via goPipeline.
+        js = self.client.get("/static/js/fleet.js").text
+        self.assertIn("renderTriage", js)
+        self.assertIn("filter(needsYou)", js)
+        self.assertIn("goPipeline", js)
+        # Exactly one `needsYou` definition survives (the triage list reuses it).
+        self.assertEqual(js.count("function needsYou"), 1)
 
     def test_task_sessions_endpoint_surfaces_pipeline_key(self) -> None:
         # The Issue ▸ PR detail view (#190) addresses the #199 pipeline routes by

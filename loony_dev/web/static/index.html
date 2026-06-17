@@ -479,6 +479,13 @@
 
         <div class="fleet-body">
           <div class="fleet-main">
+            <!-- Mobile-only "Needs your call" triage list (#227): a pinned
+                 priority subset (the rows needing a human), shown only at phone
+                 widths (see app.css). fleet.js renders cards into it that tap
+                 through to the Issue ▸ PR detail. `hidden` is just the
+                 JS-disabled fallback — fleet.js clears it once it renders. -->
+            <section id="fleet-triage" class="fleet-triage" aria-label="Needs your call" hidden></section>
+
             <!-- Board: a card with a "N workers / N shown" header + a removable
                  filter chip, then one row per pipeline. Reuses .data-table's
                  responsive card-collapse on mobile. -->
