@@ -689,6 +689,15 @@
              with a conflict-detour badge. Filled by deriveStage(). -->
         <div id="pipeline-stepper" class="stepper" role="list" aria-label="Lifecycle"></div>
 
+        <!-- ready-for-* label controls (#225): the moved "Assign issue". Buttons
+             to set ready-for-planning / ready-for-development on the issue (POST
+             /api/pipelines/{key}/labels). Rendered + gated by renderLifecycle()
+             (hidden for pr-/other pipelines). -->
+        <div id="pipeline-lifecycle" class="pipeline-lifecycle" role="group"
+             aria-label="Lifecycle controls" hidden></div>
+        <div id="pipeline-lifecycle-error" class="entry-error" role="alert"
+             aria-live="assertive"></div>
+
         <div class="detail-2col">
           <!-- Main: jump in & steer. Inline conversation + reply + control row. -->
           <div class="card pipeline-steer">

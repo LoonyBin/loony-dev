@@ -12,6 +12,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 from fastapi.testclient import TestClient
@@ -439,8 +440,22 @@ class WebAppTestCase(unittest.TestCase):
         self.assertIn('id="pipeline-timeline"', body)
         self.assertIn('id="pipeline-linked"', body)
         self.assertIn('id="pipeline-worktree"', body)
+        # The ready-for-* lifecycle control group + its error slot (#225).
+        self.assertIn('id="pipeline-lifecycle"', body)
+        self.assertIn('id="pipeline-lifecycle-error"', body)
         # The detail module is loaded as part of the app shell's module graph.
         self.assertEqual(self.client.get("/static/js/issueDetail.js").status_code, 200)
+
+    def test_issue_detail_module_wires_label_and_steer_gate(self) -> None:
+        # #225: the detail module consumes the GitHub feed, posts the label
+        # endpoint, gates steer on a live PTY, and reads the activity feed.
+        js = self.client.get("/static/js/issueDetail.js").text
+        self.assertIn("findPipelineView", js)              # consumes snapshot.pipelines
+        self.assertIn("/labels", js)                        # POSTs the label endpoint
+        self.assertIn("ready-for-planning", js)             # ready-for-* controls
+        self.assertIn("ready-for-development", js)
+        self.assertIn("/activity", js)                      # activity-timeline feed
+        self.assertIn("STEER_DISABLED_TIP", js)             # disabled-until-PTY tooltip
 
     def test_index_primary_nav_is_fleet_and_live(self) -> None:
         # The design IA (#221): primary nav reads Operate / Fleet · Live, with no
@@ -2161,6 +2176,183 @@ class GitHubStateApiTestCase(unittest.TestCase):
             resp = self.client.get("/api/pipelines")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), [])
+
+
+class _FakeIssueRecorder:
+    """An ``Issue`` stand-in recording add_label / remove_label calls (#225)."""
+
+    instances: ClassVar[list["_FakeIssueRecorder"]] = []
+    add_result: ClassVar[bool] = True
+    remove_result: ClassVar[bool] = True
+
+    def __init__(self, *, number, _repo):
+        self.number = number
+        self.added: list[str] = []
+        self.removed: list[str] = []
+        _FakeIssueRecorder.instances.append(self)
+
+    def add_label(self, label):
+        self.added.append(label)
+        return _FakeIssueRecorder.add_result
+
+    def remove_label(self, label):
+        self.removed.append(label)
+        return _FakeIssueRecorder.remove_result
+
+
+class SetPipelineLabelTestCase(unittest.TestCase):
+    """`services.set_pipeline_label`: set a ready-for-* label, clear the sibling."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        _FakeIssueRecorder.instances = []
+        _FakeIssueRecorder.add_result = True
+        _FakeIssueRecorder.remove_result = True
+
+    def _make_checkout(self, owner: str, name: str) -> None:
+        (self.base / owner / name / ".git").mkdir(parents=True, exist_ok=True)
+
+    def test_sets_label_and_removes_sibling(self) -> None:
+        self._make_checkout("acme", "widgets")
+        with mock.patch.object(services, "_repo_for", lambda o, n, c: object()), \
+                mock.patch("loony_dev.github.Issue", _FakeIssueRecorder):
+            result = services.set_pipeline_label(
+                self.base, "issue-7", "ready-for-development", "acme/widgets",
+            )
+        issue = _FakeIssueRecorder.instances[0]
+        self.assertEqual(issue.number, 7)
+        self.assertEqual(issue.added, ["ready-for-development"])
+        self.assertEqual(issue.removed, ["ready-for-planning"])
+        self.assertEqual(result["label"], "ready-for-development")
+        self.assertEqual(result["labels"], ["ready-for-development"])
+
+    def test_invalid_label_rejected(self) -> None:
+        self._make_checkout("acme", "widgets")
+        with self.assertRaises(services.LabelControlError):
+            services.set_pipeline_label(self.base, "issue-7", "in-progress", "acme/widgets")
+
+    def test_pr_pipeline_rejected(self) -> None:
+        self._make_checkout("acme", "widgets")
+        with self.assertRaises(services.LabelControlError):
+            services.set_pipeline_label(
+                self.base, "pr-9", "ready-for-planning", "acme/widgets",
+            )
+
+    def test_bad_repo_rejected(self) -> None:
+        for repo in (None, "noslash", "owner/", "/repo", "a/b/c"):
+            with self.subTest(repo=repo):
+                with self.assertRaises(services.LabelControlError):
+                    services.set_pipeline_label(
+                        self.base, "issue-7", "ready-for-planning", repo,
+                    )
+
+    def test_unknown_checkout_raises_session_not_found(self) -> None:
+        # 404 path: a valid request whose repo has no checkout under base_dir.
+        with self.assertRaises(services.SessionNotFoundError):
+            services.set_pipeline_label(
+                self.base, "issue-7", "ready-for-planning", "acme/missing",
+            )
+
+    def test_add_label_failure_raises(self) -> None:
+        self._make_checkout("acme", "widgets")
+        _FakeIssueRecorder.add_result = False
+        with mock.patch.object(services, "_repo_for", lambda o, n, c: object()), \
+                mock.patch("loony_dev.github.Issue", _FakeIssueRecorder):
+            with self.assertRaises(services.LabelControlError):
+                services.set_pipeline_label(
+                    self.base, "issue-7", "ready-for-planning", "acme/widgets",
+                )
+        # The sibling is never removed when the add fails.
+        self.assertEqual(_FakeIssueRecorder.instances[0].removed, [])
+
+    def test_sibling_removal_failure_raises(self) -> None:
+        # A failed sibling removal must raise rather than report a successful
+        # mutually-exclusive state the issue doesn't actually have.
+        self._make_checkout("acme", "widgets")
+        _FakeIssueRecorder.remove_result = False
+        with mock.patch.object(services, "_repo_for", lambda o, n, c: object()), \
+                mock.patch("loony_dev.github.Issue", _FakeIssueRecorder):
+            with self.assertRaises(services.LabelControlError):
+                services.set_pipeline_label(
+                    self.base, "issue-7", "ready-for-development", "acme/widgets",
+                )
+        # The requested label was applied; only the sibling removal failed.
+        issue = _FakeIssueRecorder.instances[0]
+        self.assertEqual(issue.added, ["ready-for-development"])
+        self.assertEqual(issue.removed, ["ready-for-planning"])
+
+
+class SetPipelineLabelApiTestCase(unittest.TestCase):
+    """`POST /api/pipelines/{key}/labels`: status mapping for the label control."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        _make_worker(self.base, "acme", "widgets", os.getpid(), ["x"])
+        (self.base / "acme" / "widgets" / ".git").mkdir(parents=True, exist_ok=True)
+        self.client = TestClient(create_app(base_dir=self.base, supervisor_log=None))
+        _FakeIssueRecorder.instances = []
+        _FakeIssueRecorder.add_result = True
+        _FakeIssueRecorder.remove_result = True
+
+    def test_success_returns_label_set(self) -> None:
+        with mock.patch.object(services, "_repo_for", lambda o, n, c: object()), \
+                mock.patch("loony_dev.github.Issue", _FakeIssueRecorder):
+            resp = self.client.post(
+                "/api/pipelines/issue-7/labels",
+                json={"label": "ready-for-development", "repo": "acme/widgets"},
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["labels"], ["ready-for-development"])
+
+    def test_invalid_label_is_422(self) -> None:
+        resp = self.client.post(
+            "/api/pipelines/issue-7/labels",
+            json={"label": "bogus", "repo": "acme/widgets"},
+        )
+        self.assertEqual(resp.status_code, 422)
+
+    def test_structural_validation_is_400(self) -> None:
+        # Wrong-type / missing fields are structural errors → 400 (matches the
+        # inject_turn / interrogate_pipeline house style), distinct from the 422
+        # semantic rejections above.
+        cases = [
+            {"label": 7, "repo": "acme/widgets"},          # non-string label
+            {"label": "  ", "repo": "acme/widgets"},        # blank label
+            {"label": "ready-for-planning"},                 # missing repo
+            {"label": "ready-for-planning", "repo": 9},     # non-string repo
+        ]
+        for body in cases:
+            with self.subTest(body=body):
+                resp = self.client.post("/api/pipelines/issue-7/labels", json=body)
+                self.assertEqual(resp.status_code, 400)
+
+    def test_pr_pipeline_is_422(self) -> None:
+        resp = self.client.post(
+            "/api/pipelines/pr-9/labels",
+            json={"label": "ready-for-planning", "repo": "acme/widgets"},
+        )
+        self.assertEqual(resp.status_code, 422)
+
+    def test_unknown_checkout_is_404(self) -> None:
+        resp = self.client.post(
+            "/api/pipelines/issue-7/labels",
+            json={"label": "ready-for-planning", "repo": "acme/missing"},
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_add_failure_is_422(self) -> None:
+        _FakeIssueRecorder.add_result = False
+        with mock.patch.object(services, "_repo_for", lambda o, n, c: object()), \
+                mock.patch("loony_dev.github.Issue", _FakeIssueRecorder):
+            resp = self.client.post(
+                "/api/pipelines/issue-7/labels",
+                json={"label": "ready-for-planning", "repo": "acme/widgets"},
+            )
+        self.assertEqual(resp.status_code, 422)
 
 
 if __name__ == "__main__":

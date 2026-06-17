@@ -679,6 +679,77 @@ def github_state(
 
 
 # ---------------------------------------------------------------------------
+# ready-for-* label controls (issue #225) — the moved "Assign issue"
+#
+# The Issue ▸ PR detail page lets a human set the two entry labels that drive
+# the lifecycle state machine (planning → development). They are mutually
+# exclusive, so setting one removes its sibling. Only issue pipelines carry
+# these labels; a pr-P pipeline is rejected.
+# ---------------------------------------------------------------------------
+
+# The two ready-for-* entry labels (loony_dev.github.repo.REQUIRED_LABELS),
+# mutually exclusive: setting one clears the other.
+READY_LABELS = ("ready-for-planning", "ready-for-development")
+
+
+class LabelControlError(Exception):
+    """Raised when a label-control request is invalid (bad label / pr pipeline)."""
+
+
+def set_pipeline_label(
+    base_dir: Path, pipeline_key: str, label: str, repo: str,
+) -> dict:
+    """Set a ready-for-* entry label on an issue pipeline, clearing its sibling.
+
+    Validates *label* against :data:`READY_LABELS` and restricts the operation to
+    ``issue-N`` pipelines (these are issue-lifecycle labels). Raises
+    :class:`LabelControlError` for a bad label / non-issue key / malformed repo
+    (→ 422), :class:`SessionNotFoundError` for an unknown checkout (→ 404), and
+    re-raises a failed ``add_label`` *or* a failed sibling ``remove_label`` as
+    :class:`LabelControlError` (so a partial mutation is never reported as
+    success). Returns the resulting entry-label set so the caller can confirm
+    the new state.
+    """
+    if label not in READY_LABELS:
+        raise LabelControlError(
+            f"'label' must be one of {', '.join(READY_LABELS)}"
+        )
+    if not isinstance(repo, str) or "/" not in repo:
+        raise LabelControlError("'repo' must be 'owner/repo'")
+    owner, name = repo.split("/", 1)
+    if not owner or not name or "/" in name:
+        raise LabelControlError("'repo' must be 'owner/repo'")
+    kind, number = _parse_pipeline_key(pipeline_key)
+    if kind != "issue" or number <= 0:
+        raise LabelControlError(
+            "ready-for-* labels apply to issue pipelines only"
+        )
+    checkout = base_dir / owner / name
+    if not (checkout / ".git").exists():
+        raise SessionNotFoundError(f"no checkout for {repo!r}")
+
+    from loony_dev.github import Issue
+
+    gh_repo = _repo_for(owner, name, checkout)
+    issue = Issue(number=number, _repo=gh_repo)
+    if not issue.add_label(label):
+        raise LabelControlError(f"failed to add label {label!r} to #{number}")
+    # Keep the two entry labels mutually exclusive: drop the sibling. Raise if the
+    # removal fails — returning success here would claim a mutually-exclusive
+    # state we didn't achieve (the issue could keep both ready-for-* labels), and
+    # the repo guideline is to raise on failure rather than report a false result.
+    sibling = next(other for other in READY_LABELS if other != label)
+    if not issue.remove_label(sibling):
+        raise LabelControlError(f"failed to remove sibling label {sibling!r} from #{number}")
+    return {
+        "pipeline_key": pipeline_key,
+        "repo": repo,
+        "label": label,
+        "labels": [label],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Per-task attach + steer sessions (issue #164)
 # ---------------------------------------------------------------------------
 

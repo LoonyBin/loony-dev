@@ -2181,8 +2181,40 @@ button.action:hover,
   font-size: var(--fs-1);
 }
 .timeline-row .avatar { width: 1.5rem; height: 1.5rem; font-size: var(--fs-0); }
+.timeline-row .sdot { flex: none; }
 .timeline-label { flex: 1; min-width: 0; overflow-wrap: break-word; }
 .timeline-time { color: var(--text-muted); font-size: var(--fs-0); white-space: nowrap; }
+
+/* skill chip — a small inline tag attributing a timeline event to a skill. */
+.skill-chip {
+  display: inline-block;
+  padding: 0 var(--sp-1);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: var(--fs-0);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* label chips below a linked card (raw issue/PR labels from the feed). */
+.linked-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin-top: var(--sp-2);
+}
+
+/* ready-for-* lifecycle controls (#225) — the moved "Assign issue" button row. */
+.pipeline-lifecycle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-4);
+}
+.pipeline-lifecycle[hidden] { display: none; }
+.lifecycle-caption { color: var(--text-muted); font-size: var(--fs-1); font-weight: 600; }
 
 /* ====================================================================== */
 /* Mobile companion surfaces (#192)                                       */
