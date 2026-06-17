@@ -304,7 +304,7 @@ section.view > h2:first-child { margin-top: 0; }
 }
 .rail-brand:hover { background: var(--surface-2); }
 .rail-brand:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.rail-brand-text { overflow: hidden; text-overflow: ellipsis; }
+.rail-brand-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; overflow: hidden; }
 
 /* 3×3 dot-grid brand mark (#222): nine accent dots laid out on a grid. CSS-only
    so it stays crisp at both the expanded and collapsed (72px) rail widths and
@@ -1346,7 +1346,7 @@ button.action:hover,
   gap: var(--sp-1);
   min-width: 0;
 }
-.screen-head-text h2 { margin: 0; }
+.screen-head-text h2 { margin: 0; font-size: var(--fs-display); font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; }
 /* The restored per-screen intro copy. */
 .screen-head-sub {
   margin: 0;
