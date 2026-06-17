@@ -54,6 +54,11 @@
   --accent-soft: #EFF6FF;
   --accent-ink: #1D4ED8;
 
+  /* Brand-mark chip ink (#243): the fixed dark tile the 3×3 dot grid sits on.
+     Defined once (not per-theme) so the brand mark reads as the same dark chip
+     with light dots in both light and dark themes. */
+  --ink: #1a1f26;
+
   /* Lifecycle state colors (the label state machine's hues). in-progress
      reuses the accent so "working" reads as the primary brand color. */
   --state-merged: #10B981;
@@ -306,23 +311,30 @@ section.view > h2:first-child { margin-top: 0; }
 .rail-brand:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .rail-brand-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; overflow: hidden; }
 
-/* 3×3 dot-grid brand mark (#222): nine accent dots laid out on a grid. CSS-only
-   so it stays crisp at both the expanded and collapsed (72px) rail widths and
-   needs no new asset/font. */
+/* Brand mark (#222, retiled #243): a 30×30 dark (--ink) rounded-square chip
+   holding a 3×3 dot grid. The dots carry roles — one .accent dot, white .on
+   dots, and dimmed (default) dots — to mirror the L Space mock. CSS-only so it
+   stays crisp at both the expanded and collapsed (72px) rail widths and needs
+   no new asset/font. */
 .rail-mark {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   grid-template-rows: repeat(3, 1fr);
   gap: 3px;
-  width: 1.4rem;
-  height: 1.4rem;
+  width: 30px;
+  height: 30px;
+  padding: 5px;
+  background: var(--ink);
+  border-radius: var(--radius-sm);
   flex: none;
 }
 .rail-mark i {
   display: block;
   border-radius: 50%;
-  background: var(--accent);
+  background: rgba(255, 255, 255, 0.25); /* dimmed "off" dots */
 }
+.rail-mark i.on     { background: #fff; }
+.rail-mark i.accent { background: var(--accent); }
 
 /* Hover/focus collapse chevron (#222): a quiet affordance pinned to the right
    edge of the brand button, revealed on hover/focus. It points the way the rail
@@ -471,8 +483,8 @@ section.view > h2:first-child { margin-top: 0; }
   border: 1px solid rgba(0, 0, 0, 0.15);
 }
 .accent-swatch[data-accent-swatch="blue"]    { background: #2667B7; }
-.accent-swatch[data-accent-swatch="violet"]  { background: #7C3AED; }
-.accent-swatch[data-accent-swatch="emerald"] { background: #10B981; }
+.accent-swatch[data-accent-swatch="violet"]  { background: #6D4AE0; } /* mock ACCENTS hue (#243) */
+.accent-swatch[data-accent-swatch="emerald"] { background: #0F8A5B; } /* mock ACCENTS hue (#243) */
 .accent-swatch[data-accent-swatch="slate"]   { background: #64748B; }
 
 /* Preferences page — the shell tweaks promoted out of the old rail flyout into

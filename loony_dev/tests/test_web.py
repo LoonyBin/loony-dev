@@ -536,6 +536,10 @@ class WebAppTestCase(unittest.TestCase):
         # tagline (not "dashboard"), and a hover collapse chevron.
         body = self.client.get("/").text
         self.assertIn('class="rail-mark"', body)
+        # The brand mark's dots carry roles (#243): one accent dot + white "on"
+        # dots, the rest dimmed — so the tile mirrors the L Space mock pattern.
+        self.assertIn('<i class="accent">', body)
+        self.assertIn('<i class="on">', body)
         self.assertIn('class="brand-sub">agent console<', body)
         # The old Material Symbols logo + "dashboard" tagline are gone from the rail.
         self.assertNotIn(">deployed_code<", body)
@@ -571,12 +575,39 @@ class WebAppTestCase(unittest.TestCase):
         self.assertIn(".screen-head-text h2 { margin: 0; font-size: var(--fs-display);", css)
         self.assertIn(".screen-head-sub", css)
         self.assertIn(".rail-mark", css)
+        # The brand mark is a dark --ink rounded tile holding the dot grid (#243),
+        # with the dots carrying accent/on/dimmed roles.
+        self.assertIn("--ink:", css)
+        self.assertIn("background: var(--ink);", css)
+        self.assertIn("width: 30px;", css)
+        self.assertIn(".rail-mark i.on", css)
+        self.assertIn(".rail-mark i.accent", css)
         self.assertIn(".rail-collapse-chevron", css)
         self.assertIn(".menu-cap", css)
         # The three bespoke head selectors folded into .screen-head.
         self.assertNotIn(".live-head {", css)
         self.assertNotIn(".skills-head {", css)
         self.assertNotIn(".pipeline-header {", css)
+
+    def test_app_css_accent_swatch_hues_match_mock(self) -> None:
+        # Preference preview swatches (#243): violet/emerald drifted from the mock
+        # ACCENTS palette. Anchor to the swatch selector — the old hues still
+        # legitimately appear elsewhere (#10B981 is --state-merged; #7C3AED is the
+        # applied violet accent / tag / avatar), so a bare substring check is wrong.
+        css = self.client.get("/static/app.css").text
+        self.assertIn(
+            '.accent-swatch[data-accent-swatch="violet"]  { background: #6D4AE0;', css
+        )
+        self.assertIn(
+            '.accent-swatch[data-accent-swatch="emerald"] { background: #0F8A5B;', css
+        )
+        # The drifted hues are gone from the swatch selectors.
+        self.assertNotIn(
+            '.accent-swatch[data-accent-swatch="violet"]  { background: #7C3AED;', css
+        )
+        self.assertNotIn(
+            '.accent-swatch[data-accent-swatch="emerald"] { background: #10B981;', css
+        )
 
     def test_index_declares_responsive_viewport(self) -> None:
         # The mobile companion pass (#192) needs the responsive viewport meta so

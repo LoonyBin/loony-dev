@@ -301,10 +301,15 @@
           :aria-label="$store.app.collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
           data-tooltip="loony-dev"
         >
-          <!-- 3×3 dot-grid brand mark (#222): nine CSS dots, accent-colored, no
-               new asset/font so it stays crisp at both rail widths. -->
+          <!-- Brand mark (#222, retiled #243): a dark --ink rounded tile holding
+               nine CSS dots. Roles mirror the L Space mock — one .accent dot
+               (top-left), white .on dots tracing an "L" down the left column and
+               across the bottom, the rest dimmed. No asset/font so it stays
+               crisp at both rail widths. -->
           <span class="rail-mark" aria-hidden="true">
-            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            <i class="accent"></i><i></i><i></i>
+            <i class="on"></i><i></i><i></i>
+            <i class="on"></i><i class="on"></i><i class="on"></i>
           </span>
           <span class="rail-brand-text">loony-dev <span class="brand-sub">agent console</span></span>
           <!-- Hover/focus collapse hint (#222): a chevron that points the way the
