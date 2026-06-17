@@ -636,6 +636,22 @@ async def _observe_session(base_dir: Path, websocket: WebSocket, task_key: str) 
             await websocket.close()
 
 
+def _resolve_bot_name() -> str | None:
+    """Best-effort GitHub bot login for owner resolution, or ``None``.
+
+    The read-only dashboard must never 500 because ``gh`` is unavailable, so any
+    failure resolving the login degrades to ``None`` (managed entries without an
+    explicit ``owner`` frontmatter simply list with no owner). Resolution itself
+    is ``lru_cache``d on ``Repo.detect_bot_name``.
+    """
+    from loony_dev.github.repo import Repo
+
+    try:
+        return Repo.detect_bot_name() or None
+    except Exception:
+        return None
+
+
 def _register_entry_routes(router: APIRouter, kind: str, *, base_dir: Path,
                            global_root: Path) -> None:
     """Register CRUD endpoints for one entry *kind* ("skills" / "commands").
@@ -656,7 +672,9 @@ def _register_entry_routes(router: APIRouter, kind: str, *, base_dir: Path,
         repo: str | None = None,
     ) -> list[dict]:
         try:
-            views = entries.list_entries(kind, **scope_kwargs(scope, owner, repo))
+            views = entries.list_entries(
+                kind, **scope_kwargs(scope, owner, repo), bot_name=_resolve_bot_name()
+            )
         except entries.EntryError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return [asdict(v) for v in views]
