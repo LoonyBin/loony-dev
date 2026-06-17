@@ -66,7 +66,7 @@ const STAGE_TONE = {
   "Inbox": "ghost",
   "Planning": "amber",
   "Implementing": "blue",
-  "PR Open": "blue",
+  "PR Open": "neutral",
   "In Review": "amber",
   "Conflicts": "red",
 };

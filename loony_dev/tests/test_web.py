@@ -578,6 +578,33 @@ class WebAppTestCase(unittest.TestCase):
         self.assertNotIn(".skills-head {", css)
         self.assertNotIn(".pipeline-header {", css)
 
+    def test_app_css_ships_nav_active_and_tag_fidelity(self) -> None:
+        # Mock-fidelity color treatments (#244): the selected nav item is a soft
+        # tint + accent ink (not a solid fill), and amber/red/green status tags
+        # are ink-on-soft-solid via themed tag tokens.
+        css = self.client.get("/static/app.css").text
+        # Active nav: soft-tint treatment replaces the old solid-fill rule.
+        self.assertIn(
+            ".nav-item.active { background: var(--accent-soft); color: var(--accent-ink); }",
+            css,
+        )
+        self.assertNotIn(
+            ".nav-item.active { background: var(--primary); color: var(--primary-contrast); }",
+            css,
+        )
+        # Light-mode mock hexes ship as tag tokens.
+        self.assertIn("--tag-amber-bg: #FFFBEB; --tag-amber-ink: #B45309;", css)
+        self.assertIn("--tag-red-bg:   #FEF2F2; --tag-red-ink:   #B91C1C;", css)
+        self.assertIn("--tag-green-bg: #ECFDF5; --tag-green-ink: #047857;", css)
+        # The tag rules consume the tokens (ink-on-soft-solid) rather than the
+        # old base-color-on-alpha pairing.
+        self.assertIn(".tag.amber   { background: var(--tag-amber-bg); color: var(--tag-amber-ink); }", css)
+        self.assertIn(".tag.red     { background: var(--tag-red-bg); color: var(--tag-red-ink); }", css)
+        self.assertIn(".tag.green   { background: var(--tag-green-bg); color: var(--tag-green-ink); }", css)
+        # .tag.purple is retained — the activity timeline's "review" phase still
+        # uses it even though "PR Open" no longer maps to purple.
+        self.assertIn(".tag.purple", css)
+
     def test_index_declares_responsive_viewport(self) -> None:
         # The mobile companion pass (#192) needs the responsive viewport meta so
         # phones lay out at device width instead of a zoomed-out desktop page.

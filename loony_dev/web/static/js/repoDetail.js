@@ -112,7 +112,7 @@ const STAGE_TONE = {
   "Inbox": "ghost",
   "Planning": "blue",
   "Implementing": "blue",
-  "PR Open": "purple",
+  "PR Open": "neutral",
   "In Review": "amber",
   "Conflicts": "red",
   "Merged": "green",
