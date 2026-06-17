@@ -6,13 +6,15 @@
 // and the L Space design-system primitives from #186 (.stat, .segmented,
 // .tag.*, .avatar.trixy, .statepill/.sdot.*).
 //
-// Data reality (see plan): the web layer is filesystem-only, so the snapshot
-// carries no GitHub label/PR state. Lifecycle-only fields (real titles, the
-// In Review / Conflicts / Merged stages, a true PRs-open count) have no source
-// here, so they DEGRADE GRACEFULLY — rendered as deferred/empty rather than
-// fabricated — until a richer orchestrator-written feed lands (follow-up).
-// Everything derivable from workers / worktrees / sessions / task_sessions /
-// stuck is live.
+// Data reality (#219): the snapshot now carries *partial* GitHub state —
+// `snapshot.pipelines` (per-pipeline real title, label/PR-derived stage, raw
+// labels) and `snapshot.repos` (per-repo open issue / open PR counts). Those
+// drive the real titles, the In Review / Conflicts stages + filters, and the
+// PRs-open / Issues-open / In-review / In-conflict stats. They DEGRADE
+// GRACEFULLY: when GitHub state is disabled or a fetch fails the lists arrive
+// empty and we fall back to the filesystem-derived coarse stage / de-slugged
+// title and the deferred `—` counts. Everything derivable from workers /
+// worktrees / sessions / task_sessions / stuck stays live regardless.
 
 import { goRepo, icon, formatAge } from "./dom.js";
 
@@ -93,6 +95,7 @@ export function buildRows(snapshot) {
   const sessions = snapshot.sessions || [];
   const stuck = snapshot.stuck || [];
   const taskSessions = snapshot.task_sessions || [];
+  const pipelines = snapshot.pipelines || [];
 
   const rows = new Map();
   const ensure = (p, repo) => {
@@ -100,8 +103,8 @@ export function buildRows(snapshot) {
     if (!r) {
       r = {
         key: p.key, kind: p.kind, number: p.number, repo: repo || null,
-        title: null, stage: "Inbox", state: "idle", running: false, stuck: false,
-        lastUpdate: null,
+        title: null, stage: "Inbox", ghStage: null, labels: [],
+        state: "idle", running: false, stuck: false, lastUpdate: null,
       };
       rows.set(p.key, r);
     }
@@ -134,12 +137,27 @@ export function buildRows(snapshot) {
     if (!p) continue;
     ensure(p, s.worker_repo).stuck = true;
   }
+  // GitHub state (#219): real title + label/PR-derived stage + raw labels. This
+  // also SEEDS pipelines (Planning / Inbox / In Review …) that have no local
+  // worktree or session yet, so the board and kanban columns populate from
+  // GitHub even before the worker touches the pipeline on disk.
+  for (const g of pipelines) {
+    const p = parseKey(g.pipeline_key);
+    if (!p) continue;
+    const r = ensure(p, g.repo);
+    if (g.title) r.title = g.title; // real issue/PR title wins over de-slug
+    if (g.stage) r.ghStage = g.stage;
+    if (Array.isArray(g.labels)) r.labels = g.labels;
+    r.lastUpdate = newer(r.lastUpdate, g.updated_at);
+  }
 
   for (const r of rows.values()) {
-    // Coarse stage: PRs read as "PR Open"; an issue with a live task session is
-    // "Implementing"; everything else is "Inbox". Planning / Review / Conflicts
-    // / Merged need label state we do not have here.
-    r.stage = r.kind === "pr" ? "PR Open" : r.running ? "Implementing" : "Inbox";
+    // Prefer the real GitHub stage; fall back to the coarse filesystem guess
+    // when GitHub state is absent (disabled / fetch failed / pipeline unseen):
+    // PRs read as "PR Open", an issue with a live task session "Implementing",
+    // everything else "Inbox".
+    const coarse = r.kind === "pr" ? "PR Open" : r.running ? "Implementing" : "Inbox";
+    r.stage = r.ghStage || coarse;
     r.state = r.stuck ? "blocked" : r.running ? "active" : "idle";
     if (!r.title) r.title = r.key;
   }
@@ -148,12 +166,15 @@ export function buildRows(snapshot) {
   return [...rows.values()].sort((a, b) => b.number - a.number);
 }
 
-// Compute the stat-strip metrics. Only derivable cells get live numbers;
-// in-review / in-conflict are deferred (no source), never a fake 0.
+// Compute the stat-strip metrics. PRs-open / issues-open / in-review /
+// in-conflict draw on GitHub state (#219) when present; when `snapshot.repos`
+// is empty (disabled / failed) the open counts stay deferred (`—`, never a
+// fake 0). In-review / in-conflict are live row counts off the real stage.
 function buildStats(snapshot, rows) {
   const workers = snapshot.workers || [];
   const taskSessions = snapshot.task_sessions || [];
   const stuck = snapshot.stuck || [];
+  const repos = snapshot.repos || [];
 
   const runningWorkers = workers.filter((w) => w.status === "running");
   const reposOnline = new Set(runningWorkers.map((w) => w.repo).filter(Boolean));
@@ -162,13 +183,25 @@ function buildStats(snapshot, rows) {
   );
   const busy = runningWorkers.filter((w) => busyRepos.has(w.repo)).length;
 
+  // Sum the per-repo GitHub counts, ignoring repos whose fetch failed (ok=false
+  // / null counts). `haveCounts` distinguishes "no GitHub feed" (defer to `—`)
+  // from a genuine zero.
+  const okRepos = repos.filter((r) => r.ok && typeof r.open_prs === "number");
+  const haveCounts = okRepos.length > 0;
+  const prsOpen = okRepos.reduce((n, r) => n + (r.open_prs || 0), 0);
+  const issuesOpen = okRepos.reduce((n, r) => n + (r.open_issues || 0), 0);
+
   return {
     reposOnline: reposOnline.size,
-    prsOpen: rows.filter((r) => r.kind === "pr").length,
+    haveCounts,
+    prsOpen,
+    issuesOpen,
     workersTotal: runningWorkers.length,
     workersBusy: busy,
     needsYou: stuck.length,
     running: rows.filter((r) => r.state === "active").length,
+    inReview: rows.filter((r) => r.stage === "In Review").length,
+    inConflict: rows.filter((r) => r.stage === "Conflicts").length,
   };
 }
 
@@ -267,12 +300,14 @@ function renderStats(snapshot, rows) {
   const s = buildStats(snapshot, rows);
   host.innerHTML = "";
   host.appendChild(statCard("Repos online", s.reposOnline));
-  host.appendChild(statCard("PRs open", s.prsOpen));
+  // Open counts come from GitHub state; defer to `—` only when no repo feed.
+  host.appendChild(statCard("PRs open", s.prsOpen, !s.haveCounts));
+  host.appendChild(statCard("Issues open", s.issuesOpen, !s.haveCounts));
   host.appendChild(workerPoolCard(s.workersBusy, s.workersTotal));
   host.appendChild(statCard("Needs you", s.needsYou));
   host.appendChild(statCard("Running", s.running));
-  host.appendChild(statCard("In review", 0, true));
-  host.appendChild(statCard("In conflict", 0, true));
+  host.appendChild(statCard("In review", s.inReview));
+  host.appendChild(statCard("In conflict", s.inConflict));
 }
 
 // ---- Board ------------------------------------------------------------------

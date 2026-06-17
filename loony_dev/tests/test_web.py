@@ -864,7 +864,8 @@ class StateEventsEndpointTestCase(unittest.IsolatedAsyncioTestCase):
             snapshot = json.loads(await _read_first_sse_event(drv))
         self.assertEqual(
             set(snapshot),
-            {"workers", "worktrees", "sessions", "task_sessions", "stuck"},
+            {"workers", "worktrees", "sessions", "task_sessions", "stuck",
+             "pipelines", "repos"},
         )
         # The snapshot mirrors the per-resource endpoints: the seeded worker shows.
         self.assertEqual([w["repo"] for w in snapshot["workers"]], ["acme/widgets"])
@@ -1404,6 +1405,264 @@ class SessionInterruptReproducerTestCase(unittest.TestCase):
         follow_up = session.send_turn("after interrupt", timeout=10.0)
         self.assertFalse(follow_up.was_interrupted)
         self.assertEqual(session.pid, pid)
+
+
+# ---------------------------------------------------------------------------
+# Partial GitHub state (issue #219)
+# ---------------------------------------------------------------------------
+
+from datetime import datetime, timezone  # noqa: E402
+
+
+class _FakeFacet:
+    """Minimal stand-in for an Issue/PR facet used by the GitHub-state layer."""
+
+    def __init__(self, *, title="", labels=None, updated_at=None,
+                 mergeable=None, reviews=None):
+        self.title = title
+        self.labels = labels or []
+        self.updated_at = updated_at
+        self.mergeable = mergeable
+        self.reviews = reviews or []
+
+
+class _FakePipeline:
+    def __init__(self, key, *, issue=None, pr=None):
+        self.pipeline_key = key
+        self.issue = issue
+        self.pr = pr
+
+
+class DeriveStageTestCase(unittest.TestCase):
+    """`derive_stage` maps label / PR state into the Fleet stages (pure)."""
+
+    def test_issue_labels_map_to_stages(self) -> None:
+        self.assertEqual(services.derive_stage(["ready-for-planning"], None), "Planning")
+        self.assertEqual(services.derive_stage(["in-progress"], None), "Implementing")
+        self.assertEqual(services.derive_stage(["ready-for-development"], None), "Inbox")
+        self.assertEqual(services.derive_stage([], None), "Inbox")
+
+    def test_in_error_is_not_a_stage(self) -> None:
+        # in-error rides the raw labels list; the stage still reflects the rest.
+        self.assertEqual(
+            services.derive_stage(["in-error", "in-progress"], None), "Implementing"
+        )
+        self.assertEqual(services.derive_stage(["in-error"], None), "Inbox")
+
+    def test_pr_state_dominates(self) -> None:
+        conflicting = _FakeFacet(mergeable="CONFLICTING")
+        self.assertEqual(services.derive_stage(["in-progress"], conflicting), "Conflicts")
+        reviewed = _FakeFacet(reviews=[object()])
+        self.assertEqual(services.derive_stage([], reviewed), "In Review")
+        clean = _FakeFacet(mergeable="MERGEABLE")
+        self.assertEqual(services.derive_stage([], clean), "PR Open")
+
+
+class FetchGitHubStateTestCase(unittest.TestCase):
+    """`_fetch_github_state` builds views and isolates per-repo failures."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _make_checkout(self, owner: str, name: str) -> None:
+        (self.base / ".logs" / owner / name).mkdir(parents=True, exist_ok=True)
+        (self.base / owner / name / ".git").mkdir(parents=True, exist_ok=True)
+
+    def test_builds_views_with_title_precedence_and_counts(self) -> None:
+        self._make_checkout("acme", "widgets")
+        ts = datetime(2024, 1, 2, tzinfo=timezone.utc)
+        issue_pipe = _FakePipeline(
+            "issue-7",
+            issue=_FakeFacet(title="Real issue title", labels=["ready-for-planning"],
+                             updated_at=datetime(2024, 1, 1, tzinfo=timezone.utc)),
+        )
+        pr_pipe = _FakePipeline(
+            "pr-9",
+            pr=_FakeFacet(title="PR only title", labels=["bug"], mergeable="CONFLICTING",
+                          updated_at=ts),
+        )
+
+        from loony_dev.github import PullRequest
+        from loony_dev.pipeline import Pipeline
+
+        with mock.patch.object(services, "_repo_for", lambda o, n, c: object()), \
+                mock.patch.object(Pipeline, "discover",
+                                  lambda repo: iter([issue_pipe, pr_pipe])), \
+                mock.patch.object(PullRequest, "list_open",
+                                  lambda repo=None: [object(), object()]), \
+                mock.patch.object(services, "_count_open_issues", lambda repo: 5):
+            pipelines, repos = services._fetch_github_state(self.base)
+
+        self.assertEqual(len(pipelines), 2)
+        by_key = {p.pipeline_key: p for p in pipelines}
+        self.assertEqual(by_key["issue-7"].title, "Real issue title")
+        self.assertEqual(by_key["issue-7"].kind, "issue")
+        self.assertEqual(by_key["issue-7"].number, 7)
+        self.assertEqual(by_key["issue-7"].stage, "Planning")
+        self.assertIsNone(by_key["issue-7"].pr_state)
+        # PR facet supplies the title when there is no issue facet; PR dominates.
+        self.assertEqual(by_key["pr-9"].title, "PR only title")
+        self.assertEqual(by_key["pr-9"].stage, "Conflicts")
+        self.assertEqual(by_key["pr-9"].pr_state, "open")
+        self.assertEqual(by_key["pr-9"].mergeable, "CONFLICTING")
+        self.assertEqual(by_key["pr-9"].updated_at, ts.isoformat())
+
+        self.assertEqual(len(repos), 1)
+        self.assertEqual(repos[0].repo, "acme/widgets")
+        self.assertTrue(repos[0].ok)
+        self.assertEqual(repos[0].open_prs, 2)
+        self.assertEqual(repos[0].open_issues, 5)
+
+    def test_skips_repos_without_checkout(self) -> None:
+        # .logs entry but no git checkout -> never touched, no gh call.
+        (self.base / ".logs" / "acme" / "nope").mkdir(parents=True)
+        with mock.patch.object(services, "_repo_for",
+                               side_effect=AssertionError("should not construct")):
+            pipelines, repos = services._fetch_github_state(self.base)
+        self.assertEqual((pipelines, repos), ([], []))
+
+    def test_one_repo_failure_is_isolated(self) -> None:
+        self._make_checkout("acme", "good")
+        self._make_checkout("acme", "bad")
+        good_pipe = _FakePipeline("issue-1", issue=_FakeFacet(title="ok", labels=[]))
+
+        from loony_dev.github import PullRequest
+        from loony_dev.pipeline import Pipeline
+
+        def fake_discover(repo):
+            if getattr(repo, "broken", False):
+                raise RuntimeError("gh exploded")
+            return iter([good_pipe])
+
+        def fake_repo_for(owner, name, checkout):
+            r = object.__new__(type("R", (), {}))
+            r.broken = (name == "bad")
+            return r
+
+        with mock.patch.object(services, "_repo_for", fake_repo_for), \
+                mock.patch.object(Pipeline, "discover", fake_discover), \
+                mock.patch.object(PullRequest, "list_open", lambda repo=None: []), \
+                mock.patch.object(services, "_count_open_issues", lambda repo: 0):
+            pipelines, repos = services._fetch_github_state(self.base)
+
+        # The good repo still yields its pipeline + an ok view; the bad one is
+        # surfaced as ok=False with null counts and contributes no pipelines.
+        self.assertEqual([p.pipeline_key for p in pipelines], ["issue-1"])
+        by_repo = {r.repo: r for r in repos}
+        self.assertTrue(by_repo["acme/good"].ok)
+        self.assertFalse(by_repo["acme/bad"].ok)
+        self.assertIsNone(by_repo["acme/bad"].open_prs)
+        self.assertIsNone(by_repo["acme/bad"].open_issues)
+
+
+class GitHubStateCacheTestCase(unittest.TestCase):
+    """`github_state` TTL cache: refresh past the window, degrade on error."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        services._GH_CACHE.pop(self.base, None)
+        self.addCleanup(services._GH_CACHE.pop, self.base, None)
+
+    def test_disabled_short_circuits_with_no_fetch(self) -> None:
+        calls = []
+        result = services.github_state(
+            self.base, enabled=False, fetch_fn=lambda b: calls.append(b) or ([], []),
+        )
+        self.assertEqual(result, ([], []))
+        self.assertEqual(calls, [])
+
+    def test_caches_within_ttl_and_refetches_after(self) -> None:
+        calls = []
+
+        def fetch(base):
+            calls.append(base)
+            return ([f"call-{len(calls)}"], [])
+
+        first = services.github_state(self.base, refresh_seconds=60.0, fetch_fn=fetch)
+        second = services.github_state(self.base, refresh_seconds=60.0, fetch_fn=fetch)
+        self.assertEqual(first, second)  # cache hit, same value
+        self.assertEqual(len(calls), 1)
+
+        # Age the cache entry past the TTL -> next call refetches.
+        ts, value = services._GH_CACHE[self.base]
+        services._GH_CACHE[self.base] = (ts - 1000.0, value)
+        third = services.github_state(self.base, refresh_seconds=60.0, fetch_fn=fetch)
+        self.assertEqual(len(calls), 2)
+        self.assertNotEqual(third, first)
+
+    def test_error_on_warm_cache_returns_last_good(self) -> None:
+        good = (["good"], [])
+        services.github_state(self.base, refresh_seconds=0.0, fetch_fn=lambda b: good)
+        # refresh_seconds=0 forces a re-fetch; the fetch now raises.
+        def boom(base):
+            raise RuntimeError("gh down")
+        result = services.github_state(self.base, refresh_seconds=0.0, fetch_fn=boom)
+        self.assertEqual(result, good)  # last good value, not an exception
+
+
+class GitHubStateApiTestCase(unittest.TestCase):
+    """`/api/pipelines`, `/api/repos`, and the snapshot expose GitHub state."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        _make_worker(self.base, "acme", "widgets", os.getpid(), ["x"])
+        self.app = create_app(base_dir=self.base, supervisor_log=None)
+        self.client = TestClient(self.app)
+
+    def _fake_state(self):
+        pipeline = services.PipelineGitHubView(
+            pipeline_key="issue-3", repo="acme/widgets", kind="issue", number=3,
+            title="Add a thing", stage="Planning", labels=["ready-for-planning"],
+            pr_state=None, mergeable=None, updated_at="2024-01-01T00:00:00+00:00",
+        )
+        repo = services.RepoGitHubView(
+            repo="acme/widgets", open_issues=4, open_prs=2, ok=True,
+        )
+        return [pipeline], [repo]
+
+    def test_pipelines_endpoint(self) -> None:
+        with mock.patch.object(services, "github_state",
+                               return_value=self._fake_state()):
+            resp = self.client.get("/api/pipelines")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(len(body), 1)
+        self.assertEqual(body[0]["pipeline_key"], "issue-3")
+        self.assertEqual(body[0]["title"], "Add a thing")
+        self.assertEqual(body[0]["stage"], "Planning")
+
+    def test_repos_endpoint(self) -> None:
+        with mock.patch.object(services, "github_state",
+                               return_value=self._fake_state()):
+            resp = self.client.get("/api/repos")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body, [
+            {"repo": "acme/widgets", "open_issues": 4, "open_prs": 2, "ok": True},
+        ])
+
+    def test_endpoints_empty_when_disabled(self) -> None:
+        # The app default has github state enabled, but with no checkout there is
+        # nothing to fetch, so both endpoints degrade to empty lists (no error).
+        self.assertEqual(self.client.get("/api/pipelines").json(), [])
+        self.assertEqual(self.client.get("/api/repos").json(), [])
+
+    def test_snapshot_failure_falls_back_to_empty_not_500(self) -> None:
+        # A raising fetch must not surface as a dashboard error: github_state
+        # swallows it and the endpoints still return 200 with empty lists.
+        services._GH_CACHE.pop(self.base, None)
+        self.addCleanup(services._GH_CACHE.pop, self.base, None)
+        with mock.patch.object(services, "_fetch_github_state",
+                               side_effect=RuntimeError("gh down")):
+            resp = self.client.get("/api/pipelines")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), [])
 
 
 if __name__ == "__main__":
