@@ -12,9 +12,12 @@ around these pure functions, which keeps them directly unit-testable.
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 import signal
 import socket
+import threading
 import time
 from collections import deque
 from collections.abc import Iterator
@@ -22,9 +25,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from loony_dev import pipeline_lease, session_registry
+from loony_dev import pipeline_lease, pipeline_log, session_registry
 from loony_dev.agents import session_resume
 from loony_dev.git import GitRepo
+
+logger = logging.getLogger(__name__)
 
 WORKER_LOG_NAME = "loony-worker.log"
 WORKER_PID_NAME = "loony-worker.pid"
@@ -303,6 +308,265 @@ def list_sessions(base_dir: Path) -> list[SessionView]:
             )
         )
     return sessions
+
+
+# ---------------------------------------------------------------------------
+# Partial GitHub state (issue #219)
+#
+# The web process is otherwise filesystem-only; this is the single seam where it
+# reaches GitHub (via the same ``loony_dev.github`` wrappers the workers use) to
+# enrich the snapshot with the *cheap* lifecycle fields the reworked screens need
+# but cannot derive from disk: per-pipeline issue/PR title, a label/PR-derived
+# lifecycle stage, and per-repo open issue/PR counts. Everything here degrades
+# gracefully — any ``gh`` failure falls back to today's placeholders, never an
+# error (a failed repo yields ``RepoGitHubView(ok=False)`` with ``None`` counts
+# and no pipelines; the others are unaffected). The (occasional) fetch sits
+# behind a TTL cache so the 2s SSE poll never triggers a ``gh`` call.
+# ---------------------------------------------------------------------------
+
+# The lifecycle stages the Fleet frontend renders (see ``static/js/fleet.js``
+# ``STAGES``). ``derive_stage`` maps GitHub label / PR state into exactly these.
+STAGE_INBOX = "Inbox"
+STAGE_PLANNING = "Planning"
+STAGE_IMPLEMENTING = "Implementing"
+STAGE_PR_OPEN = "PR Open"
+STAGE_IN_REVIEW = "In Review"
+STAGE_CONFLICTS = "Conflicts"
+
+
+@dataclass(frozen=True)
+class PipelineGitHubView:
+    """GitHub-derived state for one pipeline (``issue-N`` / ``pr-P``).
+
+    ``labels`` carries the raw issue labels (PR labels for an issue-less PR
+    pipeline) so the frontend can filter on e.g. ``in-error`` — which is *not* a
+    distinct stage (the board has no Error column), only a raw label. ``Merged``
+    is likewise not reachable here: a merged PR is excluded from ``list_open`` and
+    the pipeline is reclaimed quickly, so chasing it would cost a per-PR
+    closed-state query for no practical gain.
+    """
+
+    pipeline_key: str        # "issue-N" / "pr-P"
+    repo: str                # "owner/name"
+    kind: str                # "issue" | "pr"
+    number: int
+    title: str | None
+    stage: str               # one of the Fleet STAGES (see derive_stage)
+    labels: list[str]        # raw issue labels (frontend filters / future use)
+    pr_state: str | None     # "open" for the PRs we surface; None when no PR
+    mergeable: str | None    # PR mergeable state (e.g. "CONFLICTING"), or None
+    updated_at: str | None   # ISO-8601, newest of the issue/PR facets
+
+
+@dataclass(frozen=True)
+class RepoGitHubView:
+    """Per-repo open counts. ``ok`` is False (and counts None) on a fetch error."""
+
+    repo: str
+    open_issues: int | None  # None = this repo's GitHub fetch failed
+    open_prs: int | None
+    ok: bool
+
+
+def derive_stage(issue_labels: list[str], pr) -> str:
+    """Map an issue's labels + its PR facet into one Fleet lifecycle stage.
+
+    A pure, unit-testable function. Once a PR exists it dominates (its conflict /
+    review state is the live picture); otherwise the issue's loony-dev label
+    drives the stage. ``in-error`` is intentionally not a stage — it rides the
+    raw ``labels`` list — so an errored issue still shows its underlying stage.
+    """
+    if pr is not None:
+        if (getattr(pr, "mergeable", None) or "").upper() == "CONFLICTING":
+            return STAGE_CONFLICTS
+        return STAGE_IN_REVIEW if getattr(pr, "reviews", None) else STAGE_PR_OPEN
+    labels = set(issue_labels or [])
+    if "in-progress" in labels:
+        return STAGE_IMPLEMENTING
+    if "ready-for-planning" in labels:
+        return STAGE_PLANNING
+    # ready-for-development (awaiting/ready to implement) and anything else read
+    # as Inbox — the entry column.
+    return STAGE_INBOX
+
+
+def _parse_pipeline_key(pipeline_key: str) -> tuple[str, int]:
+    """Split a ``issue-N`` / ``pr-P`` key into ``(kind, number)``."""
+    m = re.match(r"^(issue|pr)-(\d+)$", pipeline_key)
+    if m:
+        return m.group(1), int(m.group(2))
+    # Defensive: keys are always issue-N/pr-P, but never raise from a snapshot.
+    kind = pipeline_key.split("-", 1)[0] or "issue"
+    return kind, 0
+
+
+def _latest_iso(*facets) -> str | None:
+    """Return the newest ``updated_at`` across *facets* as ISO-8601, or None."""
+    stamps = [
+        f.updated_at for f in facets
+        if f is not None and getattr(f, "updated_at", None) is not None
+    ]
+    if not stamps:
+        return None
+    return max(stamps).isoformat()
+
+
+def _pipeline_view(pipeline, repo: str) -> PipelineGitHubView:
+    """Build a :class:`PipelineGitHubView` from a :class:`~loony_dev.pipeline.Pipeline`."""
+    issue = pipeline.issue
+    pr = pipeline.pr
+    kind, number = _parse_pipeline_key(pipeline.pipeline_key)
+
+    # Title: prefer the issue facet, fall back to the PR facet. Both are Content.
+    title = None
+    if issue is not None and str(issue.title):
+        title = str(issue.title)
+    elif pr is not None and str(pr.title):
+        title = str(pr.title)
+
+    issue_labels = list(issue.labels) if issue is not None else []
+    # Surface PR labels for an issue-less PR pipeline so e.g. in-error still shows.
+    labels = issue_labels if issue is not None else (list(pr.labels) if pr is not None else [])
+
+    return PipelineGitHubView(
+        pipeline_key=pipeline.pipeline_key,
+        repo=repo,
+        kind=kind,
+        number=number,
+        title=title,
+        stage=derive_stage(issue_labels, pr),
+        labels=labels,
+        pr_state="open" if pr is not None else None,
+        mergeable=getattr(pr, "mergeable", None) if pr is not None else None,
+        updated_at=_latest_iso(issue, pr),
+    )
+
+
+def _repo_for(owner: str, name: str, checkout: Path):
+    """Construct a :class:`~loony_dev.github.Repo` for ``owner/name``'s checkout.
+
+    A module-level seam so tests can stub repo construction without a real ``gh``
+    auth / network round trip.
+    """
+    from loony_dev.github import Repo
+
+    return Repo(f"{owner}/{name}", cwd=str(checkout))
+
+
+def _count_open_issues(repo) -> int:
+    """Return the repo's open-issue count via a single cheap ``gh issue list``.
+
+    Raises ``ValueError`` on an unexpected (non-list) payload rather than
+    silently counting it as zero — a malformed response is a fetch failure, and
+    the per-repo ``try/except`` in ``_fetch_github_state`` turns it into an
+    ``ok=False`` view, not a fabricated "0 open issues".
+    """
+    data = repo.client.gh_json(
+        "issue", "list", "--state", "open", "--json", "number", "-L", "500",
+    )
+    if not isinstance(data, list):
+        raise ValueError(f"Unexpected open-issue payload for {repo.name!r}: {data!r}")
+    return len(data)
+
+
+def _fetch_github_state(
+    base_dir: Path,
+) -> tuple[list[PipelineGitHubView], list[RepoGitHubView]]:
+    """Fetch GitHub-derived snapshot state across every checked-out repo.
+
+    Reuses :meth:`Pipeline.discover` (one enumeration of open issues + PRs, the
+    same grouping the orchestrator uses) so the dashboard's pipeline view never
+    drifts from the worker's. Per-repo ``try/except`` keeps one bad repo from
+    dropping the others — the failed repo yields ``RepoGitHubView(ok=False)``.
+    """
+    from loony_dev.github import PullRequest
+    from loony_dev.pipeline import Pipeline
+
+    pipelines: list[PipelineGitHubView] = []
+    repos: list[RepoGitHubView] = []
+    for owner, name, _repo_dir in _discover_repos(base_dir):
+        checkout = base_dir / owner / name
+        if not (checkout / ".git").exists():
+            continue
+        repo_name = f"{owner}/{name}"
+        try:
+            repo = _repo_for(owner, name, checkout)
+            # Stage rows in a per-repo local so a later counting failure (which
+            # marks the repo ok=False) never leaks half a repo's pipelines into
+            # the response — per-repo success is all-or-nothing.
+            repo_pipelines = [
+                _pipeline_view(pipeline, repo_name)
+                for pipeline in Pipeline.discover(repo)
+            ]
+            # ``discover`` already populated the tick-cached open-PR list, so this
+            # is a cache hit — no extra ``gh`` call.
+            open_prs = len(PullRequest.list_open(repo=repo))
+            open_issues = _count_open_issues(repo)
+            pipelines.extend(repo_pipelines)
+            repos.append(
+                RepoGitHubView(
+                    repo=repo_name, open_issues=open_issues, open_prs=open_prs, ok=True,
+                )
+            )
+        except Exception:
+            logger.warning("GitHub state fetch failed for %s", repo_name, exc_info=True)
+            repos.append(
+                RepoGitHubView(repo=repo_name, open_issues=None, open_prs=None, ok=False)
+            )
+    return pipelines, repos
+
+
+# TTL cache in front of the (occasional) GitHub fetch, keyed by base_dir so the
+# 2s SSE poll re-reads the last result and ``gh`` runs at most once per
+# ``refresh_seconds``. A single in-flight refresh holds the lock; concurrent
+# callers get the last value (possibly stale) rather than blocking — except the
+# very first call, which has nothing to return and so blocks once.
+_GH_CACHE: dict[Path, tuple[float, tuple[list[PipelineGitHubView], list[RepoGitHubView]]]] = {}
+_GH_LOCK = threading.Lock()
+
+
+def github_state(
+    base_dir: Path,
+    *,
+    enabled: bool = True,
+    refresh_seconds: float = 60.0,
+    fetch_fn=None,
+) -> tuple[list[PipelineGitHubView], list[RepoGitHubView]]:
+    """Return cached GitHub-derived snapshot state, refreshing past the TTL.
+
+    *fetch_fn* is the network seam (defaults to :func:`_fetch_github_state`),
+    injectable for tests. With ``enabled=False`` this is a no-op returning
+    ``([], [])`` and makes zero ``gh`` calls, so the frontend keeps its existing
+    placeholders. A fetch that raises on a warm cache returns the last good value
+    rather than propagating — graceful degradation, never a dashboard error.
+    """
+    if not enabled:
+        return [], []
+    fetch = fetch_fn or _fetch_github_state
+    now = time.monotonic()
+    cached = _GH_CACHE.get(base_dir)
+    if cached is not None and now - cached[0] < refresh_seconds:
+        return cached[1]
+    # Only the first-ever call (no cache to fall back on) blocks for the lock.
+    if not _GH_LOCK.acquire(blocking=cached is None):
+        return cached[1] if cached is not None else ([], [])
+    try:
+        # Re-check under the lock: a waiter (e.g. a second cold-start call) may
+        # have refreshed the cache while we blocked, so don't fetch again within
+        # the same TTL window.
+        now = time.monotonic()
+        cached = _GH_CACHE.get(base_dir)
+        if cached is not None and now - cached[0] < refresh_seconds:
+            return cached[1]
+        result = fetch(base_dir)
+        # Stamp with completion time so a slow fetch doesn't look pre-aged.
+        _GH_CACHE[base_dir] = (time.monotonic(), result)
+        return result
+    except Exception:
+        logger.warning("GitHub snapshot refresh failed", exc_info=True)
+        return cached[1] if cached is not None else ([], [])
+    finally:
+        _GH_LOCK.release()
 
 
 # ---------------------------------------------------------------------------
@@ -696,6 +960,128 @@ def tail_log(base_dir: Path, owner: str, repo: str, lines: int) -> list[str]:
     except FileNotFoundError as exc:
         raise LogNotFoundError(f"no log for {owner}/{repo}") from exc
     return [line.rstrip("\n") for line in tail]
+
+
+# ---------------------------------------------------------------------------
+# Per-pipeline log tail / list / activity (issue #220)
+#
+# A worker now writes a second, per-pipeline log (keyed by ``issue-N`` / ``pr-P``)
+# alongside the universal worker log — see :mod:`loony_dev.pipeline_log`. The path
+# is computed forward only (slug the key); the raw key is recovered from a
+# ``<slug>.key`` sidecar, never by reversing the irreversible slug.
+# ---------------------------------------------------------------------------
+
+def _safe_pipeline_log_path(
+    base_dir: Path, owner: str, repo: str, pipeline_key: str
+) -> Path:
+    """Resolve a pipeline log path for ``owner/repo``, rejecting traversal.
+
+    Mirrors :func:`_safe_repo_log_path`: rejects any segment (including
+    *pipeline_key*) containing a path separator, ``.``/``..``, or NUL, then
+    confirms the forward-computed path stays within the repo's ``pipelines/`` dir.
+    """
+    for segment in (owner, repo, pipeline_key):
+        if not segment or segment in (".", "..") or "/" in segment or "\\" in segment or "\x00" in segment:
+            raise LogNotFoundError(f"invalid path segment: {segment!r}")
+
+    pipelines_root = pipeline_log.pipeline_logs_dir(base_dir, owner, repo).resolve()
+    candidate = pipeline_log.pipeline_log_path(base_dir, owner, repo, pipeline_key).resolve()
+    if pipelines_root not in candidate.parents:
+        raise LogNotFoundError("resolved path escapes pipelines directory")
+    return candidate
+
+
+def tail_pipeline_log(
+    base_dir: Path, owner: str, repo: str, pipeline_key: str, lines: int
+) -> list[str]:
+    """Return up to the last *lines* lines of a pipeline's log.
+
+    Raises :class:`LogNotFoundError` for invalid segments or a missing log file.
+    Keeps only the tail in a bounded ``deque`` so memory stays proportional to
+    *lines* rather than file size (mirrors :func:`tail_log`).
+    """
+    log_path = _safe_pipeline_log_path(base_dir, owner, repo, pipeline_key)
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
+            tail: deque[str] = deque(fh, maxlen=max(lines, 0))
+    except FileNotFoundError as exc:
+        raise LogNotFoundError(
+            f"no pipeline log for {owner}/{repo}:{pipeline_key}"
+        ) from exc
+    return [line.rstrip("\n") for line in tail]
+
+
+def list_pipeline_logs(base_dir: Path, owner: str, repo: str) -> list[str]:
+    """Return the raw pipeline keys that have a log under ``owner/repo``.
+
+    Enumerates the ``pipelines/<slug>.key`` sidecars (the forward-only contract)
+    rather than reversing a ``*.log`` stem, which the irreversible slug makes
+    impossible. A log whose sidecar is missing is skipped defensively. Returns
+    keys sorted for a stable scope-picker order.
+    """
+    pipelines_dir = pipeline_log.pipeline_logs_dir(base_dir, owner, repo)
+    if not pipelines_dir.is_dir():
+        return []
+    keys: list[str] = []
+    for sidecar in sorted(pipelines_dir.glob("*.key")):
+        try:
+            key = sidecar.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        # Only surface a key whose log file actually exists (the sidecar is
+        # written at the same moment, but stay defensive against partial state).
+        if key and sidecar.with_suffix(".log").exists():
+            keys.append(key)
+    return keys
+
+
+def pipeline_activity(
+    base_dir: Path, owner: str, repo: str, pipeline_key: str, lines: int
+) -> list[dict]:
+    """Parse a pipeline log's tail into structured activity-timeline events (#220).
+
+    Each well-formed ``asctime [LEVEL] logger: message`` line becomes
+    ``{ts, level, logger, message, actor}``. Lines that don't match the format
+    (e.g. wrapped traceback continuations) fall back to a raw-text event so no
+    content is dropped. ``actor`` attributes the event: the coding/planning
+    agents → ``trixy`` (the bot account), operator-injection records → ``operator``,
+    everything else → ``system``. This is the structured feed #225 consumes.
+    """
+    tail = tail_pipeline_log(base_dir, owner, repo, pipeline_key, lines)
+    return [_parse_activity_line(line) for line in tail]
+
+
+# ``2026-06-17 12:00:00,123 [INFO] loony_dev.agents.coding: message`` — the
+# worker/pipeline log format (cli.py / pipeline_log.DEFAULT_LOG_FORMAT).
+_ACTIVITY_LINE_RE = re.compile(
+    r"^(?P<ts>\S+ \S+) \[(?P<level>[A-Z]+)\] (?P<logger>[^:]+): (?P<message>.*)$"
+)
+
+
+def _activity_actor(logger_name: str, message: str) -> str:
+    """Attribute an activity event to ``trixy`` / ``operator`` / ``system``."""
+    if "agents.planning" in logger_name or "agents.coding" in logger_name:
+        return "trixy"
+    if "operator" in message.lower():
+        return "operator"
+    return "system"
+
+
+def _parse_activity_line(line: str) -> dict:
+    match = _ACTIVITY_LINE_RE.match(line)
+    if not match:
+        # A continuation line (wrapped traceback, multi-line message): keep it
+        # verbatim rather than dropping it.
+        return {"ts": None, "level": None, "logger": None, "message": line, "actor": "system"}
+    logger_name = match.group("logger")
+    message = match.group("message")
+    return {
+        "ts": match.group("ts"),
+        "level": match.group("level"),
+        "logger": logger_name,
+        "message": message,
+        "actor": _activity_actor(logger_name, message),
+    }
 
 
 # ---------------------------------------------------------------------------

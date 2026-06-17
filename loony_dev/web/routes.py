@@ -50,11 +50,75 @@ DEFAULT_STUCK_AFTER_SECONDS = 300
 DEFAULT_ACTIVITY_SAMPLE_SECONDS = 0.3
 DEFAULT_KILL_GRACE_SECONDS = 5.0
 
+# Partial-GitHub-state defaults (issue #219) — mirrored by the app factory / CLI.
+DEFAULT_GITHUB_STATE_ENABLED = True
+DEFAULT_GITHUB_REFRESH_SECONDS = 60.0
+
 
 def _format_sse(line: str) -> str:
     """Encode *line* as an SSE ``data:`` event (multi-line-safe)."""
     body = "".join(f"data: {part}\n" for part in line.split("\n"))
     return f"{body}\n"
+
+
+def _sse_tail_response(
+    log_path: Path, request: Request, *, backlog: int
+) -> StreamingResponse:
+    """Stream a file's tail (backlog + appended lines) as Server-Sent Events.
+
+    Shared by every log-stream route (worker-scope and per-pipeline, #220): a
+    queue-based pump drains :func:`streaming.tail_lines` while the consumer loop
+    emits each line, sends a heartbeat comment during idle gaps so proxies don't
+    drop the connection, and reaps a vanished client via
+    ``request.is_disconnected()``. On disconnect/cancellation the pump is
+    cancelled and the underlying generator closed, releasing all descriptors.
+    Callers validate (and 404) the path before calling this.
+    """
+
+    async def event_stream():
+        gen = streaming.tail_lines(log_path, backlog=backlog)
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def pump() -> None:
+            try:
+                async for line in gen:
+                    await queue.put(("line", line))
+            finally:
+                await queue.put(("eof", None))
+
+        task = asyncio.create_task(pump())
+        try:
+            while True:
+                try:
+                    kind, payload = await asyncio.wait_for(
+                        queue.get(), timeout=SSE_HEARTBEAT_INTERVAL
+                    )
+                except asyncio.TimeoutError:
+                    if await request.is_disconnected():
+                        break
+                    yield ": heartbeat\n\n"
+                    continue
+                if kind == "eof":
+                    break
+                if await request.is_disconnected():
+                    break
+                yield _format_sse(payload)
+        finally:
+            # Disconnect / cancellation lands here: stop the pump (which closes
+            # the watcher via its finally) and release the generator.
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            await gen.aclose()
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+    }
+    return StreamingResponse(
+        event_stream(), media_type="text/event-stream", headers=headers
+    )
 
 
 def create_api_router(
@@ -65,6 +129,8 @@ def create_api_router(
     stuck_after_seconds: float = DEFAULT_STUCK_AFTER_SECONDS,
     activity_sample_seconds: float = DEFAULT_ACTIVITY_SAMPLE_SECONDS,
     kill_grace_seconds: float = DEFAULT_KILL_GRACE_SECONDS,
+    github_state_enabled: bool = DEFAULT_GITHUB_STATE_ENABLED,
+    github_refresh_seconds: float = DEFAULT_GITHUB_REFRESH_SECONDS,
 ) -> APIRouter:
     """Return an ``/api`` router bound to *base_dir*.
 
@@ -73,7 +139,9 @@ def create_api_router(
     ``~/.claude`` root used by the skills/commands endpoints (injectable so tests
     can point it at a temp tree); it defaults to ``~/.claude``. The remaining
     keyword arguments tune the stuck-process detector and the kill endpoint's
-    SIGKILL escalation.
+    SIGKILL escalation, plus the partial-GitHub-state enrichment (#219):
+    *github_state_enabled* toggles the per-snapshot ``gh`` fetch, and
+    *github_refresh_seconds* is its TTL (the 2s SSE poll reads the cache).
     """
     default_tail_lines = max(1, min(tail_lines, MAX_TAIL_LINES))
     global_root = Path(claude_home) if claude_home is not None else Path.home() / ".claude"
@@ -95,6 +163,30 @@ def create_api_router(
     def get_task_sessions() -> list[dict]:
         """List per-task worker sessions the dashboard can attach to / steer."""
         return [asdict(s) for s in services.list_task_sessions(base_dir)]
+
+    @router.get("/pipelines")
+    def get_pipelines() -> list[dict]:
+        """GitHub-derived per-pipeline state: title, label/PR stage, labels (#219).
+
+        Distinct from ``POST /pipelines/{pipeline_key}/interrogate``. Returns an
+        empty list when GitHub state is disabled or every fetch failed.
+        """
+        pipelines, _ = services.github_state(
+            base_dir,
+            enabled=github_state_enabled,
+            refresh_seconds=github_refresh_seconds,
+        )
+        return [asdict(p) for p in pipelines]
+
+    @router.get("/repos")
+    def get_repos() -> list[dict]:
+        """Per-repo open issue / open PR counts (#219); empty if disabled/failed."""
+        _, repos = services.github_state(
+            base_dir,
+            enabled=github_state_enabled,
+            refresh_seconds=github_refresh_seconds,
+        )
+        return [asdict(r) for r in repos]
 
     @router.post("/sessions/{task_key}/inject")
     async def inject_turn(task_key: str, request: Request) -> dict:
@@ -195,8 +287,15 @@ def create_api_router(
         """Gather the consolidated dashboard state in one shot.
 
         Mirrors the per-resource GET endpoints so the streamed payload and the
-        polling fallback never drift apart.
+        polling fallback never drift apart. The GitHub-derived ``pipelines`` /
+        ``repos`` (#219) ride the cache, so they add no ``gh`` call most ticks
+        and fall back to empty lists (today's placeholders) on any failure.
         """
+        gh_pipelines, gh_repos = services.github_state(
+            base_dir,
+            enabled=github_state_enabled,
+            refresh_seconds=github_refresh_seconds,
+        )
         return {
             "workers": [asdict(w) for w in services.list_workers(base_dir)],
             "worktrees": [asdict(w) for w in services.list_worktrees(base_dir)],
@@ -212,6 +311,8 @@ def create_api_router(
                     activity_sample_seconds=activity_sample_seconds,
                 )
             ],
+            "pipelines": [asdict(p) for p in gh_pipelines],
+            "repos": [asdict(r) for r in gh_repos],
         }
 
     @router.get("/events")
@@ -268,6 +369,34 @@ def create_api_router(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"repo": f"{owner}/{repo}", "lines": tail, "count": len(tail)}
 
+    @router.get("/logs/{owner}/{repo}/pipelines")
+    def list_pipeline_logs(owner: str, repo: str) -> dict:
+        """List the pipeline keys (``issue-N`` / ``pr-P``) with a log for the repo.
+
+        Powers the folded Logs view's per-scope picker (worker-scope is the
+        default; these are the additional pipeline scopes, issue #220).
+        """
+        keys = services.list_pipeline_logs(base_dir, owner, repo)
+        return {"repo": f"{owner}/{repo}", "pipelines": keys, "count": len(keys)}
+
+    @router.get("/logs/{owner}/{repo}/pipelines/{pipeline_key}/tail")
+    def get_pipeline_log_tail(
+        owner: str,
+        repo: str,
+        pipeline_key: str,
+        lines: int = Query(default_tail_lines, ge=1, le=MAX_TAIL_LINES),
+    ) -> dict:
+        try:
+            tail = services.tail_pipeline_log(base_dir, owner, repo, pipeline_key, lines)
+        except services.LogNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "repo": f"{owner}/{repo}",
+            "pipeline_key": pipeline_key,
+            "lines": tail,
+            "count": len(tail),
+        }
+
     _register_entry_routes(router, "skills", base_dir=base_dir, global_root=global_root)
     _register_entry_routes(router, "commands", base_dir=base_dir, global_root=global_root)
 
@@ -281,51 +410,58 @@ def create_api_router(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         if not log_path.exists():
             raise HTTPException(status_code=404, detail=f"no log for {owner}/{repo}")
+        return _sse_tail_response(log_path, request, backlog=default_tail_lines)
 
-        async def event_stream():
-            gen = streaming.tail_lines(log_path, backlog=default_tail_lines)
-            queue: asyncio.Queue = asyncio.Queue()
+    @router.get("/logs/{owner}/{repo}/pipelines/{pipeline_key}/stream")
+    async def stream_pipeline_log(
+        owner: str, repo: str, pipeline_key: str, request: Request
+    ) -> StreamingResponse:
+        """SSE live-tail of a single pipeline's log (issue #220).
 
-            async def pump() -> None:
-                try:
-                    async for line in gen:
-                        await queue.put(("line", line))
-                finally:
-                    await queue.put(("eof", None))
+        A clone of :func:`stream_log` targeting the per-pipeline file: validates
+        the path (rejecting traversal on every segment, including *pipeline_key*),
+        404s when the log doesn't exist yet, then streams backlog + new lines with
+        the same heartbeat/disconnect handling.
+        """
+        try:
+            log_path = services._safe_pipeline_log_path(base_dir, owner, repo, pipeline_key)
+        except services.LogNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if not log_path.exists():
+            raise HTTPException(
+                status_code=404, detail=f"no pipeline log for {owner}/{repo}:{pipeline_key}"
+            )
+        return _sse_tail_response(log_path, request, backlog=default_tail_lines)
 
-            task = asyncio.create_task(pump())
-            try:
-                while True:
-                    try:
-                        kind, payload = await asyncio.wait_for(
-                            queue.get(), timeout=SSE_HEARTBEAT_INTERVAL
-                        )
-                    except asyncio.TimeoutError:
-                        if await request.is_disconnected():
-                            break
-                        yield ": heartbeat\n\n"
-                        continue
-                    if kind == "eof":
-                        break
-                    if await request.is_disconnected():
-                        break
-                    yield _format_sse(payload)
-            finally:
-                # Disconnect / cancellation lands here: stop the pump (which
-                # closes the watcher via its finally) and release the generator.
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
-                await gen.aclose()
+    @router.get("/pipelines/{pipeline_key}/activity")
+    def get_pipeline_activity(
+        pipeline_key: str,
+        repo: str = Query(..., description="owner/repo the pipeline belongs to"),
+        lines: int = Query(default_tail_lines, ge=1, le=MAX_TAIL_LINES),
+    ) -> dict:
+        """Structured activity timeline for a pipeline, parsed from its log (#220).
 
-        headers = {
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
+        This is the endpoint the Issue ▸ PR activity timeline (#225) consumes.
+        ``repo`` is required and names the ``owner/repo`` the pipeline belongs to,
+        matching the front-end's pipeline-key-centric addressing.
+        """
+        if "/" not in repo:
+            raise HTTPException(status_code=422, detail="'repo' must be 'owner/repo'")
+        owner, name = repo.split("/", 1)
+        # Reject empty halves ("/", "owner/", "/repo") and a nested slash so the
+        # repo resolves to a single ``owner/repo`` pair before path validation.
+        if not owner or not name or "/" in name:
+            raise HTTPException(status_code=422, detail="'repo' must be 'owner/repo'")
+        try:
+            events = services.pipeline_activity(base_dir, owner, name, pipeline_key, lines)
+        except services.LogNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "repo": repo,
+            "pipeline_key": pipeline_key,
+            "events": events,
+            "count": len(events),
         }
-        return StreamingResponse(
-            event_stream(), media_type="text/event-stream", headers=headers
-        )
 
     @router.get("/stuck")
     def get_stuck() -> list[dict]:

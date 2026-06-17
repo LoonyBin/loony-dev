@@ -254,6 +254,18 @@ def supervisor_cmd(**_) -> None:
          "it automatically. 0 disables auto-intervention (SIGKILL is never "
          "auto-escalated).",
 )
+@click.option(
+    "--github-state/--no-github-state", "github_state", default=True, show_default=True,
+    help="Enrich the dashboard snapshot with partial GitHub state (per-pipeline "
+         "title + label/PR-derived stage, per-repo open counts). Requires `gh` to "
+         "be authenticated where the dashboard runs; disable to stay "
+         "filesystem-only (the frontend then keeps its placeholders).",
+)
+@click.option(
+    "--github-refresh-seconds", "github_refresh_seconds", default=60.0, show_default=True,
+    help="TTL of the cached GitHub fetch. The live poll reads the cache, so `gh` "
+         "runs at most once per this many seconds; raise it for many repos.",
+)
 def web_cmd(**_) -> None:
     """Launch the read-only web dashboard to monitor the supervisor and workers.
 
@@ -277,6 +289,8 @@ def web_cmd(**_) -> None:
     activity_sample = float(config.settings.get("activity_sample", 0.3))
     kill_grace = float(config.settings.get("kill_grace", 5.0))
     auto_interrupt_after = float(config.settings.get("auto_interrupt_after", 0.0))
+    github_state = bool(config.settings.get("github_state", True))
+    github_refresh_seconds = float(config.settings.get("github_refresh_seconds", 60.0))
 
     app = create_app(
         base_dir=base_dir,
@@ -287,6 +301,8 @@ def web_cmd(**_) -> None:
         activity_sample_seconds=activity_sample,
         kill_grace_seconds=kill_grace,
         auto_interrupt_after_seconds=auto_interrupt_after,
+        github_state_enabled=github_state,
+        github_refresh_seconds=github_refresh_seconds,
     )
     click.echo(f"Serving loony-dev dashboard at http://{host}:{port} (base-dir: {base_dir})")
     uvicorn.run(app, host=host, port=port)

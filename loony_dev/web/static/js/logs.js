@@ -6,6 +6,9 @@
 // PR detail view (issueDetail). This module is reduced to the reusable
 // streamLog() helper both of those consume; the page's repo picker / loadLog /
 // setRepos / init wiring was removed with the page.
+//
+// streamLog() also accepts an optional pipelineKey (#220): with one it tails that
+// pipeline's per-scope log instead of the repo's worker log.
 
 // Cap retained DOM lines so a long-lived stream can't grow unbounded.
 // Matches the supervisor's default max_buffer_lines.
@@ -16,12 +19,17 @@ function isPinnedToBottom(pre) {
   return pre.scrollHeight - pre.clientHeight - pre.scrollTop < 4;
 }
 
-// Live-tail `repo`'s worker log into the `pre` element. Returns a stop function
-// that closes the stream. Shared by the Live screen (#158) and the Issue ▸ PR
-// detail view (#221) so both get the same bounded-DOM / auto-scroll behaviour.
-export function streamLog(repo, pre) {
+// Live-tail a log into the `pre` element. With no `pipelineKey` it tails `repo`'s
+// worker log (the original behaviour); given one it tails that pipeline's
+// per-scope log (#220). Returns a stop function that closes the stream. Shared by
+// the Live screen (#158) and the Issue ▸ PR detail view (#221) so both get the
+// same bounded-DOM / auto-scroll behaviour.
+export function streamLog(repo, pre, pipelineKey = null) {
   pre.textContent = "";
-  const es = new EventSource(`/api/logs/${repo}/stream`);
+  const url = pipelineKey
+    ? `/api/logs/${repo}/pipelines/${encodeURIComponent(pipelineKey)}/stream`
+    : `/api/logs/${repo}/stream`;
+  const es = new EventSource(url);
   let closed = false;
 
   es.onmessage = (event) => {
