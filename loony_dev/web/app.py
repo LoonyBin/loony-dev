@@ -96,6 +96,8 @@ def create_app(
     activity_sample_seconds: float = 0.3,
     kill_grace_seconds: float = 5.0,
     auto_interrupt_after_seconds: float = 0.0,
+    github_state_enabled: bool = True,
+    github_refresh_seconds: float = 60.0,
 ) -> FastAPI:
     """Build a dashboard app reading state from *base_dir*.
 
@@ -115,6 +117,13 @@ def create_app(
         auto_interrupt_after_seconds: When > 0, a background monitor ESC-interrupts
             a session whose Claude turn has been stuck this long. Disabled (0) by
             default; SIGKILL is never auto-escalated.
+        github_state_enabled: When True (default), the snapshot is enriched with
+            partial GitHub state (#219) — per-pipeline title + label/PR stage and
+            per-repo open counts. Disable to keep the dashboard filesystem-only
+            (e.g. where ``gh`` is unauthenticated); the frontend then keeps its
+            placeholders.
+        github_refresh_seconds: TTL of the cached GitHub fetch; the 2s SSE poll
+            reads the cache, so ``gh`` runs at most once per this many seconds.
     """
     base_dir = Path(base_dir)
     claude_home = Path(claude_home) if claude_home is not None else Path.home() / ".claude"
@@ -153,6 +162,8 @@ def create_app(
     app.state.activity_sample_seconds = activity_sample_seconds
     app.state.kill_grace_seconds = kill_grace_seconds
     app.state.auto_interrupt_after_seconds = auto_interrupt_after_seconds
+    app.state.github_state_enabled = github_state_enabled
+    app.state.github_refresh_seconds = github_refresh_seconds
 
     app.include_router(
         create_api_router(
@@ -162,6 +173,8 @@ def create_app(
             stuck_after_seconds=stuck_after_seconds,
             activity_sample_seconds=activity_sample_seconds,
             kill_grace_seconds=kill_grace_seconds,
+            github_state_enabled=github_state_enabled,
+            github_refresh_seconds=github_refresh_seconds,
         )
     )
 

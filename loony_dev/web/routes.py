@@ -50,6 +50,10 @@ DEFAULT_STUCK_AFTER_SECONDS = 300
 DEFAULT_ACTIVITY_SAMPLE_SECONDS = 0.3
 DEFAULT_KILL_GRACE_SECONDS = 5.0
 
+# Partial-GitHub-state defaults (issue #219) — mirrored by the app factory / CLI.
+DEFAULT_GITHUB_STATE_ENABLED = True
+DEFAULT_GITHUB_REFRESH_SECONDS = 60.0
+
 
 def _format_sse(line: str) -> str:
     """Encode *line* as an SSE ``data:`` event (multi-line-safe)."""
@@ -125,6 +129,8 @@ def create_api_router(
     stuck_after_seconds: float = DEFAULT_STUCK_AFTER_SECONDS,
     activity_sample_seconds: float = DEFAULT_ACTIVITY_SAMPLE_SECONDS,
     kill_grace_seconds: float = DEFAULT_KILL_GRACE_SECONDS,
+    github_state_enabled: bool = DEFAULT_GITHUB_STATE_ENABLED,
+    github_refresh_seconds: float = DEFAULT_GITHUB_REFRESH_SECONDS,
 ) -> APIRouter:
     """Return an ``/api`` router bound to *base_dir*.
 
@@ -133,7 +139,9 @@ def create_api_router(
     ``~/.claude`` root used by the skills/commands endpoints (injectable so tests
     can point it at a temp tree); it defaults to ``~/.claude``. The remaining
     keyword arguments tune the stuck-process detector and the kill endpoint's
-    SIGKILL escalation.
+    SIGKILL escalation, plus the partial-GitHub-state enrichment (#219):
+    *github_state_enabled* toggles the per-snapshot ``gh`` fetch, and
+    *github_refresh_seconds* is its TTL (the 2s SSE poll reads the cache).
     """
     default_tail_lines = max(1, min(tail_lines, MAX_TAIL_LINES))
     global_root = Path(claude_home) if claude_home is not None else Path.home() / ".claude"
@@ -155,6 +163,30 @@ def create_api_router(
     def get_task_sessions() -> list[dict]:
         """List per-task worker sessions the dashboard can attach to / steer."""
         return [asdict(s) for s in services.list_task_sessions(base_dir)]
+
+    @router.get("/pipelines")
+    def get_pipelines() -> list[dict]:
+        """GitHub-derived per-pipeline state: title, label/PR stage, labels (#219).
+
+        Distinct from ``POST /pipelines/{pipeline_key}/interrogate``. Returns an
+        empty list when GitHub state is disabled or every fetch failed.
+        """
+        pipelines, _ = services.github_state(
+            base_dir,
+            enabled=github_state_enabled,
+            refresh_seconds=github_refresh_seconds,
+        )
+        return [asdict(p) for p in pipelines]
+
+    @router.get("/repos")
+    def get_repos() -> list[dict]:
+        """Per-repo open issue / open PR counts (#219); empty if disabled/failed."""
+        _, repos = services.github_state(
+            base_dir,
+            enabled=github_state_enabled,
+            refresh_seconds=github_refresh_seconds,
+        )
+        return [asdict(r) for r in repos]
 
     @router.post("/sessions/{task_key}/inject")
     async def inject_turn(task_key: str, request: Request) -> dict:
@@ -255,8 +287,15 @@ def create_api_router(
         """Gather the consolidated dashboard state in one shot.
 
         Mirrors the per-resource GET endpoints so the streamed payload and the
-        polling fallback never drift apart.
+        polling fallback never drift apart. The GitHub-derived ``pipelines`` /
+        ``repos`` (#219) ride the cache, so they add no ``gh`` call most ticks
+        and fall back to empty lists (today's placeholders) on any failure.
         """
+        gh_pipelines, gh_repos = services.github_state(
+            base_dir,
+            enabled=github_state_enabled,
+            refresh_seconds=github_refresh_seconds,
+        )
         return {
             "workers": [asdict(w) for w in services.list_workers(base_dir)],
             "worktrees": [asdict(w) for w in services.list_worktrees(base_dir)],
@@ -272,6 +311,8 @@ def create_api_router(
                     activity_sample_seconds=activity_sample_seconds,
                 )
             ],
+            "pipelines": [asdict(p) for p in gh_pipelines],
+            "repos": [asdict(r) for r in gh_repos],
         }
 
     @router.get("/events")
