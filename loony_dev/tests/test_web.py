@@ -519,15 +519,16 @@ class WebAppTestCase(unittest.TestCase):
         self.assertIn('id="pipeline-detail-state"', body)
         self.assertIn('id="entry-new"', body)
 
-    def test_index_lowercases_screen_titles(self) -> None:
-        # The design treats the screen titles as lowercase display labels (#222).
+    def test_index_screen_titles_match_design_casing(self) -> None:
+        # The mock's ScreenHead `title` props are title/sentence-case display
+        # headings (ld-*.jsx): "Fleet", "Skills library" — not lowercased.
         body = self.client.get("/").text
-        self.assertIn("<h2>fleet</h2>", body)
+        self.assertIn("<h2>Fleet</h2>", body)
         # Skills is titled "Skills library" per the design mock (#226) — a
         # sentence-case display label, not the lowercased convention.
         self.assertIn("<h2>Skills library</h2>", body)
-        # The old title-case headings are gone.
-        self.assertNotIn("<h2>Fleet</h2>", body)
+        # The lowercased deviation is gone.
+        self.assertNotIn("<h2>fleet</h2>", body)
         self.assertNotIn("<h2>skills &amp; commands</h2>", body)
 
     def test_index_rail_brand_mark_and_tagline(self) -> None:
@@ -563,6 +564,11 @@ class WebAppTestCase(unittest.TestCase):
         # ship and the folded-away bespoke head rules are gone.
         css = self.client.get("/static/app.css").text
         self.assertIn(".screen-head", css)
+        # Screen titles render at the display type scale, not body size.
+        # Anchor the property to its selector: --fs-display is shared with
+        # other rules (e.g. .fleet-pool-count), so a bare substring would
+        # still pass if .screen-head-text h2 regressed.
+        self.assertIn(".screen-head-text h2 { margin: 0; font-size: var(--fs-display);", css)
         self.assertIn(".screen-head-sub", css)
         self.assertIn(".rail-mark", css)
         self.assertIn(".rail-collapse-chevron", css)
