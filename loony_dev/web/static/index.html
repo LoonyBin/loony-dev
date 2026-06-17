@@ -689,9 +689,10 @@
               </div>
               <div id="pipeline-reply-error" class="entry-error" role="alert" aria-live="assertive"></div>
             </div>
-            <!-- Control row: the centralized #200 seam. Observe/Interrupt/live
-                 terminal are live; Take over / Pause / Reassign are disabled
-                 stubs with seam tooltips. Rendered by renderControls(). -->
+            <!-- Control row: the centralized #200 seam. Interrupt / live
+                 terminal / Take over are live (Take over resumes & drives the
+                 pipeline via interrogate(drive)); Pause / Reassign remain
+                 disabled stubs with seam tooltips. Rendered by renderControls(). -->
             <div id="pipeline-controls" class="pipeline-controls" role="group"
                  aria-label="Worker controls"></div>
           </div>

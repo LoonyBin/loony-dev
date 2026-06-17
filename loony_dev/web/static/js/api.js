@@ -29,12 +29,18 @@ export async function getJSON(url) {
 
 // Like fetch but raises with the server-provided `detail` on non-2xx so the
 // editor can surface a useful message. Returns the raw Response on success.
+// The thrown error carries `status` and `detail` so callers can branch on the
+// HTTP status (e.g. the #200 drive path distinguishes a 409 lease conflict);
+// existing callers that read only `err.message` are unaffected.
 export async function apiText(url, opts) {
   const resp = await fetchWithTimeout(url, opts);
   if (!resp.ok) {
     let detail = `${resp.status}`;
     try { detail = (await resp.json()).detail || detail; } catch (_) { /* no body */ }
-    throw new Error(detail);
+    const err = new Error(detail);
+    err.status = resp.status;
+    err.detail = detail;
+    throw err;
   }
   return resp;
 }

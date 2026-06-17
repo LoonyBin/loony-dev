@@ -321,6 +321,11 @@ def record_session_worktree(
     recorded at the point a turn is about to write the transcript, independent of
     the bridge. An existing live entry's ``socket``/``pid``/``status`` is preserved
     so this never downgrades a session that a bridge is actively serving.
+
+    ``cwd`` is set to the worktree path — the exact directory the upcoming
+    ``claude -p`` turns run in, so the dashboard can resolve the JSONL transcript
+    and observe a parked pipeline (#200). An existing ``cwd`` is preserved, so a
+    re-dispatch never wipes the coordinate that keeps the entry observable.
     """
     owner, name = repo.split("/", 1)
     sess_dir = session_dir(base_dir, owner, name, task_key)
@@ -338,6 +343,7 @@ def record_session_worktree(
         ),
         status=existing.status if existing is not None and existing.status else status,
         socket=existing.socket if existing is not None else None,
+        cwd=existing.cwd if existing is not None and existing.cwd else str(worktree_path),
         worktree_path=str(worktree_path),
         pipeline_key=pipeline_key,
         branch=branch if branch is not None else (existing.branch if existing else None),
