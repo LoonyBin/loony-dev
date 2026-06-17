@@ -877,90 +877,126 @@ button.action:hover,
    treatments (worker-pool dot grid, badge-filter active ring, kanban columns,
    repo sidebar, empty states). */
 
-/* Stat strip: cards align to the top so the double-height worker-pool card
-   (which carries the dot grid) extends below its neighbours. */
+/* Stat strip (#223): a tall worker-pool card on the left + a 3×2 grid of the
+   six metrics on the right. The pool card stretches to the grid's height. */
 .fleet-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
   gap: var(--sp-3);
-  align-items: start;
   margin-bottom: var(--sp-4);
 }
-.stat-value.stat-deferred { color: var(--text-muted); font-weight: 600; }
 
-/* Worker-pool card: busy/total headline over a dot grid (busy = progress hue,
-   idle = gated hue), so pool utilisation reads at a glance. */
-.stat-pool .pool-grid {
+/* Worker-pool card: an 8-col dot grid (busy = accent, idle = recessed) above
+   the busy/total headline + "workers active" label, so pool utilisation reads
+   at a glance. The dots sit on top; the count is pinned to the bottom. */
+.fleet-pool {
+  flex: 0 1 15.5rem;
+  min-width: 14rem;
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-1);
-  margin-top: var(--sp-2);
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--sp-4);
 }
-.pool-dot {
-  width: 0.7rem;
-  height: 0.7rem;
+.fleet-pool-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: var(--sp-1);
+  justify-items: center;
+  margin-bottom: var(--sp-2);
+}
+.fleet-pool-dot {
+  width: 0.8rem;
+  height: 0.8rem;
   border-radius: 50%;
   flex: none;
-}
-.pool-dot.busy { background: var(--state-progress); }
-.pool-dot.idle { background: var(--state-gated); opacity: 0.5; }
-.pool-empty { font-size: var(--fs-1); color: var(--text-muted); }
-
-/* Toolbar: Board↔Kanban toggle on the left, badge filters on the right. */
-.fleet-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-  margin-bottom: var(--sp-3);
-}
-.fleet-badges { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
-
-/* Badge filter: each keeps its own Material Symbol icon; active = accent ring
-   + soft fill (the #186 selected treatment). */
-.fbadge {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  font: inherit;
-  font-size: var(--fs-1);
-  font-weight: 600;
-  color: var(--text-muted);
-  background: var(--surface-2);
+  background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: var(--sp-1) var(--sp-3);
-  cursor: pointer;
 }
-.fbadge:hover { color: var(--text); }
-.fbadge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.fbadge .material-symbols-outlined { font-size: 1.1rem; }
-.fbadge.active {
-  color: var(--accent-ink);
-  background: var(--accent-soft);
+.fleet-pool-dot.busy { background: var(--accent); border-color: var(--accent); }
+.fleet-pool-count {
+  margin-top: auto;
+  font-size: var(--fs-display);
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: var(--num);
+}
+.fleet-pool-total { color: var(--text-muted); font-size: 0.7em; }
+.fleet-pool-label {
+  font-size: var(--fs-0);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--track-eyebrow);
+  color: var(--text-muted);
+}
+.fleet-pool-note { margin-top: auto; font-size: var(--fs-1); color: var(--text-muted); }
+
+/* The six metric cards in a 3-col × 2-row grid. The four state metrics double
+   as the worklist filters (.clickable); the active one gets the accent ring. */
+.fleet-metrics {
+  flex: 1 1 22rem;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: 1fr 1fr;
+  gap: var(--sp-3);
+}
+.fleet-metric {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.fleet-metric.clickable { cursor: pointer; }
+.fleet-metric.clickable:hover { border-color: var(--accent); }
+.fleet-metric.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fleet-metric.active {
   border-color: var(--accent);
+  background: var(--accent-soft);
   box-shadow: 0 0 0 1px var(--accent);
 }
-.fbadge-count {
+.fleet-metric-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+.fleet-metric-n {
+  font-size: var(--fs-5);
+  font-weight: 700;
+  line-height: 1.1;
   font-variant-numeric: var(--num);
+  color: var(--text);
+}
+.fleet-metric-deferred { color: var(--text-muted); }
+.fleet-metric-ico { font-size: 1.2rem; color: var(--text-muted); }
+.fleet-metric-label {
   font-size: var(--fs-0);
-  padding: 0 var(--sp-1);
-  border-radius: 999px;
-  background: var(--surface);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--track-eyebrow);
   color: var(--text-muted);
 }
-.fbadge.active .fbadge-count { background: var(--surface); color: var(--accent-ink); }
+/* Tone colors the number + icon (state hues). */
+.fleet-metric.tone-red .fleet-metric-n,
+.fleet-metric.tone-red .fleet-metric-ico { color: var(--state-blocked); }
+.fleet-metric.tone-amber .fleet-metric-n,
+.fleet-metric.tone-amber .fleet-metric-ico { color: var(--state-review); }
+.fleet-metric.tone-blue .fleet-metric-n,
+.fleet-metric.tone-blue .fleet-metric-ico { color: var(--accent); }
+/* Active overrides the icon + label to accent; the number keeps its tone. */
+.fleet-metric.active .fleet-metric-ico { color: var(--accent); }
+.fleet-metric.active .fleet-metric-label { color: var(--accent-ink); }
 
-/* Active-filter chips + live count. */
-.fleet-chips {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sp-2);
-  margin-bottom: var(--sp-3);
-  min-height: 1.5rem;
-}
+/* Active-filter chip (in the board header). */
 .fleet-chip {
   display: inline-flex;
   align-items: center;
@@ -983,7 +1019,6 @@ button.action:hover,
 }
 .fleet-chip-x:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .fleet-chip-x .material-symbols-outlined { font-size: 1rem; }
-.fleet-count { font-size: var(--fs-1); color: var(--text-muted); margin-left: auto; }
 
 /* Body: worklist + right-hand repo sidebar (~284px). Sidebar collapses below
    the worklist on narrow viewports (see responsive block below). */
@@ -995,12 +1030,45 @@ button.action:hover,
 }
 .fleet-main { min-width: 0; }
 
+/* Board card: a header row (count + removable filter chip) over the table. */
+.fleet-board-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.fleet-board-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+.fleet-board-count { font-size: var(--fs-2); color: var(--text-muted); }
+.fleet-board-count-n { font-weight: 700; color: var(--text); font-variant-numeric: var(--num); }
+/* The board card supplies the surface/border, so the inner table-wrap drops its
+   own. */
+.fleet-board-card .table-wrap { border: none; border-radius: 0; box-shadow: none; }
+
 /* Board rows are deep-link targets: whole-row click + keyboard focusable. */
 .fleet-row { cursor: pointer; }
 .fleet-row:hover td { background: var(--surface-2); }
 .fleet-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.fleet-num { font-weight: 700; font-variant-numeric: var(--num); }
-.fleet-title-cell { font-weight: 600; }
+.fleet-num { font-weight: 700; font-variant-numeric: var(--num); color: var(--text-muted); }
+.fleet-worker { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.fleet-worker-name { font-weight: 600; }
+.fleet-issue-cell { font-weight: 600; }
+.fleet-issue-title { font-weight: 600; }
+.fleet-skill { color: var(--text-muted); font-size: var(--fs-1); }
+.fleet-updated { color: var(--text-muted); font-variant-numeric: var(--num); }
+.fleet-action-cell { text-align: right; white-space: nowrap; }
+.fleet-action-cell .ld-btn .material-symbols-outlined { font-size: 1.05rem; }
+.fleet-action-cell > .material-symbols-outlined { color: var(--text-muted); }
+.fleet-empty-row { padding: var(--sp-6) var(--sp-3); text-align: center; color: var(--text-muted); font-style: italic; }
+/* A folder glyph inside a .tag reads as a small inline mark. */
+.tag .tag-ico { font-size: 0.95rem; }
 
 /* Kanban: a horizontally scrolling row of lifecycle columns. */
 .fleet-kanban {
@@ -1011,11 +1079,9 @@ button.action:hover,
   overflow-x: auto;
   padding-bottom: var(--sp-2);
 }
+/* Column = a plain header over a recessed (dark) body surface (design's
+   --bg-app), so the cards lift off the column. */
 .fleet-col {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--sp-3);
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
@@ -1025,6 +1091,7 @@ button.action:hover,
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-2);
+  padding: 0 var(--sp-1);
 }
 .fleet-col-title {
   font-size: var(--fs-0);
@@ -1041,8 +1108,17 @@ button.action:hover,
   border-radius: 999px;
   padding: 0 var(--sp-2);
 }
-.fleet-col-body { display: flex; flex-direction: column; gap: var(--sp-2); }
-.fleet-col-empty { color: var(--text-muted); font-size: var(--fs-1); margin: 0; text-align: center; }
+.fleet-col-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-height: 18rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2);
+}
+.fleet-col-empty { color: var(--text-muted); font-size: var(--fs-1); margin: auto 0; text-align: center; }
 .fleet-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1058,16 +1134,20 @@ button.action:hover,
 }
 .fleet-card:hover { border-color: var(--accent); }
 .fleet-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.fleet-card-head { display: flex; align-items: center; justify-content: space-between; }
-.fleet-card-title { font-weight: 600; }
+/* A card that needs a human gets a soft red border to draw the eye. */
+.fleet-card.needs { border-color: var(--state-blocked); }
+.fleet-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+.fleet-card-title { font-weight: 600; line-height: 1.3; }
 .fleet-card-meta {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--sp-2);
   font-size: var(--fs-1);
   color: var(--text-muted);
 }
-.fleet-card-repo { word-break: break-all; }
+.fleet-card-actor { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.fleet-card-pr { font-variant-numeric: var(--num); font-weight: 600; }
 
 /* Repo filter sidebar. */
 .fleet-repos {
@@ -1122,30 +1202,36 @@ button.action:hover,
   color: var(--text-muted);
 }
 .fleet-repo.active .fleet-repo-count { color: var(--accent-ink); }
+.fleet-repo-list { display: flex; flex-direction: column; gap: 2px; }
+/* The explanatory note: repos filter the worklist, they don't navigate. */
+.fleet-repos-note {
+  margin: var(--sp-3) 0 0;
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-1);
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.fleet-repos-note strong { color: var(--text); font-weight: 700; }
 
 /* Sidebar drops under the worklist on narrow viewports. */
 @media (max-width: 860px) {
   .fleet-body { grid-template-columns: minmax(0, 1fr); }
 }
 
-/* Mobile Fleet — the "glance + triage" companion (#192). The desktop stat
-   strip reflows into a compact 2-up tile grid; the worker-pool dot-grid card
-   spans the full width so utilisation stays scannable. The board itself is a
-   .data-table, so it has already collapsed to tap-through cards at 560px (the
-   needs-you / running badge filters turn that into the two triage lists). */
+/* Mobile Fleet — the "glance + triage" companion (#192). The worker-pool card
+   spans the full width (so utilisation stays scannable) and the metric grid
+   reflows from 3 columns to 2. The board itself is a .data-table, so it has
+   already collapsed to tap-through cards at 560px; the metric cards remain the
+   triage entry points. */
 @media (max-width: 720px) {
-  .fleet-stats {
+  .fleet-stats { gap: var(--sp-2); margin-bottom: var(--sp-3); }
+  .fleet-pool { flex: 1 1 100%; }
+  .fleet-metrics {
+    flex: 1 1 100%;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--sp-2);
-    margin-bottom: var(--sp-3);
+    grid-template-rows: none;
   }
-  .fleet-stats .stat { padding: var(--sp-3); }
-  .fleet-stats .stat-value { font-size: var(--fs-5); }
-  .stat-pool { grid-column: 1 / -1; }
-  /* Badge filters are the primary triage entry points on a phone — give them a
-     thumb-sized hit area and let the toolbar stack above the worklist. */
-  .fleet-toolbar { gap: var(--sp-2); }
-  .fbadge { padding: var(--sp-2) var(--sp-3); }
 }
 
 /* ---- Repo detail (#158) ---------------------------------------------- */

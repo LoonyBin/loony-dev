@@ -449,86 +449,58 @@
           </div>
         </div>
 
-        <!-- ScreenHead (#222): title + restored intro subtitle + a right-aligned
-             controls slot (empty on Fleet — the Board/Kanban toggle + badge
-             filters stay in the .fleet-toolbar below). -->
+        <!-- ScreenHead (#222/#223): title + intro subtitle on the left, the
+             Board↔Kanban toggle in the right-aligned controls slot. -->
         <header class="screen-head">
           <div class="screen-head-text">
             <h2>fleet</h2>
-            <p class="screen-head-sub">Every issue and PR your agents are working, across all connected repos.</p>
+            <p class="screen-head-sub">One operator, many repos — your operational worklist. Click a metric to filter the worklist, click a worker to open its issue ▸ PR session, or filter by repo on the right.</p>
           </div>
-          <div class="screen-head-controls"></div>
+          <div class="screen-head-controls">
+            <div id="fleet-view" class="segmented" role="group" aria-label="Worklist layout">
+              <button type="button" data-fleet-view="board" class="active" aria-pressed="true">
+                <span class="material-symbols-outlined" aria-hidden="true">view_list</span>
+                <span>Board</span>
+              </button>
+              <button type="button" data-fleet-view="kanban" aria-pressed="false">
+                <span class="material-symbols-outlined" aria-hidden="true">view_kanban</span>
+                <span>Kanban</span>
+              </button>
+            </div>
+          </div>
         </header>
 
-        <!-- Stat strip: fleet.js fills this with .stat cards (incl. the
-             double-height worker-pool dot-grid). -->
+        <!-- Stat strip (#223): a tall worker-pool card (an 8-col dot grid above
+             the busy/total count) + a 3×2 grid of the six metrics. The four
+             state metrics double as the worklist filters (need you / running /
+             in review / in conflict); fleet.js builds the whole strip and owns
+             the active-filter state so SSE re-renders never clobber it. -->
         <div id="fleet-stats" class="fleet-stats"></div>
-
-        <!-- Toolbar: Board↔Kanban segmented toggle + toggleable badge filters.
-             fleet.js owns the active state; markup is static so the listeners
-             wire once and SSE re-renders never clobber the selection. -->
-        <div class="fleet-toolbar">
-          <div id="fleet-view" class="segmented" role="group" aria-label="Worklist layout">
-            <button type="button" data-fleet-view="board" class="active" aria-pressed="true">
-              <span class="material-symbols-outlined" aria-hidden="true">view_list</span>
-              <span>Board</span>
-            </button>
-            <button type="button" data-fleet-view="kanban" aria-pressed="false">
-              <span class="material-symbols-outlined" aria-hidden="true">view_kanban</span>
-              <span>Kanban</span>
-            </button>
-          </div>
-
-          <div id="fleet-badges" class="fleet-badges" role="group" aria-label="Filter by state">
-            <button type="button" class="fbadge" data-fleet-badge="needs-you" aria-pressed="false">
-              <span class="material-symbols-outlined" aria-hidden="true">priority_high</span>
-              <span>Needs you</span>
-              <span class="fbadge-count" data-fleet-badge-count="needs-you">0</span>
-            </button>
-            <button type="button" class="fbadge" data-fleet-badge="running" aria-pressed="false">
-              <span class="material-symbols-outlined" aria-hidden="true">bolt</span>
-              <span>Running</span>
-              <span class="fbadge-count" data-fleet-badge-count="running">0</span>
-            </button>
-            <button type="button" class="fbadge" data-fleet-badge="in-review" aria-pressed="false">
-              <span class="material-symbols-outlined" aria-hidden="true">rate_review</span>
-              <span>In review</span>
-              <span class="fbadge-count" data-fleet-badge-count="in-review">0</span>
-            </button>
-            <button type="button" class="fbadge" data-fleet-badge="in-conflict" aria-pressed="false">
-              <span class="material-symbols-outlined" aria-hidden="true">call_split</span>
-              <span>In conflict</span>
-              <span class="fbadge-count" data-fleet-badge-count="in-conflict">0</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- Active-filter chips + live count. fleet.js renders a removable chip
-             per active filter; the count reflects the composed result set. -->
-        <div id="fleet-chips" class="fleet-chips"></div>
 
         <div class="fleet-body">
           <div class="fleet-main">
-            <!-- Board: one row per pipeline. Reuses .data-table's responsive
-                 card-collapse on mobile. -->
-            <div id="fleet-board" class="table-wrap">
-              <table class="data-table fleet-table">
-                <thead><tr>
-                  <th>#</th><th>Title</th><th>Repo</th><th>Stage</th>
-                  <th>Worker</th><th>Updated</th><th>State</th>
-                </tr></thead>
-                <tbody></tbody>
-              </table>
+            <!-- Board: a card with a "N workers / N shown" header + a removable
+                 filter chip, then one row per pipeline. Reuses .data-table's
+                 responsive card-collapse on mobile. -->
+            <div id="fleet-board" class="fleet-board-card">
+              <div id="fleet-board-head" class="fleet-board-head"></div>
+              <div class="table-wrap">
+                <table class="data-table fleet-table">
+                  <thead><tr>
+                    <th>Worker</th><th>Issue</th><th>Repo</th><th>Stage</th>
+                    <th>Skill running</th><th>Updated</th><th></th>
+                  </tr></thead>
+                  <tbody></tbody>
+                </table>
+              </div>
             </div>
 
             <!-- Kanban: the same filtered set grouped into lifecycle columns. -->
             <div id="fleet-kanban" class="fleet-kanban" hidden></div>
-
-            <!-- Empty state when a filter combo (or the fleet) has no rows. -->
-            <p id="fleet-empty" class="empty" hidden></p>
           </div>
 
-          <!-- Repo filter sidebar (~284px): per-repo counts + a clear link. -->
+          <!-- Repo filter sidebar (~284px): per-repo counts, a clear link, and
+               the explanatory note. -->
           <aside id="fleet-repos" class="fleet-repos" aria-label="Filter by repo"></aside>
         </div>
       </section>
