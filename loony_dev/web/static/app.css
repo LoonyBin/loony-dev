@@ -4,8 +4,8 @@
 /* ---- Design tokens --------------------------------------------------- */
 /* The token + type layer IS the L Space design system, vendored verbatim as
    /static/design/colors_and_type.css and loaded before this file (see
-   index.html). That file owns the --gray-*/--ink neutral ramp, the
-   --fg-*/--bg-*/--border-* semantics, the --fs-* px type scale, the --space-*
+   index.html). That file owns the --gray-* and --ink neutral ramp, the
+   --fg-*, --bg-*, --border-* semantics, the --fs-* px type scale, the --space-*
    4-pt grid, --radius-*, --shadow-*, --tracking-* and self-hosts Manrope.
    This file no longer re-derives any of that (#247). It only:
      1. ports loony-dev.html's runtime extras (--ld-accent*, --st-* lifecycle);
@@ -70,7 +70,7 @@
 /* ---- Dark theme (app-authored, #247) --------------------------------- */
 /* The L Space bundle ships light-only — there is NO design source for dark.
    This ramp is therefore deliberately app-authored: it re-points the design's
-   --fg-*/--bg-*/--border-*/--ld-accent*/--st-* tokens onto a dark palette so the
+   --fg-*, --bg-*, --border-*, --ld-accent*, --st-* tokens onto a dark palette so the
    primitives that consume them invert cleanly, rather than leaving orphaned
    ad-hoc overrides (exactly the drift this issue kills). It is asserted by a
    test (test_app_css_ships_guarded_dark_ramp) so it can't silently rot. Applied
