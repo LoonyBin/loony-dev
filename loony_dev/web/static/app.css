@@ -262,7 +262,7 @@ section.view > h2:first-child { margin-top: 0; }
   min-height: 100vh;
 }
 
-/* Sticky full-height rail: brand/Tweaks head, scrollable nav, pinned footer. */
+/* Sticky full-height rail: brand head, scrollable nav, pinned footer. */
 .rail {
   display: flex;
   flex-direction: column;
@@ -399,7 +399,7 @@ section.view > h2:first-child { margin-top: 0; }
   text-overflow: ellipsis;
 }
 
-/* ---- Flyouts: Tweaks panel + settings gear menu ---------------------- */
+/* ---- Flyout: settings gear menu -------------------------------------- */
 .flyout { position: relative; flex: none; }
 .popover {
   position: absolute;
@@ -413,29 +413,10 @@ section.view > h2:first-child { margin-top: 0; }
   box-shadow: var(--shadow);
   padding: var(--sp-2);
 }
-/* The Tweaks trigger sits in the head -> drop the panel below it; the gear sits
-   in the footer -> pop the menu above it. Both grow rightward over <main> so
-   they stay on-screen in both expanded and collapsed rail widths. */
-.tweaks-panel { top: calc(100% + var(--sp-1)); }
+/* The gear sits in the footer -> pop the menu above it. It grows rightward over
+   <main> so it stays on-screen in both expanded and collapsed rail widths. */
 .gear-menu { bottom: calc(100% + var(--sp-1)); }
 
-.tweaks-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  padding: var(--sp-3);
-  min-width: 15rem;
-}
-.tweak-row { display: flex; flex-direction: column; gap: var(--sp-1); }
-.tweak-label {
-  font-size: var(--fs-0);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: var(--track-eyebrow);
-  color: var(--text-muted);
-}
-.tweaks-panel .segmented { width: 100%; }
-.tweaks-panel .segmented > button { flex: 1; }
 .accent-seg > button { padding: var(--sp-1) var(--sp-2); }
 .accent-swatch {
   display: block;
@@ -448,6 +429,23 @@ section.view > h2:first-child { margin-top: 0; }
 .accent-swatch[data-accent-swatch="violet"]  { background: #7C3AED; }
 .accent-swatch[data-accent-swatch="emerald"] { background: #10B981; }
 .accent-swatch[data-accent-swatch="slate"]   { background: #64748B; }
+
+/* Preferences page — the shell tweaks promoted out of the old rail flyout into
+   a settings-style card. Each row pairs a label + description with the same
+   segmented control the flyout carried; a hairline divider separates rows. */
+.prefs-card { padding: 0; }
+.pref-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+  flex-wrap: wrap;
+}
+.pref-row + .pref-row { border-top: 1px solid var(--border); }
+.pref-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pref-name { font-weight: 700; font-size: var(--fs-2); }
+.pref-desc { color: var(--text-muted); font-size: var(--fs-1); }
 
 .gear-menu { display: flex; flex-direction: column; gap: 2px; }
 .menu-item {
@@ -466,6 +464,7 @@ section.view > h2:first-child { margin-top: 0; }
   cursor: pointer;
 }
 .menu-item:hover:not(:disabled) { background: var(--surface-2); }
+.menu-item.active { background: var(--surface-2); color: var(--text); }
 .menu-item:disabled { color: var(--text-muted); cursor: not-allowed; }
 .menu-item .material-symbols-outlined { font-size: 1.2rem; color: var(--text-muted); flex: none; }
 .menu-soon {
@@ -617,8 +616,9 @@ main {
     border-top: 1px solid var(--border);
     z-index: 30;
   }
-  /* The collapse toggle is meaningless on the bottom bar; keep the Tweaks
-     flyout (the rest of .rail-head) at the far end. */
+  /* The collapse toggle (the brand) is meaningless on the bottom bar; the
+     rail-head holds nothing else now that Tweaks moved to the Preferences page,
+     so it folds away and the nav + footer fill the bar. */
   .rail-head { order: 3; gap: 0; }
   .rail-brand { display: none; }
   .rail-nav {
@@ -658,7 +658,7 @@ main {
   .stream-status-text { display: none; }
   .stuck-pill { min-height: 44px; padding: var(--sp-1) var(--sp-2); }
   .stream-status { min-height: 44px; padding: 0 var(--sp-1); }
-  /* Both flyouts pop upward, above the bottom bar. */
+  /* The gear menu pops upward, above the bottom bar. */
   .popover { bottom: calc(100% + var(--sp-1)); top: auto; }
   /* Content clears the fixed bar (taller touch targets) plus the safe-area. */
   main { padding: var(--sp-4); padding-bottom: calc(var(--bottom-bar-h) + env(safe-area-inset-bottom)); }

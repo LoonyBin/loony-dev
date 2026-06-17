@@ -24,9 +24,9 @@
 
   <link rel="stylesheet" href="/static/app.css" />
 
-  <!-- Apply the pinned shell preferences (theme + the Tweaks panel's accent /
-       density / live-pulse, plus the rail collapse state) before first paint so
-       there is no flash of the default look or rail width. Each maps a
+  <!-- Apply the pinned shell preferences (theme + the Preferences page's accent
+       / density / live-pulse, plus the rail collapse state) before first paint
+       so there is no flash of the default look or rail width. Each maps a
        localStorage value onto a <html> data-* attribute that app.css keys off;
        the Alpine store below seeds its reactive fields from the same values so
        the toggles stay in lockstep. -->
@@ -97,10 +97,11 @@
         { id: "sessions", label: "Sessions", icon: "cable" },
         { id: "logs", label: "Logs", icon: "receipt_long" },
       ];
-      // Routable views are decoupled from the nav list: `skills` is reachable
-      // from the gear flyout but is not a rail item, and the per-repo drill-down
-      // is reached by tapping a card (handled by the `repo/` hash prefix below).
-      const VALID = new Set([...NAV.map((n) => n.id), "skills"]);
+      // Routable views are decoupled from the nav list: `skills` and
+      // `preferences` are reachable from the gear flyout but are not rail items,
+      // and the per-repo drill-down is reached by tapping a card (handled by the
+      // `repo/` hash prefix below).
+      const VALID = new Set([...NAV.map((n) => n.id), "skills", "preferences"]);
       // The per-repo drill-down (#158) and the Issue ▸ PR pipeline detail (#190)
       // are not nav items — they are reached by tapping a repo card / a task row
       // and live at `#repo/<owner>/<name>` and
@@ -263,10 +264,12 @@
 
 <body x-data x-cloak>
   <div class="shell">
-    <!-- Full-height left rail (#187): brand/collapse + Tweaks at the top,
-         primary nav in the middle, folded stuck/stream signals + operator
-         identity + settings gear pinned to the footer. Width is --rail-w,
-         keyed off [data-rail]; the brand button toggles collapse. -->
+    <!-- Full-height left rail (#187): brand/collapse at the top, primary nav in
+         the middle, folded stuck/stream signals + operator identity + settings
+         gear pinned to the footer. The shell tweaks (theme / accent / density /
+         live pulse) moved out of a rail flyout onto the dedicated Preferences
+         page, reached from the gear menu. Width is --rail-w, keyed off
+         [data-rail]; the brand button toggles collapse. -->
     <aside class="rail">
       <div class="rail-head">
         <!-- The brand toggles the rail collapse (persisted), like a sidebar
@@ -281,77 +284,6 @@
           <span class="rail-logo material-symbols-outlined" aria-hidden="true">deployed_code</span>
           <span class="rail-brand-text">loony-dev <span class="brand-sub">dashboard</span></span>
         </button>
-
-        <!-- Tweaks flyout: accent / density / live-pulse / theme. -->
-        <div class="flyout" x-data="{ open: false }" @keydown.escape.window="open = false">
-          <button
-            class="icon-btn"
-            @click="open = !open"
-            :aria-expanded="open"
-            aria-haspopup="dialog"
-            aria-label="Tweaks"
-            data-tooltip="Tweaks"
-          >
-            <span class="material-symbols-outlined" aria-hidden="true">tune</span>
-          </button>
-          <div
-            class="popover tweaks-panel"
-            x-show="open"
-            x-cloak
-            x-transition
-            @click.outside="open = false"
-            role="dialog"
-            aria-label="Tweaks"
-          >
-            <div class="tweak-row">
-              <span class="tweak-label">Theme</span>
-              <div class="segmented" role="group" aria-label="Theme">
-                <button :class="{ active: $store.app.theme === 'light' }"
-                        :aria-pressed="$store.app.theme === 'light'"
-                        @click="$store.app.setTheme('light')">Light</button>
-                <button :class="{ active: $store.app.theme === 'dark' }"
-                        :aria-pressed="$store.app.theme === 'dark'"
-                        @click="$store.app.setTheme('dark')">Dark</button>
-              </div>
-            </div>
-            <div class="tweak-row">
-              <span class="tweak-label">Accent</span>
-              <div class="segmented accent-seg" role="group" aria-label="Accent color">
-                <template x-for="a in ['blue', 'violet', 'emerald', 'slate']" :key="a">
-                  <button :class="{ active: $store.app.accent === a }"
-                          :aria-pressed="$store.app.accent === a"
-                          @click="$store.app.setAccent(a)"
-                          :aria-label="a"
-                          :title="a">
-                    <span class="accent-swatch" :data-accent-swatch="a" aria-hidden="true"></span>
-                  </button>
-                </template>
-              </div>
-            </div>
-            <div class="tweak-row">
-              <span class="tweak-label">Density</span>
-              <div class="segmented" role="group" aria-label="Density">
-                <button :class="{ active: $store.app.density === 'comfortable' }"
-                        :aria-pressed="$store.app.density === 'comfortable'"
-                        @click="$store.app.setDensity('comfortable')">Comfortable</button>
-                <button :class="{ active: $store.app.density === 'compact' }"
-                        :aria-pressed="$store.app.density === 'compact'"
-                        @click="$store.app.setDensity('compact')">Compact</button>
-              </div>
-            </div>
-            <div class="tweak-row">
-              <span class="tweak-label">Live pulse</span>
-              <div class="segmented" role="group" aria-label="Live pulse">
-                <button :class="{ active: $store.app.pulse }"
-                        :aria-pressed="$store.app.pulse"
-                        @click="if (!$store.app.pulse) $store.app.togglePulse()">On</button>
-                <button :class="{ active: !$store.app.pulse }"
-                        :aria-pressed="!$store.app.pulse"
-                        @click="if ($store.app.pulse) $store.app.togglePulse()">Off</button>
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
 
       <nav class="rail-nav" aria-label="Primary">
@@ -439,10 +371,11 @@
                 <span class="material-symbols-outlined" aria-hidden="true">extension</span>
                 <span>Skills &amp; Commands</span>
               </button>
-              <button class="menu-item" role="menuitem" disabled>
+              <button class="menu-item" role="menuitem"
+                      :class="{ active: $store.app.view === 'preferences' }"
+                      @click="$store.app.go('preferences'); open = false">
                 <span class="material-symbols-outlined" aria-hidden="true">tune</span>
                 <span>Preferences</span>
-                <span class="menu-soon">soon</span>
               </button>
               <button class="menu-item" role="menuitem" disabled>
                 <span class="material-symbols-outlined" aria-hidden="true">folder_managed</span>
@@ -767,6 +700,84 @@
           </label>
         </div>
         <div id="entries-grid" class="skill-grid"></div>
+      </section>
+
+      <!-- Preferences: the shell tweaks (theme / accent / density / live pulse)
+           promoted out of the rail flyout into a dedicated page, reached from
+           the settings gear menu. Each control drives the same Alpine store
+           setters the flyout used, so choices still persist to localStorage and
+           reflect onto the <html> data-* attributes app.css keys off. Not a
+           primary nav item. -->
+      <section class="view" x-show="$store.app.view === 'preferences'">
+        <button class="back-link" type="button" @click="$store.app.go('overview')">
+          <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>Overview</button>
+        <h2>Preferences</h2>
+        <p class="muted">Personalize the dashboard. Choices are saved in this browser.</p>
+
+        <div class="card prefs-card">
+          <div class="pref-row">
+            <div class="pref-meta">
+              <span class="pref-name">Theme</span>
+              <span class="pref-desc">Light or dark surface palette.</span>
+            </div>
+            <div class="segmented" role="group" aria-label="Theme">
+              <button :class="{ active: $store.app.theme === 'light' }"
+                      :aria-pressed="$store.app.theme === 'light'"
+                      @click="$store.app.setTheme('light')">Light</button>
+              <button :class="{ active: $store.app.theme === 'dark' }"
+                      :aria-pressed="$store.app.theme === 'dark'"
+                      @click="$store.app.setTheme('dark')">Dark</button>
+            </div>
+          </div>
+
+          <div class="pref-row">
+            <div class="pref-meta">
+              <span class="pref-name">Accent</span>
+              <span class="pref-desc">Highlight color for links, active nav, and focus.</span>
+            </div>
+            <div class="segmented accent-seg" role="group" aria-label="Accent color">
+              <template x-for="a in ['blue', 'violet', 'emerald', 'slate']" :key="a">
+                <button :class="{ active: $store.app.accent === a }"
+                        :aria-pressed="$store.app.accent === a"
+                        @click="$store.app.setAccent(a)"
+                        :aria-label="a"
+                        :title="a">
+                  <span class="accent-swatch" :data-accent-swatch="a" aria-hidden="true"></span>
+                </button>
+              </template>
+            </div>
+          </div>
+
+          <div class="pref-row">
+            <div class="pref-meta">
+              <span class="pref-name">Density</span>
+              <span class="pref-desc">Comfortable spacing, or compact to fit more on screen.</span>
+            </div>
+            <div class="segmented" role="group" aria-label="Density">
+              <button :class="{ active: $store.app.density === 'comfortable' }"
+                      :aria-pressed="$store.app.density === 'comfortable'"
+                      @click="$store.app.setDensity('comfortable')">Comfortable</button>
+              <button :class="{ active: $store.app.density === 'compact' }"
+                      :aria-pressed="$store.app.density === 'compact'"
+                      @click="$store.app.setDensity('compact')">Compact</button>
+            </div>
+          </div>
+
+          <div class="pref-row">
+            <div class="pref-meta">
+              <span class="pref-name">Live pulse</span>
+              <span class="pref-desc">Animated indicators on live and streaming surfaces.</span>
+            </div>
+            <div class="segmented" role="group" aria-label="Live pulse">
+              <button :class="{ active: $store.app.pulse }"
+                      :aria-pressed="$store.app.pulse"
+                      @click="if (!$store.app.pulse) $store.app.togglePulse()">On</button>
+              <button :class="{ active: !$store.app.pulse }"
+                      :aria-pressed="!$store.app.pulse"
+                      @click="if ($store.app.pulse) $store.app.togglePulse()">Off</button>
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- Logs: live tail of a worker's log -->
