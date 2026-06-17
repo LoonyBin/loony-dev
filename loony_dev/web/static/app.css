@@ -2,146 +2,140 @@
    No build step: plain CSS with custom-property design tokens. */
 
 /* ---- Design tokens --------------------------------------------------- */
+/* The token + type layer IS the L Space design system, vendored verbatim as
+   /static/design/colors_and_type.css and loaded before this file (see
+   index.html). That file owns the --gray-* and --ink neutral ramp, the
+   --fg-*, --bg-*, --border-* semantics, the --fs-* px type scale, the --space-*
+   4-pt grid, --radius-*, --shadow-*, --tracking-* and self-hosts Manrope.
+   This file no longer re-derives any of that (#247). It only:
+     1. ports loony-dev.html's runtime extras (--ld-accent*, --st-* lifecycle);
+     2. adds the few app-shell tokens the design layer has no source for; and
+     3. defines a deliberate, app-authored dark ramp (the design ships
+        light-only) re-pointed onto the design tokens. */
 :root {
   color-scheme: light dark;
 
-  /* Type — Manrope (variable) is the sans for the L Space look (#186); the
-     system stack stays as the fallback if the web font is blocked. */
-  --font-sans: "Manrope", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Runtime accent indirection + lifecycle hues — ported verbatim from the
+     design's loony-dev.html <style> :root. Every primitive (.ld-btn / .tag /
+     .sdot / .statepill / .navitem.on / .card-head) consumes these; the Tweaks
+     accent-swap re-points --ld-accent* (the [data-accent] blocks below). */
+  --ld-accent: var(--jeeves-primary);
+  --ld-accent-hover: var(--jeeves-primary-hover);
+  --ld-accent-soft: var(--jeeves-primary-soft);
+  --ld-accent-ink: var(--jeeves-primary-ink);
+
+  /* lifecycle state colors */
+  --st-merged: #10B981;  --st-merged-soft: #ECFDF5;  --st-merged-ink: #047857;
+  --st-active: var(--ld-accent); --st-active-soft: var(--ld-accent-soft); --st-active-ink: var(--ld-accent-ink);
+  --st-review: #F59E0B;  --st-review-soft: #FFFBEB;  --st-review-ink: #B45309;
+  --st-blocked:#EF4444;  --st-blocked-soft:#FEF2F2;  --st-blocked-ink:#B91C1C;
+  --st-gated:  #9CA3AF;  --st-gated-soft:#F9FAFB;
+
+  --side-w: 300px;
+  --pad-card: 18px;
+  --row-gap: 12px;
+
+  /* ---- App-shell-only tokens (the design system has no source) -------- */
+  /* Monospace stack for SHAs, branch names, log/terminal panes. */
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-
-  /* Type scale: micro → display. --fs-0..5 are unchanged so existing consumers
-     don't shift; --fs-display is the new large-title step. */
-  --fs-0: 0.75rem;   /* micro / eyebrow */
-  --fs-1: 0.8rem;
-  --fs-2: 0.9rem;
-  --fs-3: 1rem;      /* body */
-  --fs-4: 1.25rem;   /* title */
-  --fs-5: 1.5rem;
-  --fs-display: 2rem; /* display headings */
-
-  /* Wide tracking for uppercase eyebrows; tabular numerals keep counts from
-     jittering as digits change. Apply --num via `font-variant-numeric`. */
-  --track-eyebrow: 0.08em;
-  --num: tabular-nums;
-
-  --sp-1: 0.25rem;
-  --sp-2: 0.5rem;
-  --sp-3: 0.75rem;
-  --sp-4: 1rem;
-  --sp-5: 1.5rem;
-  --sp-6: 2rem;
-
-  --radius: 8px;
-  --radius-sm: 4px;
   --maxw: 1100px;
-
-  /* Left rail width (#187): expanded by default, icon-only when collapsed
-     (keyed off :root[data-rail="collapsed"] below). The .shell grid and the
-     rail itself both read --rail-w, so toggling the token reflows the layout. */
+  /* Left rail width (#187): expanded by default, 72px when collapsed (keyed off
+     :root[data-rail="collapsed"] below). The .shell grid + rail both read it. */
   --rail-w: 236px;
-
-  /* Height reserved for the mobile bottom tab bar (the rail at ≤720px). The bar
-     itself is height:auto, so this is the assumed clearance that <main> and the
-     sticky steer reply both offset against — one token keeps the two in step
-     (#192). Bump it here if the bar's content height changes. */
+  /* Mobile bottom-tab-bar clearance (#192): the assumed bar height that <main>
+     and the sticky steer reply offset against. Keep the two in step here. */
   --bottom-bar-h: 5rem;
+  /* Tabular numerals keep counts/PIDs/ages from jittering as digits change. */
+  --num: tabular-nums;
+  /* Solid danger red for filled surfaces (banner, stuck pill, nav badge) — a
+     deeper red than the design's --danger #EF4444 for white-on-red contrast. */
+  --danger-strong: #DC2626;
 
-  /* Accent family — the blueprint blue (#186). soft = tinted fill for selected
-     rows/pills; ink = a slightly deeper text-on-light accent. */
-  --accent: #2667B7;
-  --accent-hover: #1E4F8F;
-  --accent-soft: #EFF6FF;
-  --accent-ink: #1D4ED8;
-
-  /* Lifecycle state colors (the label state machine's hues). in-progress
-     reuses the accent so "working" reads as the primary brand color. */
-  --state-merged: #10B981;
-  --state-review: #F59E0B;
-  --state-blocked: #EF4444;
-  --state-gated: #9CA3AF;
-  --state-progress: var(--accent);
-
-  /* Cool-gray neutrals (light). Hairline borders, subtle card shadow. */
-  --bg: #f5f6f8;
-  --surface: #ffffff;
-  --surface-2: #eef1f5;
-  --border: #d9dee5;
-  --text: #1a1f26;
-  --text-muted: #5b6573;
-
-  /* Legacy aliases re-pointed at the new tokens so existing class names (the
-     pre-rework markup) pick up the new look for free, no markup changes. */
-  --primary: var(--accent);
+  /* ---- Semantic aliases onto the design tokens ------------------------ */
+  /* Existing class names (.btn-primary, .status-running, .obs-*, …) read these
+     aliases; the definitions point at the design tokens so there is one source
+     of truth and no parallel palette. */
+  --primary: var(--ld-accent);
   --primary-contrast: #ffffff;
-  --danger: var(--state-blocked);
-  --danger-strong: #DC2626;   /* solid-red surfaces (banner, stuck pill) */
-  --running: var(--state-merged);
-  --stale: var(--state-gated);
-  --unknown: var(--state-review);
-  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 2px 8px rgba(16, 24, 40, 0.05);
+  --danger: var(--st-blocked);
+  --running: var(--st-merged);
+  --stale: var(--st-gated);
+  --unknown: var(--st-review);
 }
 
-/* Dark tokens: applied automatically by OS preference (unless a manual light
-   choice is pinned), and explicitly when the toggle pins dark. */
+/* Density (Tweaks): the design's .dense knob, kept for parity. The app drives
+   density through [data-density] (further down), which overrides paddings. */
+.dense { --pad-card: 13px; --row-gap: 8px; }
+
+/* ---- Dark theme (app-authored, #247) --------------------------------- */
+/* The L Space bundle ships light-only — there is NO design source for dark.
+   This ramp is therefore deliberately app-authored: it re-points the design's
+   --fg-*, --bg-*, --border-*, --ld-accent*, --st-* tokens onto a dark palette so the
+   primitives that consume them invert cleanly, rather than leaving orphaned
+   ad-hoc overrides (exactly the drift this issue kills). It is asserted by a
+   test (test_app_css_ships_guarded_dark_ramp) so it can't silently rot. Applied
+   by OS preference unless a light theme is pinned, and explicitly when dark is
+   pinned; the two selectors carry the same declarations. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    /* Accent + lifecycle hues brightened for dark surfaces. Kept usable, not
-       final — full dark re-theming is deferred to the Tweaks issue (#186). */
-    --accent: #4F8CFF;
-    --accent-hover: #6FA3FF;
-    --accent-soft: #18233a;
-    --accent-ink: #93B4FF;
-    --state-merged: #34D399;
-    --state-review: #FBBF24;
-    --state-blocked: #F87171;
-    --state-gated: #9CA3AF;
-    --state-progress: var(--accent);
+    --ld-accent: #4F8CFF;
+    --ld-accent-hover: #6FA3FF;
+    --ld-accent-soft: #18233a;
+    --ld-accent-ink: #93B4FF;
 
-    --bg: #0f1318;
-    --surface: #171c23;
-    --surface-2: #1f262f;
-    --border: #2c343e;
-    --text: #e6e9ee;
-    --text-muted: #9aa4b2;
+    --st-merged: #34D399;  --st-merged-soft: #0e2a22;  --st-merged-ink: #6EE7B7;
+    --st-active: var(--ld-accent); --st-active-soft: var(--ld-accent-soft); --st-active-ink: var(--ld-accent-ink);
+    --st-review: #FBBF24;  --st-review-soft: #2a2310;  --st-review-ink: #FCD34D;
+    --st-blocked: #F87171; --st-blocked-soft: #2a1414; --st-blocked-ink: #FCA5A5;
+    --st-gated: #9CA3AF;   --st-gated-soft: #1f262f;
 
-    --primary: var(--accent);
+    --fg-primary: #e6e9ee;
+    --fg-secondary: #9aa4b2;
+    --fg-muted: #6b7480;
+    --fg-disabled: #4b545f;
+
+    --bg-app: #171c23;
+    --bg-subtle: #0f1318;
+    --bg-chip: #1f262f;
+    --bg-selected: #18233a;
+
+    --border-hairline: #232b34;
+    --border-default: #2c343e;
+    --border-strong: #3a434e;
+
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 10px rgba(0, 0, 0, 0.3);
     --primary-contrast: #0f1318;
-    --danger: var(--state-blocked);
-    --danger-strong: #EF4444;
-    --running: var(--state-merged);
-    --stale: var(--state-gated);
-    --unknown: var(--state-review);
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 10px rgba(0, 0, 0, 0.3);
   }
 }
 
 :root[data-theme="dark"] {
-  --accent: #4F8CFF;
-  --accent-hover: #6FA3FF;
-  --accent-soft: #18233a;
-  --accent-ink: #93B4FF;
-  --state-merged: #34D399;
-  --state-review: #FBBF24;
-  --state-blocked: #F87171;
-  --state-gated: #9CA3AF;
-  --state-progress: var(--accent);
+  --ld-accent: #4F8CFF;
+  --ld-accent-hover: #6FA3FF;
+  --ld-accent-soft: #18233a;
+  --ld-accent-ink: #93B4FF;
 
-  --bg: #0f1318;
-  --surface: #171c23;
-  --surface-2: #1f262f;
-  --border: #2c343e;
-  --text: #e6e9ee;
-  --text-muted: #9aa4b2;
+  --st-merged: #34D399;  --st-merged-soft: #0e2a22;  --st-merged-ink: #6EE7B7;
+  --st-active: var(--ld-accent); --st-active-soft: var(--ld-accent-soft); --st-active-ink: var(--ld-accent-ink);
+  --st-review: #FBBF24;  --st-review-soft: #2a2310;  --st-review-ink: #FCD34D;
+  --st-blocked: #F87171; --st-blocked-soft: #2a1414; --st-blocked-ink: #FCA5A5;
+  --st-gated: #9CA3AF;   --st-gated-soft: #1f262f;
 
-  --primary: var(--accent);
+  --fg-primary: #e6e9ee;
+  --fg-secondary: #9aa4b2;
+  --fg-muted: #6b7480;
+  --fg-disabled: #4b545f;
+
+  --bg-app: #171c23;
+  --bg-subtle: #0f1318;
+  --bg-chip: #1f262f;
+  --bg-selected: #18233a;
+
+  --border-hairline: #232b34;
+  --border-default: #2c343e;
+  --border-strong: #3a434e;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 10px rgba(0, 0, 0, 0.3);
   --primary-contrast: #0f1318;
-  --danger: var(--state-blocked);
-  --danger-strong: #EF4444;
-  --running: var(--state-merged);
-  --stale: var(--state-gated);
-  --unknown: var(--state-review);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 10px rgba(0, 0, 0, 0.3);
 }
 
 /* ---- Base ------------------------------------------------------------ */
@@ -152,10 +146,10 @@
 body {
   margin: 0;
   font-family: var(--font-sans);
-  font-size: var(--fs-3);
+  font-size: var(--fs-body);
   line-height: 1.45;
-  color: var(--text);
-  background: var(--bg);
+  color: var(--fg-primary);
+  background: var(--bg-subtle);
   min-height: 100vh;
 }
 
@@ -163,8 +157,8 @@ body {
    down with the rail rules. */
 :root[data-rail="collapsed"] { --rail-w: 72px; }
 
-h1 { font-size: var(--fs-5); margin: 0; }
-h2 { font-size: var(--fs-3); margin: var(--sp-5) 0 var(--sp-3); }
+h1 { font-size: var(--fs-h1); margin: 0; }
+h2 { font-size: var(--fs-body); margin: var(--space-6) 0 var(--space-3); }
 section.view > h2:first-child { margin-top: 0; }
 
 /* Material Symbols Outlined (#186) — the single icon font. The ligature text in
@@ -189,8 +183,8 @@ section.view > h2:first-child { margin-top: 0; }
 }
 
 /* ---- Shell controls (shared by the rail) ----------------------------- */
-.brand { font-weight: 700; font-size: var(--fs-4); white-space: nowrap; }
-.brand-sub { color: var(--text-muted); font-weight: 500; }
+.brand { font-weight: 700; font-size: var(--fs-h3); white-space: nowrap; }
+.brand-sub { color: var(--fg-secondary); font-weight: 500; }
 .spacer { flex: 1; }
 
 .icon-btn {
@@ -198,25 +192,25 @@ section.view > h2:first-child { margin-top: 0; }
   align-items: center;
   justify-content: center;
   font: inherit;
-  font-size: var(--fs-4);
+  font-size: var(--fs-h3);
   line-height: 1;
   background: none;
   border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
+  border-radius: var(--radius-xs);
+  color: var(--fg-secondary);
   cursor: pointer;
-  padding: var(--sp-2);
+  padding: var(--space-2);
   min-width: 2.4rem;
   min-height: 2.4rem;
 }
-.icon-btn:hover { background: var(--surface-2); color: var(--text); }
+.icon-btn:hover { background: var(--bg-chip); color: var(--fg-primary); }
 
 .stuck-pill {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
+  gap: var(--space-1);
   font: inherit;
-  font-size: var(--fs-1);
+  font-size: var(--fs-xs);
   font-weight: 600;
   font-variant-numeric: var(--num); /* tabular count digits */
   /* Fixed white: the background is always danger-red, so reusing the
@@ -225,7 +219,7 @@ section.view > h2:first-child { margin-top: 0; }
   background: var(--danger-strong);
   border: none;
   border-radius: 999px;
-  padding: var(--sp-1) var(--sp-3);
+  padding: var(--space-1) var(--space-3);
   cursor: pointer;
 }
 .stuck-pill .material-symbols-outlined { font-size: 1.05rem; }
@@ -234,10 +228,10 @@ section.view > h2:first-child { margin-top: 0; }
 .stream-status {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-2);
-  font-size: var(--fs-1);
+  gap: var(--space-2);
+  font-size: var(--fs-xs);
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--fg-secondary);
   white-space: nowrap;
 }
 .stream-dot {
@@ -266,10 +260,10 @@ section.view > h2:first-child { margin-top: 0; }
 .rail {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-3);
-  padding: var(--sp-3);
-  background: var(--surface);
-  border-right: 1px solid var(--border);
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--bg-app);
+  border-right: 1px solid var(--border-default);
   position: sticky;
   top: 0;
   height: 100vh;
@@ -280,30 +274,30 @@ section.view > h2:first-child { margin-top: 0; }
 .rail-head {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--space-2);
 }
 
 /* The brand doubles as the collapse toggle. */
 .rail-brand {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--space-2);
   flex: 1;
   min-width: 0;
-  padding: var(--sp-2);
+  padding: var(--space-2);
   border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
   background: none;
   font: inherit;
   font-weight: 700;
-  font-size: var(--fs-4);
-  color: var(--text);
+  font-size: var(--fs-h3);
+  color: var(--fg-primary);
   text-align: left;
   white-space: nowrap;
   cursor: pointer;
 }
-.rail-brand:hover { background: var(--surface-2); }
-.rail-brand:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rail-brand:hover { background: var(--bg-chip); }
+.rail-brand:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: 2px; }
 .rail-brand-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; overflow: hidden; }
 
 /* 3×3 dot-grid brand mark (#222): nine accent dots laid out on a grid. CSS-only
@@ -321,7 +315,7 @@ section.view > h2:first-child { margin-top: 0; }
 .rail-mark i {
   display: block;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--ld-accent);
 }
 
 /* Hover/focus collapse chevron (#222): a quiet affordance pinned to the right
@@ -331,7 +325,7 @@ section.view > h2:first-child { margin-top: 0; }
   margin-left: auto;
   flex: none;
   font-size: 1.1rem;
-  color: var(--text-muted);
+  color: var(--fg-secondary);
   opacity: 0;
   transition: opacity 0.12s ease;
 }
@@ -344,12 +338,12 @@ section.view > h2:first-child { margin-top: 0; }
 /* "Operate" section label above the primary nav (#221). Uppercase micro label,
    hidden when the rail is icon-only (tooltips carry the labels there). */
 .rail-nav-eyebrow {
-  padding: var(--sp-2) var(--sp-3) var(--sp-1);
-  font-size: var(--fs-0);
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  font-size: var(--fs-2xs);
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: var(--track-eyebrow);
-  color: var(--text-faint, var(--text-muted));
+  letter-spacing: var(--tracking-wide);
+  color: var(--fg-muted, var(--fg-secondary));
 }
 
 .rail-nav {
@@ -358,35 +352,35 @@ section.view > h2:first-child { margin-top: 0; }
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
+  gap: var(--space-1);
 }
 
 .rail-footer {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
-  padding-top: var(--sp-3);
-  border-top: 1px solid var(--border);
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-default);
 }
 
 .nav-item {
   position: relative;
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
+  gap: var(--space-3);
   width: 100%;
-  padding: var(--sp-3);
+  padding: var(--space-3);
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
   background: none;
-  color: var(--text-muted);
+  color: var(--fg-secondary);
   font: inherit;
   text-align: left;
   cursor: pointer;
 }
-.nav-item:hover { background: var(--surface-2); color: var(--text); }
+.nav-item:hover { background: var(--bg-chip); color: var(--fg-primary); }
 .nav-item.active { background: var(--primary); color: var(--primary-contrast); }
-.nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.nav-item:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: 2px; }
 /* Specific enough to beat the .material-symbols-outlined base font-size. */
 .nav-item .nav-icon { font-size: 1.35rem; line-height: 1; flex: none; }
 .nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -399,8 +393,8 @@ section.view > h2:first-child { margin-top: 0; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0 var(--sp-1);
-  font-size: var(--fs-0);
+  padding: 0 var(--space-1);
+  font-size: var(--fs-2xs);
   font-weight: 700;
   font-variant-numeric: var(--num);
   color: #fff;
@@ -412,7 +406,7 @@ section.view > h2:first-child { margin-top: 0; }
   width: 0.5rem;
   height: 0.5rem;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--ld-accent);
   flex: none;
 }
 
@@ -420,7 +414,7 @@ section.view > h2:first-child { margin-top: 0; }
 .rail-operator {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--space-2);
 }
 .operator-id {
   display: flex;
@@ -431,14 +425,14 @@ section.view > h2:first-child { margin-top: 0; }
 }
 .operator-name {
   font-weight: 600;
-  font-size: var(--fs-2);
+  font-size: var(--fs-sm);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .operator-handle {
-  font-size: var(--fs-0);
-  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  color: var(--fg-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -452,17 +446,17 @@ section.view > h2:first-child { margin-top: 0; }
   z-index: 60;
   min-width: 14rem;
   max-width: min(20rem, 90vw);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  padding: var(--sp-2);
+  background: var(--bg-app);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-2);
 }
 /* The gear sits in the footer -> pop the menu above it. It grows rightward over
    <main> so it stays on-screen in both expanded and collapsed rail widths. */
-.gear-menu { bottom: calc(100% + var(--sp-1)); }
+.gear-menu { bottom: calc(100% + var(--space-1)); }
 
-.accent-seg > button { padding: var(--sp-1) var(--sp-2); }
+.accent-seg > button { padding: var(--space-1) var(--space-2); }
 .accent-swatch {
   display: block;
   width: 1.1rem;
@@ -483,61 +477,61 @@ section.view > h2:first-child { margin-top: 0; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-4);
-  padding: var(--sp-4);
+  gap: var(--space-4);
+  padding: var(--space-4);
   flex-wrap: wrap;
 }
-.pref-row + .pref-row { border-top: 1px solid var(--border); }
+.pref-row + .pref-row { border-top: 1px solid var(--border-default); }
 .pref-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.pref-name { font-weight: 700; font-size: var(--fs-2); }
-.pref-desc { color: var(--text-muted); font-size: var(--fs-1); }
+.pref-name { font-weight: 700; font-size: var(--fs-sm); }
+.pref-desc { color: var(--fg-secondary); font-size: var(--fs-xs); }
 
 .gear-menu { display: flex; flex-direction: column; gap: 2px; }
 /* Non-interactive "Settings" cap header on the gear menu (#222): an uppercase
    micro-label with a divider, mirroring the .rail-nav-eyebrow treatment. */
 .menu-cap {
-  padding: var(--sp-1) var(--sp-3) var(--sp-2);
-  font-size: var(--fs-0);
+  padding: var(--space-1) var(--space-3) var(--space-2);
+  font-size: var(--fs-2xs);
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: var(--track-eyebrow);
-  color: var(--text-muted);
-  border-bottom: 1px solid var(--border);
+  letter-spacing: var(--tracking-wide);
+  color: var(--fg-secondary);
+  border-bottom: 1px solid var(--border-default);
   margin-bottom: 2px;
 }
 .menu-item {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
+  gap: var(--space-3);
   width: 100%;
-  padding: var(--sp-2) var(--sp-3);
+  padding: var(--space-2) var(--space-3);
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
   background: none;
   font: inherit;
-  font-size: var(--fs-2);
-  color: var(--text);
+  font-size: var(--fs-sm);
+  color: var(--fg-primary);
   text-align: left;
   cursor: pointer;
 }
-.menu-item:hover:not(:disabled) { background: var(--surface-2); }
-.menu-item.active { background: var(--surface-2); color: var(--text); }
-.menu-item:disabled { color: var(--text-muted); cursor: not-allowed; }
-.menu-item .material-symbols-outlined { font-size: 1.2rem; color: var(--text-muted); flex: none; }
+.menu-item:hover:not(:disabled) { background: var(--bg-chip); }
+.menu-item.active { background: var(--bg-chip); color: var(--fg-primary); }
+.menu-item:disabled { color: var(--fg-secondary); cursor: not-allowed; }
+.menu-item .material-symbols-outlined { font-size: 1.2rem; color: var(--fg-secondary); flex: none; }
 .menu-soon {
   margin-left: auto;
-  font-size: var(--fs-0);
+  font-size: var(--fs-2xs);
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: var(--track-eyebrow);
-  color: var(--text-muted);
-  background: var(--surface-2);
+  letter-spacing: var(--tracking-wide);
+  color: var(--fg-secondary);
+  background: var(--bg-chip);
   border-radius: 999px;
-  padding: 1px var(--sp-2);
+  padding: 1px var(--space-2);
 }
 
 main {
-  padding: var(--sp-5);
+  padding: var(--space-6);
   overflow: auto;
   width: 100%;
   max-width: var(--maxw);
@@ -558,7 +552,7 @@ main {
 [data-rail="collapsed"] .rail-brand,
 [data-rail="collapsed"] .nav-item,
 [data-rail="collapsed"] .stuck-pill { justify-content: center; }
-[data-rail="collapsed"] .rail-operator { flex-direction: column; gap: var(--sp-1); }
+[data-rail="collapsed"] .rail-operator { flex-direction: column; gap: var(--space-1); }
 /* The count badge becomes a small corner marker when there is no label row. */
 [data-rail="collapsed"] .nav-badge,
 [data-rail="collapsed"] .nav-dot {
@@ -581,17 +575,17 @@ main {
 [data-rail="collapsed"] [data-tooltip]:focus-visible::after {
   content: attr(data-tooltip);
   position: absolute;
-  left: calc(100% + var(--sp-2));
+  left: calc(100% + var(--space-2));
   top: 50%;
   transform: translateY(-50%);
   white-space: nowrap;
-  background: var(--text);
-  color: var(--bg);
-  font-size: var(--fs-1);
+  background: var(--fg-primary);
+  color: var(--bg-subtle);
+  font-size: var(--fs-xs);
   font-weight: 600;
-  padding: var(--sp-1) var(--sp-2);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-xs);
+  box-shadow: var(--shadow-card);
   z-index: 70;
   pointer-events: none;
 }
@@ -604,33 +598,33 @@ main {
    The extra attribute keeps each more specific than the base theme block. */
 
 /* Light */
-:root[data-accent="violet"]  { --accent: #7C3AED; --accent-hover: #6D28D9; --accent-soft: #F5F3FF; --accent-ink: #6D28D9; }
-:root[data-accent="emerald"] { --accent: #059669; --accent-hover: #047857; --accent-soft: #ECFDF5; --accent-ink: #047857; }
-:root[data-accent="slate"]   { --accent: #475569; --accent-hover: #334155; --accent-soft: #F1F5F9; --accent-ink: #334155; }
+:root[data-accent="violet"]  { --ld-accent: #7C3AED; --ld-accent-hover: #6D28D9; --ld-accent-soft: #F5F3FF; --ld-accent-ink: #6D28D9; }
+:root[data-accent="emerald"] { --ld-accent: #059669; --ld-accent-hover: #047857; --ld-accent-soft: #ECFDF5; --ld-accent-ink: #047857; }
+:root[data-accent="slate"]   { --ld-accent: #475569; --ld-accent-hover: #334155; --ld-accent-soft: #F1F5F9; --ld-accent-ink: #334155; }
 
 /* Pinned dark */
-:root[data-theme="dark"][data-accent="violet"]  { --accent: #A78BFA; --accent-hover: #C4B5FD; --accent-soft: #2A1F4A; --accent-ink: #C4B5FD; }
-:root[data-theme="dark"][data-accent="emerald"] { --accent: #34D399; --accent-hover: #6EE7B7; --accent-soft: #103027; --accent-ink: #6EE7B7; }
-:root[data-theme="dark"][data-accent="slate"]   { --accent: #94A3B8; --accent-hover: #CBD5E1; --accent-soft: #1E293B; --accent-ink: #CBD5E1; }
+:root[data-theme="dark"][data-accent="violet"]  { --ld-accent: #A78BFA; --ld-accent-hover: #C4B5FD; --ld-accent-soft: #2A1F4A; --ld-accent-ink: #C4B5FD; }
+:root[data-theme="dark"][data-accent="emerald"] { --ld-accent: #34D399; --ld-accent-hover: #6EE7B7; --ld-accent-soft: #103027; --ld-accent-ink: #6EE7B7; }
+:root[data-theme="dark"][data-accent="slate"]   { --ld-accent: #94A3B8; --ld-accent-hover: #CBD5E1; --ld-accent-soft: #1E293B; --ld-accent-ink: #CBD5E1; }
 
 /* OS-dark, unless a light theme is pinned. */
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"])[data-accent="violet"]  { --accent: #A78BFA; --accent-hover: #C4B5FD; --accent-soft: #2A1F4A; --accent-ink: #C4B5FD; }
-  :root:not([data-theme="light"])[data-accent="emerald"] { --accent: #34D399; --accent-hover: #6EE7B7; --accent-soft: #103027; --accent-ink: #6EE7B7; }
-  :root:not([data-theme="light"])[data-accent="slate"]   { --accent: #94A3B8; --accent-hover: #CBD5E1; --accent-soft: #1E293B; --accent-ink: #CBD5E1; }
+  :root:not([data-theme="light"])[data-accent="violet"]  { --ld-accent: #A78BFA; --ld-accent-hover: #C4B5FD; --ld-accent-soft: #2A1F4A; --ld-accent-ink: #C4B5FD; }
+  :root:not([data-theme="light"])[data-accent="emerald"] { --ld-accent: #34D399; --ld-accent-hover: #6EE7B7; --ld-accent-soft: #103027; --ld-accent-ink: #6EE7B7; }
+  :root:not([data-theme="light"])[data-accent="slate"]   { --ld-accent: #94A3B8; --ld-accent-hover: #CBD5E1; --ld-accent-soft: #1E293B; --ld-accent-ink: #CBD5E1; }
 }
 
 /* ---- Tweaks: density ------------------------------------------------- */
 /* Compact overrides a small set of layout-spacing paddings rather than shrinking
    the global --sp-* scale (which would cascade everywhere). Comfortable is the
    default spacing. */
-:root[data-density="compact"] .nav-item { padding: var(--sp-2) var(--sp-3); }
-:root[data-density="compact"] main { padding: var(--sp-4); }
+:root[data-density="compact"] .nav-item { padding: var(--space-2) var(--space-3); }
+:root[data-density="compact"] main { padding: var(--space-4); }
 :root[data-density="compact"] .data-table th,
-:root[data-density="compact"] .data-table td { padding: var(--sp-1) var(--sp-2); }
+:root[data-density="compact"] .data-table td { padding: var(--space-1) var(--space-2); }
 :root[data-density="compact"] .card,
 :root[data-density="compact"] .session-card,
-:root[data-density="compact"] .stat { padding: var(--sp-3); }
+:root[data-density="compact"] .stat { padding: var(--space-3); }
 
 /* ---- Tweaks: live pulse ---------------------------------------------- */
 /* Pulse-off disables the live animations; the prefers-reduced-motion guard
@@ -666,13 +660,13 @@ main {
     height: auto;
     flex-direction: row;
     align-items: center;
-    gap: var(--sp-1);
-    padding: var(--sp-1) var(--sp-2);
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-2);
     /* Clear the iOS/Android home-indicator gesture area so the tab bar's hit
        targets are not occluded at the very bottom of the screen. */
-    padding-bottom: max(var(--sp-1), env(safe-area-inset-bottom));
+    padding-bottom: max(var(--space-1), env(safe-area-inset-bottom));
     border-right: none;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--border-default);
     z-index: 30;
   }
   /* The collapse toggle (the brand) is meaningless on the bottom bar; the
@@ -694,7 +688,7 @@ main {
     order: 2;
     flex-direction: row;
     align-items: center;
-    gap: var(--sp-1);
+    gap: var(--space-1);
     padding-top: 0;
     border-top: none;
   }
@@ -706,7 +700,7 @@ main {
   .nav-item {
     flex-direction: column;
     gap: 2px;
-    padding: var(--sp-2) var(--sp-1);
+    padding: var(--space-2) var(--space-1);
     min-width: 0;
     /* Touch target: a thumb-sized hit area for each tab. */
     min-height: 44px;
@@ -717,12 +711,12 @@ main {
      (their text spans are display:none below); keep them touch-sized. */
   .stuck-pill-text,
   .stream-status-text { display: none; }
-  .stuck-pill { min-height: 44px; padding: var(--sp-1) var(--sp-2); }
-  .stream-status { min-height: 44px; padding: 0 var(--sp-1); }
+  .stuck-pill { min-height: 44px; padding: var(--space-1) var(--space-2); }
+  .stream-status { min-height: 44px; padding: 0 var(--space-1); }
   /* The gear menu pops upward, above the bottom bar. */
-  .popover { bottom: calc(100% + var(--sp-1)); top: auto; }
+  .popover { bottom: calc(100% + var(--space-1)); top: auto; }
   /* Content clears the fixed bar (taller touch targets) plus the safe-area. */
-  main { padding: var(--sp-4); padding-bottom: calc(var(--bottom-bar-h) + env(safe-area-inset-bottom)); }
+  main { padding: var(--space-4); padding-bottom: calc(var(--bottom-bar-h) + env(safe-area-inset-bottom)); }
 }
 
 /* ---- Tables ---------------------------------------------------------- */
@@ -730,17 +724,17 @@ main {
 .data-table {
   border-collapse: collapse;
   width: 100%;
-  font-size: var(--fs-2);
+  font-size: var(--fs-sm);
   font-variant-numeric: var(--num); /* align digit columns (PID, age, …) */
 }
 .data-table th,
 .data-table td {
   text-align: left;
-  padding: var(--sp-2) var(--sp-3);
-  border-bottom: 1px solid var(--border);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-default);
 }
-.data-table th { font-weight: 600; color: var(--text-muted); }
-.empty { color: var(--text-muted); font-style: italic; }
+.data-table th { font-weight: 600; color: var(--fg-secondary); }
+.empty { color: var(--fg-secondary); font-style: italic; }
 
 .status { font-weight: 600; }
 .status-running { color: var(--running); }
@@ -757,7 +751,7 @@ main {
   font: inherit;
   color: var(--primary);
 }
-td.cmdline { font-family: var(--font-mono); font-size: var(--fs-1); word-break: break-all; }
+td.cmdline { font-family: var(--font-mono); font-size: var(--fs-xs); word-break: break-all; }
 
 /* Responsive: tables collapse to cards on narrow screens. */
 @media (max-width: 560px) {
@@ -771,25 +765,25 @@ td.cmdline { font-family: var(--font-mono); font-size: var(--fs-1); word-break: 
   }
   .data-table tr {
     display: block;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow);
-    margin-bottom: var(--sp-3);
-    padding: var(--sp-2) var(--sp-3);
+    background: var(--bg-app);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-card);
+    margin-bottom: var(--space-3);
+    padding: var(--space-2) var(--space-3);
   }
   .data-table td {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    gap: var(--sp-4);
+    gap: var(--space-4);
     border: none;
-    padding: var(--sp-2) 0;
+    padding: var(--space-2) 0;
   }
   .data-table td::before {
     content: attr(data-label);
     font-weight: 600;
-    color: var(--text-muted);
+    color: var(--fg-secondary);
   }
   .data-table td.empty { justify-content: flex-start; }
   .data-table td.empty::before { content: none; }
@@ -799,10 +793,10 @@ td.cmdline { font-family: var(--font-mono); font-size: var(--fs-1); word-break: 
 .banner {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-3) var(--sp-4);
-  border-radius: var(--radius);
-  margin: 0 0 var(--sp-4);
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  margin: 0 0 var(--space-4);
   font-weight: 600;
 }
 /* `display:flex` above would otherwise defeat the `hidden` toggle (author
@@ -814,16 +808,16 @@ td.cmdline { font-family: var(--font-mono); font-size: var(--fs-1); word-break: 
 button.action,
 .btn {
   font: inherit;
-  padding: var(--sp-2) var(--sp-4);
+  padding: var(--space-2) var(--space-4);
   cursor: pointer;
-  background: var(--surface-2);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  background: var(--bg-chip);
+  color: var(--fg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xs);
   min-height: 2.2rem;
 }
 button.action:hover,
-.btn:hover { background: var(--border); }
+.btn:hover { background: var(--border-default); }
 .btn-primary { background: var(--primary); color: var(--primary-contrast); border-color: var(--primary); }
 
 .interrupt-btn,
@@ -832,8 +826,8 @@ button.action:hover,
   font: inherit;
   color: #fff;
   border: none;
-  border-radius: var(--radius-sm);
-  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--radius-xs);
+  padding: var(--space-1) var(--space-3);
   min-height: 2rem;
 }
 
@@ -841,7 +835,7 @@ button.action:hover,
 .interrupt-btn {
   background: var(--primary);
   color: var(--primary-contrast);
-  margin-right: var(--sp-2);
+  margin-right: var(--space-2);
 }
 .interrupt-btn:hover { filter: brightness(1.08); }
 .interrupt-btn:disabled { opacity: 0.5; cursor: not-allowed; filter: none; }
@@ -854,22 +848,22 @@ button.action:hover,
 .controls {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--sp-3);
+  gap: var(--space-3);
   align-items: center;
-  margin-bottom: var(--sp-3);
+  margin-bottom: var(--space-3);
 }
-.controls label { font-size: var(--fs-2); display: inline-flex; align-items: center; gap: var(--sp-2); }
+.controls label { font-size: var(--fs-sm); display: inline-flex; align-items: center; gap: var(--space-2); }
 .controls select,
 .controls input {
   font: inherit;
-  padding: var(--sp-1) var(--sp-2);
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-app);
+  color: var(--fg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xs);
   min-height: 2.2rem;
 }
-.muted { color: var(--text-muted); font-size: var(--fs-1); }
+.muted { color: var(--fg-secondary); font-size: var(--fs-xs); }
 
 /* ---- Fleet worklist (#188) ------------------------------------------- */
 /* Composition layer only: every chip/pill/tag/avatar/stat reuses the #186
@@ -883,8 +877,8 @@ button.action:hover,
   display: flex;
   flex-wrap: wrap;
   align-items: stretch;
-  gap: var(--sp-3);
-  margin-bottom: var(--sp-4);
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
 }
 
 /* Worker-pool card: an 8-col dot grid (busy = accent, idle = recessed) above
@@ -895,28 +889,28 @@ button.action:hover,
   min-width: 14rem;
   display: flex;
   flex-direction: column;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  padding: var(--sp-4);
+  background: var(--bg-app);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-4);
 }
 .fleet-pool-grid {
   display: grid;
   grid-template-columns: repeat(8, 1fr);
-  gap: var(--sp-1);
+  gap: var(--space-1);
   justify-items: center;
-  margin-bottom: var(--sp-2);
+  margin-bottom: var(--space-2);
 }
 .fleet-pool-dot {
   width: 0.8rem;
   height: 0.8rem;
   border-radius: 50%;
   flex: none;
-  background: var(--bg);
-  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
 }
-.fleet-pool-dot.busy { background: var(--accent); border-color: var(--accent); }
+.fleet-pool-dot.busy { background: var(--ld-accent); border-color: var(--ld-accent); }
 .fleet-pool-count {
   margin-top: auto;
   font-size: var(--fs-display);
@@ -924,15 +918,15 @@ button.action:hover,
   line-height: 1.1;
   font-variant-numeric: var(--num);
 }
-.fleet-pool-total { color: var(--text-muted); font-size: 0.7em; }
+.fleet-pool-total { color: var(--fg-secondary); font-size: 0.7em; }
 .fleet-pool-label {
-  font-size: var(--fs-0);
+  font-size: var(--fs-2xs);
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: var(--track-eyebrow);
-  color: var(--text-muted);
+  letter-spacing: var(--tracking-wide);
+  color: var(--fg-secondary);
 }
-.fleet-pool-note { margin-top: auto; font-size: var(--fs-1); color: var(--text-muted); }
+.fleet-pool-note { margin-top: auto; font-size: var(--fs-xs); color: var(--fg-secondary); }
 
 /* The six metric cards in a 3-col × 2-row grid. The four state metrics double
    as the worklist filters (.clickable); the active one gets the accent ring. */
@@ -941,74 +935,74 @@ button.action:hover,
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   grid-template-rows: 1fr 1fr;
-  gap: var(--sp-3);
+  gap: var(--space-3);
 }
 .fleet-metric {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: var(--sp-1);
+  gap: var(--space-1);
   min-width: 0;
-  padding: var(--sp-3) var(--sp-4);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-app);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
 }
 .fleet-metric.clickable { cursor: pointer; }
-.fleet-metric.clickable:hover { border-color: var(--accent); }
-.fleet-metric.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fleet-metric.clickable:hover { border-color: var(--ld-accent); }
+.fleet-metric.clickable:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: 2px; }
 .fleet-metric.active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  box-shadow: 0 0 0 1px var(--accent);
+  border-color: var(--ld-accent);
+  background: var(--ld-accent-soft);
+  box-shadow: 0 0 0 1px var(--ld-accent);
 }
 .fleet-metric-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-2);
+  gap: var(--space-2);
 }
 .fleet-metric-n {
-  font-size: var(--fs-5);
+  font-size: var(--fs-h1);
   font-weight: 700;
   line-height: 1.1;
   font-variant-numeric: var(--num);
-  color: var(--text);
+  color: var(--fg-primary);
 }
-.fleet-metric-deferred { color: var(--text-muted); }
-.fleet-metric-ico { font-size: 1.2rem; color: var(--text-muted); }
+.fleet-metric-deferred { color: var(--fg-secondary); }
+.fleet-metric-ico { font-size: 1.2rem; color: var(--fg-secondary); }
 .fleet-metric-label {
-  font-size: var(--fs-0);
+  font-size: var(--fs-2xs);
   font-weight: 700;
   /* The mock's `.stat-l` has no text-transform: the metric labels render in the
      lowercase copy fleet.js already supplies ("repos online", "need you"), not
      forced UPPERCASE (#240). The kanban .fleet-col-title stays uppercase. */
-  letter-spacing: var(--track-eyebrow);
-  color: var(--text-muted);
+  letter-spacing: var(--tracking-wide);
+  color: var(--fg-secondary);
 }
 /* Tone colors the number + icon (state hues). */
 .fleet-metric.tone-red .fleet-metric-n,
-.fleet-metric.tone-red .fleet-metric-ico { color: var(--state-blocked); }
+.fleet-metric.tone-red .fleet-metric-ico { color: var(--st-blocked); }
 .fleet-metric.tone-amber .fleet-metric-n,
-.fleet-metric.tone-amber .fleet-metric-ico { color: var(--state-review); }
+.fleet-metric.tone-amber .fleet-metric-ico { color: var(--st-review); }
 .fleet-metric.tone-blue .fleet-metric-n,
-.fleet-metric.tone-blue .fleet-metric-ico { color: var(--accent); }
+.fleet-metric.tone-blue .fleet-metric-ico { color: var(--ld-accent); }
 /* Active overrides the icon + label to accent; the number keeps its tone. */
-.fleet-metric.active .fleet-metric-ico { color: var(--accent); }
-.fleet-metric.active .fleet-metric-label { color: var(--accent-ink); }
+.fleet-metric.active .fleet-metric-ico { color: var(--ld-accent); }
+.fleet-metric.active .fleet-metric-label { color: var(--ld-accent-ink); }
 
 /* Active-filter chip (in the board header). */
 .fleet-chip {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
-  font-size: var(--fs-1);
+  gap: var(--space-1);
+  font-size: var(--fs-xs);
   font-weight: 600;
-  color: var(--accent-ink);
-  background: var(--accent-soft);
+  color: var(--ld-accent-ink);
+  background: var(--ld-accent-soft);
   border-radius: 999px;
-  padding: var(--sp-1) var(--sp-2);
+  padding: var(--space-1) var(--space-2);
 }
 .fleet-chip-x {
   display: inline-flex;
@@ -1019,7 +1013,7 @@ button.action:hover,
   cursor: pointer;
   color: inherit;
 }
-.fleet-chip-x:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fleet-chip-x:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: 2px; }
 .fleet-chip-x .material-symbols-outlined { font-size: 1rem; }
 
 /* Body: worklist + right-hand repo sidebar (~284px). Sidebar collapses below
@@ -1027,7 +1021,7 @@ button.action:hover,
 .fleet-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 284px;
-  gap: var(--sp-4);
+  gap: var(--space-4);
   align-items: start;
 }
 .fleet-main { min-width: 0; }
@@ -1043,24 +1037,24 @@ button.action:hover,
    an empty card). fleet.js clears `hidden` once it renders. Same idiom as
    .banner[hidden]: the attribute selector outranks the bare-class rules. */
 .fleet-triage[hidden] { display: none; }
-.triage-list { display: flex; flex-direction: column; gap: var(--sp-2); }
+.triage-list { display: flex; flex-direction: column; gap: var(--space-2); }
 .triage-card {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: var(--space-2);
   width: 100%;
   min-height: 44px;
   text-align: left;
   font: inherit;
-  background: var(--surface);
-  border: 1px solid color-mix(in srgb, var(--state-blocked) 32%, var(--border));
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  padding: var(--sp-3);
+  background: var(--bg-app);
+  border: 1px solid color-mix(in srgb, var(--st-blocked) 32%, var(--border-default));
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-3);
   cursor: pointer;
 }
-.triage-card:hover { border-color: var(--accent); }
-.triage-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.triage-card:hover { border-color: var(--ld-accent); }
+.triage-card:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: 2px; }
 .triage-title { font-weight: 600; line-height: 1.3; }
 .triage-title-text { overflow-wrap: anywhere; }
 .triage-meta {
@@ -1068,55 +1062,55 @@ button.action:hover,
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: var(--sp-2);
-  font-size: var(--fs-1);
-  color: var(--text-muted);
+  gap: var(--space-2);
+  font-size: var(--fs-xs);
+  color: var(--fg-secondary);
 }
 .triage-where { font-variant-numeric: var(--num); }
 .triage-empty {
-  margin: var(--sp-2) 0 0;
-  font-size: var(--fs-2);
-  color: var(--text-muted);
+  margin: var(--space-2) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-secondary);
   font-style: italic;
 }
 
 /* Board card: a header row (count + removable filter chip) over the table. */
 .fleet-board-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
+  background: var(--bg-app);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
   overflow: hidden;
 }
 .fleet-board-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-2);
-  padding: var(--sp-3) var(--sp-4);
-  border-bottom: 1px solid var(--border);
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-default);
 }
-.fleet-board-count { font-size: var(--fs-2); color: var(--text-muted); }
-.fleet-board-count-n { font-weight: 700; color: var(--text); font-variant-numeric: var(--num); }
+.fleet-board-count { font-size: var(--fs-sm); color: var(--fg-secondary); }
+.fleet-board-count-n { font-weight: 700; color: var(--fg-primary); font-variant-numeric: var(--num); }
 /* The board card supplies the surface/border, so the inner table-wrap drops its
    own. */
 .fleet-board-card .table-wrap { border: none; border-radius: 0; box-shadow: none; }
 
 /* Board rows are deep-link targets: whole-row click + keyboard focusable. */
 .fleet-row { cursor: pointer; }
-.fleet-row:hover td { background: var(--surface-2); }
-.fleet-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.fleet-num { font-weight: 700; font-variant-numeric: var(--num); color: var(--text-muted); }
-.fleet-worker { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.fleet-row:hover td { background: var(--bg-chip); }
+.fleet-row:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: -2px; }
+.fleet-num { font-weight: 700; font-variant-numeric: var(--num); color: var(--fg-secondary); }
+.fleet-worker { display: inline-flex; align-items: center; gap: var(--space-2); }
 .fleet-worker-name { font-weight: 600; }
 .fleet-issue-cell { font-weight: 600; }
 .fleet-issue-title { font-weight: 600; }
-.fleet-skill { color: var(--text-muted); font-size: var(--fs-1); }
-.fleet-updated { color: var(--text-muted); font-variant-numeric: var(--num); }
+.fleet-skill { color: var(--fg-secondary); font-size: var(--fs-xs); }
+.fleet-updated { color: var(--fg-secondary); font-variant-numeric: var(--num); }
 .fleet-action-cell { text-align: right; white-space: nowrap; }
 .fleet-action-cell .ld-btn .material-symbols-outlined { font-size: 1.05rem; }
-.fleet-action-cell > .material-symbols-outlined { color: var(--text-muted); }
-.fleet-empty-row { padding: var(--sp-6) var(--sp-3); text-align: center; color: var(--text-muted); font-style: italic; }
+.fleet-action-cell > .material-symbols-outlined { color: var(--fg-secondary); }
+.fleet-empty-row { padding: var(--space-8) var(--space-3); text-align: center; color: var(--fg-secondary); font-style: italic; }
 /* A folder glyph inside a .tag reads as a small inline mark. */
 .tag .tag-ico { font-size: 0.95rem; }
 
@@ -1125,146 +1119,146 @@ button.action:hover,
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: minmax(13rem, 1fr);
-  gap: var(--sp-3);
+  gap: var(--space-3);
   overflow-x: auto;
-  padding-bottom: var(--sp-2);
+  padding-bottom: var(--space-2);
 }
 /* Column = a plain header over a recessed (dark) body surface (design's
    --bg-app), so the cards lift off the column. */
 .fleet-col {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: var(--space-2);
 }
 .fleet-col-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-2);
-  padding: 0 var(--sp-1);
+  gap: var(--space-2);
+  padding: 0 var(--space-1);
 }
 .fleet-col-title {
-  font-size: var(--fs-0);
+  font-size: var(--fs-2xs);
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: var(--track-eyebrow);
-  color: var(--text-muted);
+  letter-spacing: var(--tracking-wide);
+  color: var(--fg-secondary);
 }
 .fleet-col-count {
-  font-size: var(--fs-0);
+  font-size: var(--fs-2xs);
   font-variant-numeric: var(--num);
-  color: var(--text-muted);
-  background: var(--surface);
+  color: var(--fg-secondary);
+  background: var(--bg-app);
   border-radius: 999px;
-  padding: 0 var(--sp-2);
+  padding: 0 var(--space-2);
 }
 .fleet-col-body {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: var(--space-2);
   min-height: 18rem;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: var(--sp-2);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xs);
+  padding: var(--space-2);
 }
-.fleet-col-empty { color: var(--text-muted); font-size: var(--fs-1); margin: auto 0; text-align: center; }
+.fleet-col-empty { color: var(--fg-secondary); font-size: var(--fs-xs); margin: auto 0; text-align: center; }
 .fleet-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow);
-  padding: var(--sp-3);
+  background: var(--bg-app);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xs);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: var(--space-2);
   text-align: left;
   width: 100%;
   cursor: pointer;
 }
-.fleet-card:hover { border-color: var(--accent); }
-.fleet-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fleet-card:hover { border-color: var(--ld-accent); }
+.fleet-card:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: 2px; }
 /* A card that needs a human gets a soft red border to draw the eye. */
-.fleet-card.needs { border-color: var(--state-blocked); }
-.fleet-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+.fleet-card.needs { border-color: var(--st-blocked); }
+.fleet-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .fleet-card-title { font-weight: 600; line-height: 1.3; }
 .fleet-card-meta {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-2);
-  font-size: var(--fs-1);
-  color: var(--text-muted);
+  gap: var(--space-2);
+  font-size: var(--fs-xs);
+  color: var(--fg-secondary);
 }
-.fleet-card-actor { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.fleet-card-actor { display: inline-flex; align-items: center; gap: var(--space-2); }
 .fleet-card-pr { font-variant-numeric: var(--num); font-weight: 600; }
 
 /* Repo filter sidebar. */
 .fleet-repos {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  padding: var(--sp-3);
+  gap: var(--space-1);
+  background: var(--bg-app);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-3);
 }
 .fleet-repos-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-2);
-  margin-bottom: var(--sp-1);
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
 }
 .fleet-clear {
   font: inherit;
-  font-size: var(--fs-1);
+  font-size: var(--fs-xs);
   border: none;
   background: none;
-  color: var(--accent-ink);
+  color: var(--ld-accent-ink);
   cursor: pointer;
   padding: 0;
 }
-.fleet-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fleet-clear:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: 2px; }
 .fleet-repo {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-2);
+  gap: var(--space-2);
   font: inherit;
-  font-size: var(--fs-2);
-  color: var(--text);
+  font-size: var(--fs-sm);
+  color: var(--fg-primary);
   background: none;
   border: none;
-  border-radius: var(--radius-sm);
-  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-xs);
+  padding: var(--space-1) var(--space-2);
   cursor: pointer;
   text-align: left;
 }
-.fleet-repo:hover { background: var(--surface-2); }
-.fleet-repo:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.fleet-repo.active { background: var(--accent-soft); color: var(--accent-ink); }
+.fleet-repo:hover { background: var(--bg-chip); }
+.fleet-repo:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: 2px; }
+.fleet-repo.active { background: var(--ld-accent-soft); color: var(--ld-accent-ink); }
 .fleet-repo-name { word-break: break-all; }
 .fleet-repo-count {
   font-variant-numeric: var(--num);
-  font-size: var(--fs-1);
-  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  color: var(--fg-secondary);
 }
-.fleet-repo.active .fleet-repo-count { color: var(--accent-ink); }
+.fleet-repo.active .fleet-repo-count { color: var(--ld-accent-ink); }
 .fleet-repo-list { display: flex; flex-direction: column; gap: 2px; }
 /* "Connect repo" (#240): full-width outline stub beneath the repo list. */
-.fleet-repos-connect { width: 100%; margin-top: var(--sp-3); }
+.fleet-repos-connect { width: 100%; margin-top: var(--space-3); }
 /* The explanatory note: repos filter the worklist, they don't navigate. */
 .fleet-repos-note {
-  margin: var(--sp-3) 0 0;
-  padding-top: var(--sp-3);
-  border-top: 1px solid var(--border);
-  font-size: var(--fs-1);
+  margin: var(--space-3) 0 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-default);
+  font-size: var(--fs-xs);
   line-height: 1.5;
-  color: var(--text-muted);
+  color: var(--fg-secondary);
 }
-.fleet-repos-note strong { color: var(--text); font-weight: 700; }
+.fleet-repos-note strong { color: var(--fg-primary); font-weight: 700; }
 
 /* Sidebar drops under the worklist on narrow viewports. */
 @media (max-width: 860px) {
@@ -1275,7 +1269,7 @@ button.action:hover,
    spans the full width (so utilisation stays scannable) and the metric grid
    reflows from 3 columns to 2. The metric cards remain the triage entry points. */
 @media (max-width: 720px) {
-  .fleet-stats { gap: var(--sp-2); margin-bottom: var(--sp-3); }
+  .fleet-stats { gap: var(--space-2); margin-bottom: var(--space-3); }
   .fleet-pool { flex: 1 1 100%; }
   .fleet-metrics {
     flex: 1 1 100%;
@@ -1284,8 +1278,8 @@ button.action:hover,
   }
   /* The "Needs your call" triage list (#227) surfaces only at phone widths,
      pinned above the board with its eyebrow heading. */
-  .fleet-triage { display: block; margin-bottom: var(--sp-4); }
-  .fleet-triage .eyebrow { margin-bottom: var(--sp-2); }
+  .fleet-triage { display: block; margin-bottom: var(--space-4); }
+  .fleet-triage .eyebrow { margin-bottom: var(--space-2); }
 
   /* Board reflow (#240): collapse the 7-column board to compact tap-through
      cards at the Fleet mobile breakpoint (720px) rather than the generic
@@ -1302,25 +1296,25 @@ button.action:hover,
   }
   .fleet-table tr {
     display: block;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow);
-    margin-bottom: var(--sp-3);
-    padding: var(--sp-2) var(--sp-3);
+    background: var(--bg-app);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-card);
+    margin-bottom: var(--space-3);
+    padding: var(--space-2) var(--space-3);
   }
   .fleet-table td {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    gap: var(--sp-4);
+    gap: var(--space-4);
     border: none;
-    padding: var(--sp-2) 0;
+    padding: var(--space-2) 0;
   }
   .fleet-table td::before {
     content: attr(data-label);
     font-weight: 600;
-    color: var(--text-muted);
+    color: var(--fg-secondary);
   }
   /* Compact per the mock: drop the redundant Worker (always the single trixy
      bot) and the Skill-running rows, so each card reduces to #num + title,
@@ -1339,17 +1333,17 @@ button.action:hover,
 
 /* ---- Repo detail (#158) ---------------------------------------------- */
 .repo-detail h2 { word-break: break-all; }
-.repo-detail h3 { font-size: var(--fs-3); margin: var(--sp-5) 0 var(--sp-3); }
+.repo-detail h3 { font-size: var(--fs-body); margin: var(--space-6) 0 var(--space-3); }
 .back-link {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
+  gap: var(--space-1);
   font: inherit;
-  font-size: var(--fs-2);
+  font-size: var(--fs-sm);
   background: none;
   border: none;
   padding: 0;
-  margin: 0 0 var(--sp-2);
+  margin: 0 0 var(--space-2);
   color: var(--primary);
   cursor: pointer;
 }
@@ -1357,25 +1351,25 @@ button.action:hover,
 .back-link:hover { text-decoration: underline; }
 
 .card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  padding: var(--sp-4);
+  background: var(--bg-app);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-4);
 }
-.card h3 { margin: 0 0 var(--sp-3); font-size: var(--fs-3); }
+.card h3 { margin: 0 0 var(--space-3); font-size: var(--fs-body); }
 
 /* Key/value lists inside the worker & session cards. */
 .kv {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: var(--sp-1) var(--sp-4);
-  margin: 0 0 var(--sp-2);
-  font-size: var(--fs-2);
+  gap: var(--space-1) var(--space-4);
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-sm);
 }
-.kv dt { color: var(--text-muted); }
+.kv dt { color: var(--fg-secondary); }
 .kv dd { margin: 0; word-break: break-word; }
-.join-link { display: inline-block; margin-top: var(--sp-2); text-decoration: none; }
+.join-link { display: inline-block; margin-top: var(--space-2); text-decoration: none; }
 
 /* ---- ScreenHead (#222) ----------------------------------------------- */
 /* The single per-screen header pattern: a title + descriptive subtitle on the
@@ -1387,28 +1381,30 @@ button.action:hover,
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: var(--sp-4);
+  gap: var(--space-4);
   flex-wrap: wrap;
-  margin-bottom: var(--sp-4);
+  margin-bottom: var(--space-4);
 }
 .screen-head-text {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
+  gap: var(--space-1);
   min-width: 0;
 }
-.screen-head-text h2 { margin: 0; font-size: var(--fs-display); font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; }
+/* The screen title carries the design's .screen-title treatment (loony-dev.html):
+   display size, brand --ink, bold, tight tracking. */
+.screen-head-text h2 { margin: 0; font-size: var(--fs-display); font-weight: var(--fw-bold); color: var(--ink); letter-spacing: -0.02em; line-height: 1.05; }
 /* The restored per-screen intro copy. */
 .screen-head-sub {
   margin: 0;
-  color: var(--text-muted);
-  font-size: var(--fs-2);
+  color: var(--fg-secondary);
+  font-size: var(--fs-sm);
 }
 .screen-head-controls {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: var(--sp-2);
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
@@ -1418,7 +1414,7 @@ button.action:hover,
 .quick-actions {
   display: flex;
   justify-content: flex-end;
-  gap: var(--sp-2);
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
@@ -1426,26 +1422,26 @@ button.action:hover,
 .live-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 284px;
-  gap: var(--sp-4);
+  gap: var(--space-4);
   align-items: start;
-  margin-top: var(--sp-4);
+  margin-top: var(--space-4);
 }
 
-.live-session { display: flex; flex-direction: column; gap: var(--sp-3); }
+.live-session { display: flex; flex-direction: column; gap: var(--space-3); }
 .live-session-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: var(--sp-3);
+  gap: var(--space-3);
 }
-.live-session-repo { margin: var(--sp-1) 0 0; word-break: break-all; }
+.live-session-repo { margin: var(--space-1) 0 0; word-break: break-all; }
 .live-session-meta {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
-  font-size: var(--fs-1);
+  gap: var(--space-1);
+  font-size: var(--fs-xs);
 }
-.live-meta-row { display: flex; justify-content: space-between; gap: var(--sp-3); }
+.live-meta-row { display: flex; justify-content: space-between; gap: var(--space-3); }
 .live-meta-val { word-break: break-all; text-align: right; }
 .live-meta-val.mono { font-family: var(--font-mono); }
 /* The embedded #157 card already carries its own card chrome; flatten it when
@@ -1461,37 +1457,37 @@ button.action:hover,
 .live-sidebar {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-4);
+  gap: var(--space-4);
 }
-.live-panel { display: flex; flex-direction: column; gap: var(--sp-3); }
+.live-panel { display: flex; flex-direction: column; gap: var(--space-3); }
 .live-panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-2);
+  gap: var(--space-2);
 }
 .live-panel-head h3 { margin: 0; }
 
 /* Repos switcher rows. */
-.repos-switch { display: flex; flex-direction: column; gap: var(--sp-1); }
+.repos-switch { display: flex; flex-direction: column; gap: var(--space-1); }
 .repo-switch-row {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--space-2);
   font: inherit;
-  font-size: var(--fs-1);
+  font-size: var(--fs-xs);
   text-align: left;
   background: none;
   border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  padding: var(--sp-1) var(--sp-2);
-  color: var(--text);
+  border-radius: var(--radius-xs);
+  padding: var(--space-1) var(--space-2);
+  color: var(--fg-primary);
   cursor: pointer;
 }
-.repo-switch-row:hover { background: var(--surface-2); }
+.repo-switch-row:hover { background: var(--bg-chip); }
 .repo-switch-row.active {
-  background: var(--accent-soft);
-  color: var(--accent-ink);
+  background: var(--ld-accent-soft);
+  color: var(--ld-accent-ink);
   font-weight: 600;
 }
 .repo-switch-name { word-break: break-all; }
@@ -1500,19 +1496,19 @@ button.action:hover,
 .context-stats {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: var(--sp-2);
+  gap: var(--space-2);
 }
-.context-stats .stat { padding: var(--sp-3); }
+.context-stats .stat { padding: var(--space-3); }
 /* Recent-commits rows: a mono short-sha gutter beside a subject + author·date
    muted line (a real local `git log`, #224). */
 .commit-row {
   display: flex;
   align-items: baseline;
-  gap: var(--sp-2);
-  font-size: var(--fs-1);
+  gap: var(--space-2);
+  font-size: var(--fs-xs);
 }
-.commit-row + .commit-row { margin-top: var(--sp-2); }
-.commit-sha { color: var(--text-muted); flex-shrink: 0; }
+.commit-row + .commit-row { margin-top: var(--space-2); }
+.commit-sha { color: var(--fg-secondary); flex-shrink: 0; }
 .commit-mid {
   display: flex;
   flex-direction: column;
@@ -1525,36 +1521,36 @@ button.action:hover,
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.commit-meta { font-size: var(--fs-0); }
+.commit-meta { font-size: var(--fs-2xs); }
 
 /* Worker rows in the sidebar: a clickable button (reset to look like a row)
    carrying the issue/PR number + its stage chip, click-through to Issue ▸ PR. */
 .worker-row {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--space-2);
   width: 100%;
   font: inherit;
   text-align: left;
   background: none;
   border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  padding: var(--sp-1) var(--sp-2);
-  color: var(--text);
+  border-radius: var(--radius-xs);
+  padding: var(--space-1) var(--space-2);
+  color: var(--fg-primary);
   cursor: pointer;
 }
-.worker-row:hover { background: var(--surface-2); }
-.worker-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.worker-row + .worker-row { margin-top: var(--sp-1); }
+.worker-row:hover { background: var(--bg-chip); }
+.worker-row:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: 2px; }
+.worker-row + .worker-row { margin-top: var(--space-1); }
 .worker-mid {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
+  gap: var(--space-1);
   min-width: 0;
   flex: 1;
 }
-.worker-name { font-size: var(--fs-1); font-weight: 600; word-break: break-all; }
-.worker-age { font-size: var(--fs-0); white-space: nowrap; }
+.worker-name { font-size: var(--fs-xs); font-weight: 600; word-break: break-all; }
+.worker-age { font-size: var(--fs-2xs); white-space: nowrap; }
 
 /* Greyed steer bar (#224): the design's chat input + Send, present but disabled
    until an in-dashboard drive bridge is reliable. A top hairline separates it
@@ -1562,22 +1558,22 @@ button.action:hover,
 .live-steer-bar {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--space-2);
   margin-top: auto;
-  padding-top: var(--sp-3);
-  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-default);
   cursor: not-allowed;
 }
 .live-steer-input {
   flex: 1;
   min-width: 0;
-  padding: var(--sp-2) var(--sp-3);
+  padding: var(--space-2) var(--space-3);
   font: inherit;
-  font-size: var(--fs-2);
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  color: var(--fg-primary);
+  background: var(--bg-chip);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xs);
   opacity: 0.6;
   cursor: not-allowed;
 }
@@ -1590,20 +1586,20 @@ button.action:hover,
 
 /* Diagnostics: the collapsed secondary block (worktrees / stuck / log, #224). */
 .diagnostics-section {
-  margin-top: var(--sp-5);
-  border-top: 1px solid var(--border);
-  padding-top: var(--sp-3);
+  margin-top: var(--space-6);
+  border-top: 1px solid var(--border-default);
+  padding-top: var(--space-3);
 }
 .diagnostics-section > summary {
   cursor: pointer;
-  font-size: var(--fs-2);
+  font-size: var(--fs-sm);
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--fg-secondary);
   list-style: none;
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-1) 0;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
 }
 .diagnostics-section > summary::-webkit-details-marker { display: none; }
 .diagnostics-section > summary::before {
@@ -1617,39 +1613,39 @@ button.action:hover,
 @media (prefers-reduced-motion: reduce) {
   .diagnostics-section > summary::before { transition: none; }
 }
-.diagnostics-section > summary:hover { color: var(--text); }
+.diagnostics-section > summary:hover { color: var(--fg-primary); }
 
 /* ---- Sessions view --------------------------------------------------- */
 .session-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
-  gap: var(--sp-4);
+  gap: var(--space-4);
 }
 .session-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  padding: var(--sp-4);
+  background: var(--bg-app);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-3);
+  gap: var(--space-3);
 }
 .session-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-3);
+  gap: var(--space-3);
 }
 .session-repo { font-weight: 600; word-break: break-all; }
 
 .session-badge {
-  font-size: var(--fs-0);
+  font-size: var(--fs-2xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.03em;
   border-radius: 999px;
-  padding: var(--sp-1) var(--sp-3);
+  padding: var(--space-1) var(--space-3);
   white-space: nowrap;
 }
 .session-badge-live { color: var(--primary-contrast); background: var(--running); }
@@ -1659,11 +1655,11 @@ button.action:hover,
 .session-meta {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
-  font-size: var(--fs-1);
+  gap: var(--space-1);
+  font-size: var(--fs-xs);
 }
-.session-meta-row { display: flex; justify-content: space-between; gap: var(--sp-3); }
-.session-meta-key { color: var(--text-muted); }
+.session-meta-row { display: flex; justify-content: space-between; gap: var(--space-3); }
+.session-meta-key { color: var(--fg-secondary); }
 .session-meta-val { word-break: break-all; text-align: right; }
 .session-meta-val.mono { font-family: var(--font-mono); }
 .session-meta-row.session-stale .session-meta-val { color: var(--unknown); font-weight: 600; }
@@ -1674,22 +1670,22 @@ button.action:hover,
   text-align: center;
   text-decoration: none;
   font-weight: 600;
-  padding: var(--sp-3) var(--sp-4);
+  padding: var(--space-3) var(--space-4);
 }
 
 .session-qr {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--space-2);
 }
 .session-qr-img {
   width: 100%;
   max-width: 12rem;
   height: auto;
   background: #fff; /* QR needs a light quiet zone even in dark mode */
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xs);
   /* The GIF is rendered 1:1; keep edges crisp when CSS scales it up. */
   image-rendering: pixelated;
 }
@@ -1697,8 +1693,8 @@ button.action:hover,
 
 .session-note {
   margin: 0;
-  font-size: var(--fs-2);
-  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  color: var(--fg-secondary);
   font-style: italic;
 }
 .session-note-offline { color: var(--danger); font-style: normal; }
@@ -1711,38 +1707,38 @@ button.action:hover,
 .skill-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
-  gap: var(--sp-4);
+  gap: var(--space-4);
 }
-.skill-grid .empty { color: var(--text-muted); font-size: var(--fs-2); }
+.skill-grid .empty { color: var(--fg-secondary); font-size: var(--fs-sm); }
 
 /* One library card — surface/border/shadow like .repo-card, flex column. */
 .skill-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  padding: var(--sp-4);
+  background: var(--bg-app);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: var(--space-2);
 }
 .skill-card-head {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--space-2);
   justify-content: space-between;
 }
 /* Icon tile + monospace name, the left of the head row. */
-.skill-ident { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.skill-ident { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .skill-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 2.25rem;
   height: 2.25rem;
-  border-radius: var(--radius-sm);
-  background: var(--accent-soft);
-  color: var(--accent-ink);
+  border-radius: var(--radius-xs);
+  background: var(--ld-accent-soft);
+  color: var(--ld-accent-ink);
   flex: none;
 }
 .skill-icon .material-symbols-outlined { font-size: 1.25rem; }
@@ -1752,13 +1748,13 @@ button.action:hover,
   word-break: break-all;
 }
 /* Managed owner badge: a bot avatar + login (the design's avatar+name pair). */
-.skill-owner { display: inline-flex; align-items: center; gap: var(--sp-2); flex: none; }
-.skill-owner .avatar { width: 1.25rem; height: 1.25rem; font-size: var(--fs-0); }
-.skill-owner-name { font-size: var(--fs-1); font-weight: 600; color: var(--text-muted); }
+.skill-owner { display: inline-flex; align-items: center; gap: var(--space-2); flex: none; }
+.skill-owner .avatar { width: 1.25rem; height: 1.25rem; font-size: var(--fs-2xs); }
+.skill-owner-name { font-size: var(--fs-xs); font-weight: 600; color: var(--fg-secondary); }
 .skill-desc {
   margin: 0;
-  font-size: var(--fs-1);
-  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  color: var(--fg-secondary);
   /* Clamp long descriptions; the full text is on the title attribute. */
   display: -webkit-box;
   -webkit-line-clamp: 3;
@@ -1766,23 +1762,23 @@ button.action:hover,
   overflow: hidden;
 }
 /* Hairline divider above the triggers/phase row. */
-.skill-divider { width: 100%; height: 0; margin: var(--sp-2) 0; border: 0; border-top: 1px solid var(--border); }
+.skill-divider { width: 100%; height: 0; margin: var(--space-2) 0; border: 0; border-top: 1px solid var(--border-default); }
 /* Triggers/phase row: a "Triggers on" eyebrow + value on the left, phase tag right. */
-.skill-card-meta { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-2); }
+.skill-card-meta { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-2); }
 .skill-trigger { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .skill-trigger-value {
-  font-size: var(--fs-1);
+  font-size: var(--fs-xs);
   font-weight: 600;
-  color: var(--text);
+  color: var(--fg-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .skill-card-actions {
   display: flex;
-  gap: var(--sp-2);
+  gap: var(--space-2);
   margin-top: auto;   /* pin actions to the bottom of equal-height cards */
-  padding-top: var(--sp-2);
+  padding-top: var(--space-2);
 }
 
 /* Editor drawer — reuses the shared .modal backdrop + .modal-card surface, but
@@ -1803,21 +1799,21 @@ button.action:hover,
 .drawer-field {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
-  font-size: var(--fs-2);
-  margin-bottom: var(--sp-3);
+  gap: var(--space-1);
+  font-size: var(--fs-sm);
+  margin-bottom: var(--space-3);
 }
 .drawer-field-grow { flex: 1 1 auto; min-height: 0; }
 /* Two structured frontmatter fields side by side (Owner / Lifecycle phase). */
-.drawer-field-row { display: flex; gap: var(--sp-3); }
+.drawer-field-row { display: flex; gap: var(--space-3); }
 .drawer-field-row .drawer-field { flex: 1 1 0; min-width: 0; }
 .drawer-field input {
   font: inherit;
-  padding: var(--sp-1) var(--sp-2);
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-app);
+  color: var(--fg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xs);
   min-height: 2.2rem;
 }
 .drawer-field textarea {
@@ -1826,16 +1822,16 @@ button.action:hover,
   min-height: 16rem;
   box-sizing: border-box;
   font-family: var(--font-mono);
-  font-size: var(--fs-1);
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: var(--sp-2);
+  font-size: var(--fs-xs);
+  background: var(--bg-app);
+  color: var(--fg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xs);
+  padding: var(--space-2);
   resize: vertical;
 }
-.editor-actions { display: flex; gap: var(--sp-2); align-items: center; margin-top: var(--sp-2); flex-wrap: wrap; }
-.entry-error { color: var(--danger); font-size: var(--fs-2); min-height: 1.1em; margin-top: var(--sp-2); }
+.editor-actions { display: flex; gap: var(--space-2); align-items: center; margin-top: var(--space-2); flex-wrap: wrap; }
+.entry-error { color: var(--danger); font-size: var(--fs-sm); min-height: 1.1em; margin-top: var(--space-2); }
 
 @media (max-width: 720px) {
   .modal-card.modal-drawer-card { width: 100%; }
@@ -1845,11 +1841,11 @@ button.action:hover,
 .log-pane {
   background: #0b0e13;
   color: #e6e9ee;
-  padding: var(--sp-3);
-  border-radius: var(--radius);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
   max-height: 24rem;
   overflow: auto;
-  font-size: var(--fs-1);
+  font-size: var(--fs-xs);
   white-space: pre-wrap;
   margin: 0;
 }
@@ -1865,18 +1861,18 @@ button.action:hover,
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: var(--sp-4);
+  padding: var(--space-4);
   background: rgba(0, 0, 0, 0.5);
 }
 
 .modal[hidden] { display: none; }
 
 .modal-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  padding: var(--sp-4);
+  background: var(--bg-app);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-4);
   width: min(680px, 100%);
   max-height: 90vh;
   overflow: auto;
@@ -1891,22 +1887,22 @@ button.action:hover,
 .modal-head {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
-  margin-bottom: var(--sp-3);
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
 }
 
 .modal-title {
   font-weight: 600;
-  font-size: var(--fs-3);
+  font-size: var(--fs-body);
 }
 
 .attach-mic {
-  font-size: var(--fs-1);
-  padding: var(--sp-1) var(--sp-2);
-  border-radius: var(--radius-sm);
-  margin-bottom: var(--sp-2);
-  background: var(--surface-2);
-  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-xs);
+  margin-bottom: var(--space-2);
+  background: var(--bg-chip);
+  color: var(--fg-secondary);
 }
 
 .attach-mic.mic-bot { color: var(--primary-contrast); background: var(--unknown); }
@@ -1917,20 +1913,20 @@ button.action:hover,
   min-height: 360px;
   height: 60vh;
   background: #000;
-  border-radius: var(--radius-sm);
-  padding: var(--sp-1);
+  border-radius: var(--radius-xs);
+  padding: var(--space-1);
 }
 
 #steer-text {
   width: 100%;
   font-family: var(--font-mono);
-  font-size: var(--fs-2);
+  font-size: var(--fs-sm);
   resize: vertical;
 }
 
 /* JSONL-driven observe conversation (#202). A scrollable transcript of typed
    blocks rendered from the session's on-disk JSONL — no live terminal. */
-.observe-status { font-size: var(--fs-1); }
+.observe-status { font-size: var(--fs-xs); }
 .observe-status-live { color: var(--running); }
 .observe-status-off { color: var(--stale); }
 
@@ -1939,54 +1935,54 @@ button.action:hover,
   min-height: 360px;
   height: 60vh;
   overflow-y: auto;
-  background: var(--surface-2);
-  border-radius: var(--radius-sm);
-  padding: var(--sp-3);
+  background: var(--bg-chip);
+  border-radius: var(--radius-xs);
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: var(--space-2);
 }
 
 .obs {
-  border-radius: var(--radius-sm);
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--border);
-  background: var(--surface);
+  border-radius: var(--radius-xs);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  background: var(--bg-app);
 }
 .obs-label {
-  font-size: var(--fs-0);
+  font-size: var(--fs-2xs);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--text-muted);
-  margin-bottom: var(--sp-1);
+  color: var(--fg-secondary);
+  margin-bottom: var(--space-1);
 }
 .obs-body {
   font-family: var(--font-mono);
-  font-size: var(--fs-1);
+  font-size: var(--fs-xs);
   white-space: pre-wrap;
   overflow-wrap: break-word;
 }
 .obs-user { border-left: 3px solid var(--primary); }
 .obs-assistant { border-left: 3px solid var(--running); }
-.obs-thinking { background: var(--surface-2); }
+.obs-thinking { background: var(--bg-chip); }
 .obs-thinking summary {
   cursor: pointer;
-  font-size: var(--fs-0);
+  font-size: var(--fs-2xs);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--text-muted);
+  color: var(--fg-secondary);
 }
 .obs-tool { border-left: 3px solid var(--unknown); }
 .obs-tool-args,
 .obs-tool-out {
   font-family: var(--font-mono);
-  font-size: var(--fs-0);
+  font-size: var(--fs-2xs);
   white-space: pre-wrap;
   overflow-wrap: break-word;
-  margin: var(--sp-1) 0 0;
-  padding: var(--sp-2);
-  background: var(--surface-2);
-  border-radius: var(--radius-sm);
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2);
+  background: var(--bg-chip);
+  border-radius: var(--radius-xs);
   max-height: 220px;
   overflow: auto;
 }
@@ -1994,11 +1990,11 @@ button.action:hover,
 .obs-stop,
 .obs-interrupt {
   text-align: center;
-  font-size: var(--fs-0);
-  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  color: var(--fg-secondary);
   border: 0;
   background: none;
-  padding: var(--sp-1);
+  padding: var(--space-1);
 }
 .obs-interrupt { color: var(--danger); }
 
@@ -2027,104 +2023,117 @@ button.action:hover,
 /* onto these. Every class consumes the design tokens, so theme + lifecycle */
 /* colors stay centralized. */
 
-/* eyebrow — uppercase micro label with wide tracking; sits above a heading. */
+/* eyebrow — uppercase micro label; ported verbatim from loony-dev.html. */
 .eyebrow {
-  font-size: var(--fs-0);
-  font-weight: 700;
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--tracking-widest);
+  color: var(--fg-muted);
   text-transform: uppercase;
-  letter-spacing: var(--track-eyebrow);
-  color: var(--text-muted);
 }
 
-/* card modifiers — extend the existing .card primitive (defined above):
+/* card modifiers — extend the .card primitive (defined above):
    .subtle drops the shadow to a hairline-only card; .pad adds roomier space. */
 .card.subtle { box-shadow: none; }
-.card.pad { padding: var(--sp-5); }
+.card.pad { padding: var(--space-6); }
 
-/* ld-btn — the new button primitive. A `size` class sets density, a `variant`
-   class sets color. New namespace so it coexists with the legacy .action/.btn
-   until later issues migrate the markup. */
+/* ld-btn — the button primitive, ported from loony-dev.html's <style> verbatim
+   (square --radius-xxs corners, soft/outline/ghost/danger variants). The app's
+   markup already uses these exact size + variant modifiers. */
 .ld-btn {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  border-radius: var(--radius-xxs);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--sp-2);
-  font: inherit;
-  font-weight: 600;
-  line-height: 1;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  gap: 6px;
   cursor: pointer;
-  text-decoration: none;
+  border: 1px solid transparent;
   white-space: nowrap;
-  background: var(--surface-2);
-  color: var(--text);
+  text-decoration: none;
+  transition: background var(--dur-fast), border-color var(--dur-fast), transform var(--dur-fast);
+  line-height: 1.1;
 }
-.ld-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ld-btn:active { transform: scale(0.985); }
+.ld-btn:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: 2px; }
 .ld-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.ld-btn .material-symbols-outlined { font-size: 18px; }
 /* sizes */
-.ld-btn.sm { padding: var(--sp-1) var(--sp-3); font-size: var(--fs-1); min-height: 1.9rem; }
-.ld-btn.md { padding: var(--sp-2) var(--sp-4); font-size: var(--fs-2); min-height: 2.2rem; }
+.ld-btn.sm { padding: 6px 11px; font-size: 13px; }
+.ld-btn.md { padding: 9px 15px; font-size: 14px; }
 /* variants */
-.ld-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-.ld-btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-.ld-btn.soft { background: var(--accent-soft); color: var(--accent-ink); }
-.ld-btn.soft:hover { filter: brightness(0.97); }
-.ld-btn.outline { background: transparent; color: var(--accent-ink); border-color: var(--border); }
-.ld-btn.outline:hover { border-color: var(--accent); color: var(--accent); }
-.ld-btn.ghost { background: transparent; color: var(--text-muted); }
-.ld-btn.ghost:hover { background: var(--surface-2); color: var(--text); }
-.ld-btn.danger { background: var(--state-blocked); color: #fff; border-color: var(--state-blocked); }
-.ld-btn.danger:hover { filter: brightness(1.05); }
+.ld-btn.primary { background: var(--ld-accent); color: #fff; box-shadow: var(--shadow-card); }
+.ld-btn.primary:hover { background: var(--ld-accent-hover); }
+.ld-btn.soft { background: var(--ld-accent-soft); color: var(--ld-accent-ink); }
+.ld-btn.soft:hover { background: color-mix(in srgb, var(--ld-accent-soft) 70%, var(--ld-accent) 12%); }
+.ld-btn.outline { background: var(--bg-app); border-color: var(--border-default); color: var(--fg-primary); }
+.ld-btn.outline:hover { background: var(--bg-subtle); border-color: var(--border-strong); }
+.ld-btn.ghost { background: transparent; color: var(--fg-secondary); }
+.ld-btn.ghost:hover { background: var(--bg-chip); color: var(--fg-primary); }
+.ld-btn.danger { background: var(--bg-app); border-color: color-mix(in srgb, var(--st-blocked) 45%, var(--border-default)); color: var(--st-blocked-ink); }
+.ld-btn.danger:hover { background: var(--st-blocked-soft); }
+@media (prefers-reduced-motion: reduce) {
+  .ld-btn { transition: none; }
+  .ld-btn:active { transform: none; }
+}
 
-/* tag — small inline label chip. Color variants map to lifecycle/accent tokens.
-   The translucent fills keep tags readable on either theme. */
+/* tag — small inline label chip, ported verbatim: a soft rounded-rect (not a
+   pill), ink-on-soft color pairings (#244). */
 .tag {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
-  font-size: var(--fs-0);
+  gap: 5px;
+  font-size: 12px;
   font-weight: 600;
-  line-height: 1;
-  padding: 3px var(--sp-2);
-  border-radius: 999px;
-  border: 1px solid transparent;
+  padding: 2px 9px;
+  border-radius: var(--radius-xs);
+  line-height: 1.5;
   white-space: nowrap;
+  border: 1px solid transparent;
 }
-.tag.neutral { background: var(--surface-2); color: var(--text-muted); }
-.tag.blue    { background: var(--accent-soft); color: var(--accent-ink); }
-.tag.green   { background: rgba(16, 185, 129, 0.14); color: var(--state-merged); }
-.tag.amber   { background: rgba(245, 158, 11, 0.16); color: var(--state-review); }
-.tag.red     { background: rgba(239, 68, 68, 0.14); color: var(--state-blocked); }
-.tag.purple  { background: rgba(124, 58, 237, 0.14); color: #7C3AED; }
-.tag.ghost   { background: transparent; color: var(--text-muted); border-color: var(--border); }
+.tag .material-symbols-outlined { font-size: 14px; }
+.tag.neutral { background: var(--bg-chip); color: var(--gray-600); }
+.tag.ghost   { background: transparent; border-color: var(--border-default); color: var(--fg-muted); }
+.tag.blue    { background: var(--tag-blue-bg); color: var(--tag-blue-ink); }
+.tag.green   { background: var(--st-merged-soft); color: var(--st-merged-ink); }
+.tag.amber   { background: var(--st-review-soft); color: var(--st-review-ink); }
+.tag.red     { background: var(--st-blocked-soft); color: var(--st-blocked-ink); }
+.tag.purple  { background: var(--tag-purple-bg); color: var(--tag-purple-ink); }
 
-/* statepill — a pill that pairs an .sdot state dot with a label. */
+/* statepill — a bordered white pill that pairs an .sdot state dot with a label.
+   Ported verbatim from loony-dev.html. */
 .statepill {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-2);
-  font-size: var(--fs-1);
+  gap: 6px;
+  font-size: 12px;
   font-weight: 600;
-  padding: var(--sp-1) var(--sp-3);
+  padding: 2px 9px 2px 7px;
   border-radius: 999px;
-  background: var(--surface-2);
-  color: var(--text);
+  border: 1px solid var(--border-default);
+  background: var(--bg-app);
+  color: var(--fg-secondary);
+  white-space: nowrap;
 }
 
-/* sdot — a small lifecycle state dot. Modifier sets the hue; bare dot = gated. */
+/* sdot — a small lifecycle state dot, ported verbatim: a bordered dot so the
+   gated state can render as a dashed hairline ring. The app self-sizes it. */
 .sdot {
   width: 0.55rem;
   height: 0.55rem;
-  border-radius: 50%;
+  border-radius: 999px;
+  border: 1.5px solid transparent;
+  display: inline-block;
   flex: none;
-  background: var(--state-gated);
+  box-sizing: border-box;
+  background: var(--st-gated);
 }
-.sdot.merged  { background: var(--state-merged); }
-.sdot.active  { background: var(--state-progress); }
-.sdot.review  { background: var(--state-review); }
-.sdot.blocked { background: var(--state-blocked); }
-.sdot.gated   { background: var(--state-gated); }
+.sdot.merged  { background: var(--st-merged); border-color: var(--st-merged); }
+.sdot.active  { background: var(--st-active); border-color: var(--st-active); }
+.sdot.review  { background: var(--st-review); border-color: var(--st-review); }
+.sdot.blocked { background: var(--st-blocked); border-color: var(--st-blocked); }
+.sdot.gated   { background: var(--bg-app); border-color: var(--border-strong); border-style: dashed; }
 
 /* avatar — a small round actor chip (initial or icon). Variant tints per actor:
    trixy (the bot, accent), capo (purple), operator (the human, green). */
@@ -2135,38 +2144,38 @@ button.action:hover,
   width: 1.75rem;
   height: 1.75rem;
   border-radius: 50%;
-  font-size: var(--fs-1);
+  font-size: var(--fs-xs);
   font-weight: 700;
   text-transform: uppercase;
   flex: none;
-  background: var(--surface-2);
-  color: var(--text-muted);
+  background: var(--bg-chip);
+  color: var(--fg-secondary);
 }
 /* .bot is the name-agnostic alias for the managed-agent avatar (#218/#226):
    same accent tint as .trixy, selected structurally (entry.managed) so the
    skills rendering path never couples to a literal bot login. */
 .avatar.trixy,
-.avatar.bot      { background: var(--accent-soft); color: var(--accent-ink); }
+.avatar.bot      { background: var(--ld-accent-soft); color: var(--ld-accent-ink); }
 .avatar.capo     { background: rgba(124, 58, 237, 0.16); color: #7C3AED; }
-.avatar.operator { background: rgba(16, 185, 129, 0.16); color: var(--state-merged); }
+.avatar.operator { background: rgba(16, 185, 129, 0.16); color: var(--st-merged); }
 
 /* stat — a metric card: an eyebrow label over a large tabular-num value. */
 .stat {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
-  padding: var(--sp-4);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
+  gap: var(--space-1);
+  padding: var(--space-4);
+  background: var(--bg-app);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
 }
 .stat .stat-label {
-  font-size: var(--fs-0);
+  font-size: var(--fs-2xs);
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: var(--track-eyebrow);
-  color: var(--text-muted);
+  letter-spacing: var(--tracking-wide);
+  color: var(--fg-secondary);
 }
 .stat .stat-value {
   font-size: var(--fs-display);
@@ -2181,27 +2190,27 @@ button.action:hover,
   display: inline-flex;
   gap: 2px;
   padding: 3px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  background: var(--bg-chip);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xs);
 }
 .segmented > button,
 .segmented > .seg {
   font: inherit;
-  font-size: var(--fs-1);
+  font-size: var(--fs-xs);
   font-weight: 600;
   border: none;
   background: transparent;
-  color: var(--text-muted);
-  padding: var(--sp-1) var(--sp-3);
-  border-radius: calc(var(--radius-sm) - 1px);
+  color: var(--fg-secondary);
+  padding: var(--space-1) var(--space-3);
+  border-radius: calc(var(--radius-xs) - 1px);
   cursor: pointer;
 }
 .segmented > .active,
 .segmented > [aria-selected="true"] {
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: var(--shadow);
+  background: var(--bg-app);
+  color: var(--fg-primary);
+  box-shadow: var(--shadow-card);
 }
 
 /* ====================================================================== */
@@ -2217,9 +2226,9 @@ button.action:hover,
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: var(--sp-2);
-  font-size: var(--fs-1);
-  margin-bottom: var(--sp-3);
+  gap: var(--space-2);
+  font-size: var(--fs-xs);
+  margin-bottom: var(--space-3);
 }
 .breadcrumb .crumb {
   font: inherit;
@@ -2230,8 +2239,8 @@ button.action:hover,
   cursor: pointer;
 }
 .breadcrumb .crumb:hover { text-decoration: underline; }
-.breadcrumb .crumb.current { color: var(--text-muted); cursor: default; }
-.breadcrumb .crumb-sep { color: var(--text-muted); }
+.breadcrumb .crumb.current { color: var(--fg-secondary); cursor: default; }
+.breadcrumb .crumb-sep { color: var(--fg-secondary); }
 
 /* The pipeline head uses the shared ScreenHead (#222); the breadcrumb above is
    the route trail, the statepill sits in the head's right-aligned controls slot. */
@@ -2240,8 +2249,8 @@ button.action:hover,
    They re-tint the statepill so a parked vs. busy vs. live drive reads at a
    glance; the .sdot inside still carries the canonical state hue. */
 .statepill.observing { background: rgba(245, 158, 11, 0.14); }
-.statepill.driving   { background: var(--accent-soft); color: var(--accent-ink); }
-.statepill.busy      { background: rgba(239, 68, 68, 0.14); color: var(--state-blocked); }
+.statepill.driving   { background: var(--ld-accent-soft); color: var(--ld-accent-ink); }
+.statepill.busy      { background: rgba(239, 68, 68, 0.14); color: var(--st-blocked); }
 
 /* stepper — Issue → Plan → Implement → PR → Review → Merge with a conflict
    detour badge. Steps connect via a thin line; the current step is emphasized
@@ -2250,43 +2259,43 @@ button.action:hover,
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: var(--sp-2) var(--sp-3);
-  margin-bottom: var(--sp-5);
+  gap: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-6);
 }
 .stepper .step {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-2);
-  font-size: var(--fs-1);
+  gap: var(--space-2);
+  font-size: var(--fs-xs);
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--fg-secondary);
   position: relative;
-  padding-right: var(--sp-3);
+  padding-right: var(--space-3);
 }
 /* Connector line between steps (suppressed after the last one). */
 .stepper .step::after {
   content: "";
-  width: var(--sp-4);
+  width: var(--space-4);
   height: 1px;
-  background: var(--border);
+  background: var(--border-default);
 }
 .stepper .step:last-of-type { padding-right: 0; }
 .stepper .step:last-of-type::after { display: none; }
-.stepper .step.active { color: var(--text); }
-.stepper .step.done { color: var(--text); }
+.stepper .step.active { color: var(--fg-primary); }
+.stepper .step.done { color: var(--fg-primary); }
 .stepper .step.gated { opacity: 0.6; }
 .stepper .step-label { white-space: nowrap; }
 /* conflict detour badge — hangs off the spine after Implement. */
 .stepper .step-detour {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
-  font-size: var(--fs-0);
+  gap: var(--space-1);
+  font-size: var(--fs-2xs);
   font-weight: 600;
-  padding: 3px var(--sp-2);
+  padding: 3px var(--space-2);
   border-radius: 999px;
   background: rgba(239, 68, 68, 0.14);
-  color: var(--state-blocked);
+  color: var(--st-blocked);
 }
 .stepper .step-detour .material-symbols-outlined { font-size: 1rem; }
 
@@ -2295,15 +2304,15 @@ button.action:hover,
 .detail-2col {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem);
-  gap: var(--sp-4);
+  gap: var(--space-4);
   align-items: start;
 }
 @media (max-width: 56rem) {
   .detail-2col { grid-template-columns: 1fr; }
 }
-.pipeline-steer { display: flex; flex-direction: column; gap: var(--sp-3); }
+.pipeline-steer { display: flex; flex-direction: column; gap: var(--space-3); }
 .pipeline-steer .observe-conv { height: 40vh; min-height: 240px; }
-.pipeline-reply { display: flex; flex-direction: column; gap: var(--sp-2); }
+.pipeline-reply { display: flex; flex-direction: column; gap: var(--space-2); }
 .pipeline-reply textarea {
   width: 100%;
   resize: vertical;
@@ -2312,11 +2321,11 @@ button.action:hover,
 .pipeline-controls {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--sp-2);
-  padding-top: var(--sp-2);
-  border-top: 1px solid var(--border);
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-default);
 }
-.pipeline-sidebar { display: flex; flex-direction: column; gap: var(--sp-4); }
+.pipeline-sidebar { display: flex; flex-direction: column; gap: var(--space-4); }
 
 /* Mobile steer — the worker conversation as a full-screen chat (#192). At phone
    width the steer card stretches to fill the viewport, its conversation grows
@@ -2338,50 +2347,50 @@ button.action:hover,
   .pipeline-reply {
     position: sticky;
     bottom: calc(var(--bottom-bar-h) + env(safe-area-inset-bottom));
-    background: var(--surface);
-    padding-top: var(--sp-2);
+    background: var(--bg-app);
+    padding-top: var(--space-2);
   }
-  .pipeline-controls { gap: var(--sp-1) var(--sp-2); }
+  .pipeline-controls { gap: var(--space-1) var(--space-2); }
 }
 
 /* linked issue/PR cards — a titled mini-card with a state tag + kv body. */
 .linked-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: var(--sp-3);
-  margin-bottom: var(--sp-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xs);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
 }
 .linked-card:last-child { margin-bottom: 0; }
 .linked-head {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
-  margin-bottom: var(--sp-2);
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
 }
-.linked-title { font-weight: 700; font-size: var(--fs-2); }
+.linked-title { font-weight: 700; font-size: var(--fs-sm); }
 .linked-head .tag { margin-left: auto; }
 
 /* timeline — actor chip + label + relative time, one row per event. */
-.timeline { display: flex; flex-direction: column; gap: var(--sp-2); }
+.timeline { display: flex; flex-direction: column; gap: var(--space-2); }
 .timeline-row {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
-  font-size: var(--fs-1);
+  gap: var(--space-2);
+  font-size: var(--fs-xs);
 }
-.timeline-row .avatar { width: 1.5rem; height: 1.5rem; font-size: var(--fs-0); }
+.timeline-row .avatar { width: 1.5rem; height: 1.5rem; font-size: var(--fs-2xs); }
 .timeline-row .sdot { flex: none; }
 .timeline-label { flex: 1; min-width: 0; overflow-wrap: break-word; }
-.timeline-time { color: var(--text-muted); font-size: var(--fs-0); white-space: nowrap; }
+.timeline-time { color: var(--fg-secondary); font-size: var(--fs-2xs); white-space: nowrap; }
 
 /* skill chip — a small inline tag attributing a timeline event to a skill. */
 .skill-chip {
   display: inline-block;
-  padding: 0 var(--sp-1);
-  border-radius: var(--radius-sm);
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-  font-size: var(--fs-0);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-xs);
+  background: var(--ld-accent-soft);
+  color: var(--ld-accent-ink);
+  font-size: var(--fs-2xs);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -2390,8 +2399,8 @@ button.action:hover,
 .linked-labels {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--sp-1);
-  margin-top: var(--sp-2);
+  gap: var(--space-1);
+  margin-top: var(--space-2);
 }
 
 /* ready-for-* lifecycle controls (#225) — the moved "Assign issue" button row. */
@@ -2399,11 +2408,11 @@ button.action:hover,
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--sp-2);
-  margin-bottom: var(--sp-4);
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
 }
 .pipeline-lifecycle[hidden] { display: none; }
-.lifecycle-caption { color: var(--text-muted); font-size: var(--fs-1); font-weight: 600; }
+.lifecycle-caption { color: var(--fg-secondary); font-size: var(--fs-xs); font-weight: 600; }
 
 /* ====================================================================== */
 /* Mobile companion surfaces (#192)                                       */
@@ -2440,7 +2449,7 @@ button.action:hover,
   button.action,
   .btn { min-height: 2.75rem; }
   .segmented > button,
-  .segmented > .seg { padding: var(--sp-2) var(--sp-3); }
+  .segmented > .seg { padding: var(--space-2) var(--space-3); }
   .data-table td .ld-btn,
   .data-table td button.action,
   .data-table td .interrupt-btn,

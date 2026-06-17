@@ -1,0 +1,312 @@
+/* ================================================================
+   Jeeves Design System — Colors & Typography
+   ----------------------------------------------------------------
+   Source of truth for CSS custom properties used across every
+   Jeeves surface (mobile app, marketing, docs, preview cards).
+
+   The values here mirror the Flutter app's inline theme — do not
+   drift. When Flutter changes, update this file and vice-versa.
+   ================================================================ */
+
+/* Brand font — loaded from the repo, not a CDN. Variable-weight TTF
+   covers the full 400–800 range we use. */
+@font-face {
+  font-family: 'Manrope';
+  src: url('./fonts/Manrope-VariableFont_wght.ttf') format('truetype-variations'),
+       url('./fonts/Manrope-VariableFont_wght.ttf') format('truetype');
+  font-weight: 400 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap');
+
+:root {
+  /* -----------------------------------------------------
+     Brand
+     ----------------------------------------------------- */
+  --jeeves-primary:         #2667B7;  /* hero blue — seed color */
+  --jeeves-primary-hover:   #1E4F8F;  /* hover / pressed */
+  --jeeves-primary-soft:    #EFF6FF;  /* tinted backgrounds, selected nav tiles */
+  --jeeves-primary-border:  #DBEAFE;  /* soft blue borders on chips */
+  --jeeves-primary-ink:     #1D4ED8;  /* text on tinted blue backgrounds */
+  --jeeves-secondary:       #1E4F8F;
+  --jeeves-tertiary:        #4A5568;
+  --jeeves-neutral:         #4A5568;
+
+  /* -----------------------------------------------------
+     Neutral scale (grays)
+     ----------------------------------------------------- */
+  --gray-50:  #F9FAFB;   /* page-level subtle surfaces (footer band) */
+  --gray-100: #F3F4F6;   /* dividers, chip backgrounds, badges */
+  --gray-200: #E5E7EB;   /* borders, progress bar track */
+  --gray-300: #D1D5DB;   /* disabled, hint text */
+  --gray-400: #9CA3AF;   /* secondary icons, mute text */
+  --gray-500: #6B7280;   /* body secondary */
+  --gray-600: #4B5563;   /* small label text */
+  --gray-700: #374151;   /* list item body */
+  --gray-800: #1F2937;   /* notes body */
+  --gray-900: #111827;   /* strong/heading in notes */
+  --ink:      #1A1A2E;   /* brand ink — titles, nav, drawer header */
+
+  /* -----------------------------------------------------
+     Semantic foreground / background
+     ----------------------------------------------------- */
+  --fg-primary:   var(--ink);
+  --fg-secondary: var(--gray-600);
+  --fg-muted:     var(--gray-400);
+  --fg-disabled:  var(--gray-300);
+  --fg-on-brand:  #FFFFFF;
+
+  --bg-app:       #FFFFFF;
+  --bg-subtle:    var(--gray-50);
+  --bg-chip:      var(--gray-100);
+  --bg-selected:  var(--jeeves-primary-soft);
+
+  --border-hairline: var(--gray-100);
+  --border-default:  var(--gray-200);
+  --border-strong:   var(--gray-300);
+
+  /* -----------------------------------------------------
+     Status colors (GTD state dots, info rows)
+     ----------------------------------------------------- */
+  --status-inbox:       #3B82F6;   /* blue dot */
+  --status-next:        #10B981;   /* green dot */
+  --status-waiting:     #F59E0B;
+  --status-blocked:     #F97316;   /* orange dot */
+  --status-scheduled:   #8B5CF6;
+  --status-someday:     #A855F7;
+  --status-done:        #10B981;
+
+  --danger:        #EF4444;
+  --danger-soft:   #FEF2F2;
+  --warning:       #F97316;
+  --warning-soft:  #FFF7ED;
+  --success:       #10B981;
+  --success-soft:  #ECFDF5;
+  --info:          var(--jeeves-primary);
+  --info-soft:     var(--jeeves-primary-soft);
+
+  /* -----------------------------------------------------
+     Tag pastel palettes (paired bg / ink / border)
+     Derived from task_detail_screen.dart _getPastelColor.
+     ----------------------------------------------------- */
+  --tag-blue-bg:     #EFF6FF;  --tag-blue-ink:     #1D4ED8;  --tag-blue-border:     #DBEAFE;
+  --tag-purple-bg:   #FAF5FF;  --tag-purple-ink:   #7E22CE;  --tag-purple-border:   #F3E8FF;
+  --tag-emerald-bg:  #ECFDF5;  --tag-emerald-ink:  #047857;  --tag-emerald-border:  #D1FAE5;
+  --tag-orange-bg:   #FFF7ED;  --tag-orange-ink:   #C2410C;  --tag-orange-border:   #FFEDD5;
+  --tag-pink-bg:     #FDF2F8;  --tag-pink-ink:     #BE185D;  --tag-pink-border:     #FCE7F3;
+  --tag-indigo-bg:   #EEF2FF;  --tag-indigo-ink:   #4338CA;  --tag-indigo-border:   #E0E7FF;
+  --tag-teal-bg:     #F0FDFA;  --tag-teal-ink:     #0F766E;  --tag-teal-border:     #CCFBF1;
+
+  /* -----------------------------------------------------
+     Typography — Manrope (proportional, geometric sans).
+     One voice throughout; tabular digits via OpenType
+     feature (font-variant-numeric: tabular-nums).
+     System: Low Contrast · Blueprint metadata ·
+     Contextual numerals · Focused whitespace.
+     ----------------------------------------------------- */
+  --font-sans:  'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-icon:  'Material Symbols Outlined';
+
+  /* Type scale — sizes unchanged; weights follow low-contrast hierarchy */
+  --fs-display: 32px;   /* screen titles (Inbox, Focus) — the only 700 */
+  --fs-title:   26px;   /* planning header — 500 */
+  --fs-h1:      24px;   /* task title — 500 */
+  --fs-h2:      22px;
+  --fs-h3:      20px;
+  --fs-h4:      18px;   /* section headers — 500 */
+  --fs-body:    16px;   /* default body / list item */
+  --fs-sm:      14px;   /* list subtitle, info row value */
+  --fs-xs:      13px;   /* tag label */
+  --fs-2xs:     12px;   /* badge count */
+  --fs-micro:   11px;   /* Blueprint caps */
+  --fs-nano:    10px;   /* Blueprint tiny caps (REMINDERS, DUE DATE) */
+
+  --fw-regular:  400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+  --fw-bold:     700;
+
+  --lh-tight:    1.2;
+  --lh-snug:     1.35;
+  --lh-normal:   1.5;
+
+  /* Blueprint tracking: wide on uppercase metadata, tight on display */
+  --tracking-tight:   -0.01em;
+  --tracking-normal:  0;
+  --tracking-wide:    0.08em;
+  --tracking-wider:   0.12em;
+  --tracking-widest:  0.16em;
+
+  /* -----------------------------------------------------
+     Spacing (normal density — level 2)
+     4-pt base grid
+     ----------------------------------------------------- */
+  --space-0:  0;
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;   /* default gutter */
+  --space-5:  20px;   /* screen side padding */
+  --space-6:  24px;   /* section padding */
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* -----------------------------------------------------
+     Radii — default to xs / sm.
+     Pill is out. xxs is reserved for buttons.
+     ----------------------------------------------------- */
+  --radius-xxs:  2px;   /* BUTTONS — primary, soft, outline, text, icon */
+  --radius-xs:   4px;   /* DEFAULT for chips, tags, small meta, inputs */
+  --radius-sm:   6px;   /* DEFAULT for cards, rows, sheets, most surfaces */
+  /* Deprecated — avoid on new work. Kept for migration only. */
+  --radius-md:   8px;
+  --radius-lg:   12px;
+  --radius-xl:   16px;
+  --radius-2xl:  20px;
+
+  /* -----------------------------------------------------
+     Elevation — Jeeves uses flat surfaces with hairline
+     borders. Shadows appear only on the primary CTA.
+     ----------------------------------------------------- */
+  --shadow-none: none;
+  --shadow-card:  0 1px 2px rgba(17, 24, 39, 0.04);
+  --shadow-pop:   0 8px 24px rgba(38, 103, 183, 0.18);  /* CTA + bottom-sheet */
+  --shadow-cta:   0 10px 20px -6px rgba(37, 99, 235, 0.35);  /* primary button */
+
+  /* Durations / easing */
+  --dur-fast:   120ms;
+  --dur-base:   200ms;
+  --dur-slow:   300ms;
+  --ease-out:   cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+/* =================================================================
+   Semantic element styles — consume these instead of the raw vars
+   whenever possible.
+   ================================================================= */
+
+html, body {
+  font-family: var(--font-sans);
+  color: var(--fg-primary);
+  background: var(--bg-app);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Headings — Low-contrast hierarchy.
+   Only Display carries bold; everything else sits at 500. ------ */
+.jv-display {
+  font-size: var(--fs-display);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  color: var(--ink);
+  letter-spacing: var(--tracking-tight);
+}
+
+.jv-title {
+  font-size: var(--fs-title);
+  font-weight: var(--fw-medium);
+  color: var(--ink);
+  line-height: var(--lh-tight);
+}
+
+.jv-h1 {
+  font-size: var(--fs-h1);
+  font-weight: var(--fw-medium);
+  color: #000;
+  line-height: var(--lh-tight);
+}
+
+.jv-h4,
+.jv-sheet-title {
+  font-size: var(--fs-h4);
+  font-weight: var(--fw-medium);
+  color: var(--fg-primary);
+}
+
+/* Body --------------------------------------------------------- */
+.jv-body {
+  font-size: var(--fs-body);
+  font-weight: var(--fw-regular);
+  color: var(--gray-800);
+  line-height: var(--lh-normal);
+}
+
+.jv-list-title {
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+  color: var(--ink);
+}
+
+.jv-list-meta {
+  font-size: var(--fs-sm);
+  color: var(--gray-500);
+}
+
+/* Labels / eyebrows — "Blueprint" metadata --------------------- */
+.jv-eyebrow {       /* "PROJECTS", "CONTEXTS" — wide-tracked caps */
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--tracking-widest);
+  color: var(--gray-400);
+  text-transform: uppercase;
+  font-family: var(--font-sans);
+}
+
+.jv-micro-eyebrow {   /* "REMINDERS", "DUE DATE" — tiniest blueprint label */
+  font-size: var(--fs-nano);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--tracking-widest);
+  color: var(--gray-400);
+  text-transform: uppercase;
+  font-family: var(--font-sans);
+}
+
+.jv-project-crumb {   /* folder breadcrumb above task title */
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold);
+  color: var(--jeeves-primary);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+}
+
+/* Numbers — Contextual. Add .jv-tabular (or inline tabular-nums)
+   where alignment matters — schedules, counts, durations. Uses
+   Manrope's own tabular digits via OpenType; no separate font. */
+.jv-tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+  letter-spacing: 0;
+}
+
+.jv-hint {
+  color: var(--gray-300);
+}
+
+/* Common semantic aliases ------------------------------------- */
+.fg-1 { color: var(--fg-primary); }
+.fg-2 { color: var(--fg-secondary); }
+.fg-3 { color: var(--fg-muted); }
+.fg-brand { color: var(--jeeves-primary); }
+
+/* Icon helper — renders Material Symbols at body weight ----- */
+.jv-icon {
+  font-family: var(--font-icon);
+  font-weight: normal;
+  font-style: normal;
+  font-size: 20px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+}
