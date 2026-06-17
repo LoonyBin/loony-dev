@@ -49,6 +49,19 @@ def _make_worker(base: Path, owner: str, repo: str, pid: int, log_lines: list[st
     (repo_dir / services.WORKER_LOG_NAME).write_text("\n".join(log_lines) + "\n")
 
 
+def _make_pipeline_log(
+    base: Path, owner: str, repo: str, key: str, log_lines: list[str], *, sidecar: bool = True
+) -> None:
+    """Create a fake pipelines/<slug>.{log,key} for one pipeline key (issue #220)."""
+    from loony_dev import pipeline_log
+
+    log_path = pipeline_log.pipeline_log_path(base, owner, repo, key)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("\n".join(log_lines) + "\n")
+    if sidecar:
+        pipeline_log.pipeline_key_sidecar_path(base, owner, repo, key).write_text(key)
+
+
 class ServicesTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -119,6 +132,65 @@ class ServicesTestCase(unittest.TestCase):
         for owner, repo in [("..", "etc"), ("acme", ".."), ("a/b", "c")]:
             with self.assertRaises(services.LogNotFoundError):
                 services.tail_log(self.base, owner, repo, 10)
+
+    # ── Per-pipeline logs (issue #220) ──────────────────────────────────────
+
+    def test_tail_pipeline_log_returns_last_n_lines(self) -> None:
+        lines = [f"log {i}" for i in range(20)]
+        _make_pipeline_log(self.base, "acme", "widgets", "issue-5", lines)
+        tail = services.tail_pipeline_log(self.base, "acme", "widgets", "issue-5", 3)
+        self.assertEqual(tail, ["log 17", "log 18", "log 19"])
+
+    def test_tail_pipeline_log_missing_raises(self) -> None:
+        with self.assertRaises(services.LogNotFoundError):
+            services.tail_pipeline_log(self.base, "acme", "widgets", "issue-404", 10)
+
+    def test_tail_pipeline_log_rejects_traversal(self) -> None:
+        _make_pipeline_log(self.base, "acme", "widgets", "issue-5", ["x"])
+        for key in ("..", "a/b", "with\x00nul", "."):
+            with self.assertRaises(services.LogNotFoundError):
+                services.tail_pipeline_log(self.base, "acme", "widgets", key, 10)
+
+    def test_list_pipeline_logs_recovers_keys_from_sidecars(self) -> None:
+        _make_pipeline_log(self.base, "acme", "widgets", "issue-5", ["a"])
+        _make_pipeline_log(self.base, "acme", "widgets", "pr-9", ["b"])
+        keys = services.list_pipeline_logs(self.base, "acme", "widgets")
+        self.assertEqual(sorted(keys), ["issue-5", "pr-9"])
+
+    def test_list_pipeline_logs_skips_log_without_sidecar(self) -> None:
+        _make_pipeline_log(self.base, "acme", "widgets", "issue-5", ["a"], sidecar=False)
+        self.assertEqual(services.list_pipeline_logs(self.base, "acme", "widgets"), [])
+
+    def test_list_pipeline_logs_empty_when_no_dir(self) -> None:
+        self.assertEqual(services.list_pipeline_logs(self.base, "acme", "widgets"), [])
+
+    def test_pipeline_activity_parses_well_formed_and_falls_back(self) -> None:
+        _make_pipeline_log(
+            self.base, "acme", "widgets", "issue-5",
+            [
+                "2026-06-17 12:00:00,123 [INFO] loony_dev.agents.coding: implementing",
+                "2026-06-17 12:00:01,000 [INFO] loony_dev.orchestrator: Dispatching task",
+                "    File \"x.py\", line 1, in f",  # a wrapped traceback continuation
+            ],
+        )
+        events = services.pipeline_activity(self.base, "acme", "widgets", "issue-5", 100)
+        self.assertEqual(len(events), 3)
+        self.assertEqual(events[0]["level"], "INFO")
+        self.assertEqual(events[0]["logger"], "loony_dev.agents.coding")
+        self.assertEqual(events[0]["message"], "implementing")
+        self.assertEqual(events[0]["actor"], "trixy")
+        self.assertEqual(events[1]["actor"], "system")
+        # The non-matching continuation line is kept verbatim, not dropped.
+        self.assertIsNone(events[2]["ts"])
+        self.assertIn("x.py", events[2]["message"])
+
+    def test_pipeline_activity_attributes_operator(self) -> None:
+        _make_pipeline_log(
+            self.base, "acme", "widgets", "issue-5",
+            ["2026-06-17 12:00:00,123 [INFO] loony_dev.orchestrator: running operator-injected turn"],
+        )
+        events = services.pipeline_activity(self.base, "acme", "widgets", "issue-5", 100)
+        self.assertEqual(events[0]["actor"], "operator")
 
     def test_list_sessions_empty_without_files(self) -> None:
         self.assertEqual(services.list_sessions(self.base), [])
@@ -370,6 +442,73 @@ class WebAppTestCase(unittest.TestCase):
         resp = self.client.get("/api/logs/acme/widgets/tail", params={"lines": 5})
         self.assertEqual(resp.status_code, 200)  # sanity: the happy path works
         bad = self.client.get("/api/logs/%2e%2e/etc/tail")
+        self.assertIn(bad.status_code, (404, 422))
+
+    # ── Per-pipeline log routes (issue #220) ────────────────────────────────
+
+    def test_pipeline_log_tail_endpoint(self) -> None:
+        _make_pipeline_log(self.base, "acme", "widgets", "issue-5", ["one", "two", "three"])
+        resp = self.client.get("/api/logs/acme/widgets/pipelines/issue-5/tail?lines=2")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["repo"], "acme/widgets")
+        self.assertEqual(body["pipeline_key"], "issue-5")
+        self.assertEqual(body["lines"], ["two", "three"])
+        self.assertEqual(body["count"], 2)
+
+    def test_pipeline_log_tail_unknown_404(self) -> None:
+        resp = self.client.get("/api/logs/acme/widgets/pipelines/issue-404/tail")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_pipeline_log_tail_bad_lines_422(self) -> None:
+        _make_pipeline_log(self.base, "acme", "widgets", "issue-5", ["x"])
+        self.assertEqual(
+            self.client.get("/api/logs/acme/widgets/pipelines/issue-5/tail?lines=0").status_code, 422
+        )
+        self.assertEqual(
+            self.client.get("/api/logs/acme/widgets/pipelines/issue-5/tail?lines=99999").status_code, 422
+        )
+
+    def test_pipeline_log_list_endpoint(self) -> None:
+        _make_pipeline_log(self.base, "acme", "widgets", "issue-5", ["a"])
+        _make_pipeline_log(self.base, "acme", "widgets", "pr-9", ["b"])
+        resp = self.client.get("/api/logs/acme/widgets/pipelines")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(sorted(body["pipelines"]), ["issue-5", "pr-9"])
+        self.assertEqual(body["count"], 2)
+
+    def test_pipeline_activity_endpoint(self) -> None:
+        _make_pipeline_log(
+            self.base, "acme", "widgets", "issue-5",
+            ["2026-06-17 12:00:00,123 [INFO] loony_dev.agents.coding: doing work"],
+        )
+        resp = self.client.get("/api/pipelines/issue-5/activity?repo=acme/widgets")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["pipeline_key"], "issue-5")
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["events"][0]["actor"], "trixy")
+
+    def test_pipeline_activity_unknown_404(self) -> None:
+        resp = self.client.get("/api/pipelines/issue-404/activity?repo=acme/widgets")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_pipeline_activity_bad_repo_422(self) -> None:
+        # Missing repo query param, no slash, empty halves, and a nested slash
+        # must all be rejected before path resolution (issue #220 review).
+        self.assertEqual(
+            self.client.get("/api/pipelines/issue-5/activity").status_code, 422
+        )
+        for repo in ("noslash", "/", "owner/", "/repo", "a/b/c"):
+            with self.subTest(repo=repo):
+                resp = self.client.get(
+                    "/api/pipelines/issue-5/activity", params={"repo": repo}
+                )
+                self.assertEqual(resp.status_code, 422)
+
+    def test_pipeline_log_traversal_rejected(self) -> None:
+        bad = self.client.get("/api/logs/acme/widgets/pipelines/%2e%2e/tail")
         self.assertIn(bad.status_code, (404, 422))
 
 
