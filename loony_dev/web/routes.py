@@ -258,6 +258,42 @@ def create_api_router(
         except services.SessionNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @router.post("/pipelines/{pipeline_key}/labels")
+    async def set_pipeline_label(pipeline_key: str, request: Request) -> dict:
+        """Set a ready-for-* entry label on an issue pipeline (issue #225).
+
+        The moved "Assign issue" control: body is JSON
+        ``{"label": "ready-for-planning"|"ready-for-development", "repo": "owner/repo"}``.
+        ``repo`` is required (a label change targets a specific issue and there is
+        no session-resolution fallback). Setting one entry label clears its
+        sibling (they are mutually exclusive). ``400`` for a malformed body /
+        missing field, ``422`` for a bad label / non-issue pipeline / malformed
+        repo, ``404`` for an unknown checkout. The next SSE snapshot reflects it.
+        """
+        try:
+            body = await request.json()
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=400, detail="body must be JSON") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="body must be a JSON object")
+        label = body.get("label")
+        repo = body.get("repo")
+        # Structural validation → 400 (matches inject_turn / interrogate_pipeline);
+        # semantic validation (label not in the allowed set, pr pipeline, malformed
+        # repo) is the service's job and maps to 422 below.
+        if not isinstance(label, str) or not label.strip():
+            raise HTTPException(status_code=400, detail="'label' must be a non-empty string")
+        if not isinstance(repo, str):
+            raise HTTPException(status_code=400, detail="'repo' must be a string")
+        try:
+            return await asyncio.to_thread(
+                services.set_pipeline_label, base_dir, pipeline_key, label, repo,
+            )
+        except services.LabelControlError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except services.SessionNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @router.websocket("/sessions/{task_key}/attach")
     async def attach_session(websocket: WebSocket, task_key: str) -> None:
         """Bridge a websocket to the worker-owned ``ClaudeSession`` PTY socket.
