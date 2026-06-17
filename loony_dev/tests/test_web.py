@@ -12,6 +12,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 from fastapi.testclient import TestClient
@@ -2180,8 +2181,9 @@ class GitHubStateApiTestCase(unittest.TestCase):
 class _FakeIssueRecorder:
     """An ``Issue`` stand-in recording add_label / remove_label calls (#225)."""
 
-    instances: list["_FakeIssueRecorder"] = []
-    add_result = True
+    instances: ClassVar[list["_FakeIssueRecorder"]] = []
+    add_result: ClassVar[bool] = True
+    remove_result: ClassVar[bool] = True
 
     def __init__(self, *, number, _repo):
         self.number = number
@@ -2195,6 +2197,7 @@ class _FakeIssueRecorder:
 
     def remove_label(self, label):
         self.removed.append(label)
+        return _FakeIssueRecorder.remove_result
 
 
 class SetPipelineLabelTestCase(unittest.TestCase):
@@ -2206,6 +2209,7 @@ class SetPipelineLabelTestCase(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         _FakeIssueRecorder.instances = []
         _FakeIssueRecorder.add_result = True
+        _FakeIssueRecorder.remove_result = True
 
     def _make_checkout(self, owner: str, name: str) -> None:
         (self.base / owner / name / ".git").mkdir(parents=True, exist_ok=True)
@@ -2263,6 +2267,22 @@ class SetPipelineLabelTestCase(unittest.TestCase):
         # The sibling is never removed when the add fails.
         self.assertEqual(_FakeIssueRecorder.instances[0].removed, [])
 
+    def test_sibling_removal_failure_raises(self) -> None:
+        # A failed sibling removal must raise rather than report a successful
+        # mutually-exclusive state the issue doesn't actually have.
+        self._make_checkout("acme", "widgets")
+        _FakeIssueRecorder.remove_result = False
+        with mock.patch.object(services, "_repo_for", lambda o, n, c: object()), \
+                mock.patch("loony_dev.github.Issue", _FakeIssueRecorder):
+            with self.assertRaises(services.LabelControlError):
+                services.set_pipeline_label(
+                    self.base, "issue-7", "ready-for-development", "acme/widgets",
+                )
+        # The requested label was applied; only the sibling removal failed.
+        issue = _FakeIssueRecorder.instances[0]
+        self.assertEqual(issue.added, ["ready-for-development"])
+        self.assertEqual(issue.removed, ["ready-for-planning"])
+
 
 class SetPipelineLabelApiTestCase(unittest.TestCase):
     """`POST /api/pipelines/{key}/labels`: status mapping for the label control."""
@@ -2276,6 +2296,7 @@ class SetPipelineLabelApiTestCase(unittest.TestCase):
         self.client = TestClient(create_app(base_dir=self.base, supervisor_log=None))
         _FakeIssueRecorder.instances = []
         _FakeIssueRecorder.add_result = True
+        _FakeIssueRecorder.remove_result = True
 
     def test_success_returns_label_set(self) -> None:
         with mock.patch.object(services, "_repo_for", lambda o, n, c: object()), \

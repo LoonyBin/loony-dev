@@ -67,11 +67,20 @@ class GitHubItem:
             logger.warning("Failed to add label '%s' to #%d", label, self.number)
             return False
 
-    def remove_label(self, label: str) -> None:
+    def remove_label(self, label: str) -> bool:
+        """Remove *label*; return True on success, False if the ``gh`` call failed.
+
+        Symmetric with :meth:`add_label` so callers that must confirm the
+        mutation (e.g. enforcing mutually-exclusive labels) can detect failure
+        rather than silently assuming success. Existing statement-style callers
+        that ignore the result are unaffected.
+        """
         try:
             self._repo.client.gh("issue", "edit", str(self.number), "--remove-label", label)
+            return True
         except subprocess.CalledProcessError:
             logger.warning("Failed to remove label '%s' from #%d", label, self.number)
+            return False
 
     def assign(self, user: str = "@me") -> None:
         try:

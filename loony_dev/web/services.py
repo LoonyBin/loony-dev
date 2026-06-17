@@ -705,8 +705,10 @@ def set_pipeline_label(
     ``issue-N`` pipelines (these are issue-lifecycle labels). Raises
     :class:`LabelControlError` for a bad label / non-issue key / malformed repo
     (→ 422), :class:`SessionNotFoundError` for an unknown checkout (→ 404), and
-    re-raises a failed ``add_label`` as :class:`LabelControlError`. Returns the
-    resulting entry-label set so the caller can confirm the new state.
+    re-raises a failed ``add_label`` *or* a failed sibling ``remove_label`` as
+    :class:`LabelControlError` (so a partial mutation is never reported as
+    success). Returns the resulting entry-label set so the caller can confirm
+    the new state.
     """
     if label not in READY_LABELS:
         raise LabelControlError(
@@ -732,11 +734,13 @@ def set_pipeline_label(
     issue = Issue(number=number, _repo=gh_repo)
     if not issue.add_label(label):
         raise LabelControlError(f"failed to add label {label!r} to #{number}")
-    # Keep the two entry labels mutually exclusive: drop the sibling. A failed
-    # removal is logged (not raised) inside remove_label — the requested label is
-    # already applied, which is the operation's contract.
+    # Keep the two entry labels mutually exclusive: drop the sibling. Raise if the
+    # removal fails — returning success here would claim a mutually-exclusive
+    # state we didn't achieve (the issue could keep both ready-for-* labels), and
+    # the repo guideline is to raise on failure rather than report a false result.
     sibling = next(other for other in READY_LABELS if other != label)
-    issue.remove_label(sibling)
+    if not issue.remove_label(sibling):
+        raise LabelControlError(f"failed to remove sibling label {sibling!r} from #{number}")
     return {
         "pipeline_key": pipeline_key,
         "repo": repo,
