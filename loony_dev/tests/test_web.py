@@ -378,6 +378,10 @@ class WebAppTestCase(unittest.TestCase):
         # The app shell loads its stylesheet and ES modules from /static.
         for path in (
             "/static/app.css",
+            # The vendored L Space design system (#247): the token/type layer +
+            # the self-hosted Manrope variable font must both be served.
+            "/static/design/colors_and_type.css",
+            "/static/design/fonts/Manrope-VariableFont_wght.ttf",
             "/static/js/app.js",
             # sessions.js / logs.js stay reachable after the Sessions + Logs
             # fold-in (#221): repoDetail imports renderSessionCard + streamLog
@@ -614,6 +618,70 @@ class WebAppTestCase(unittest.TestCase):
         self.assertNotIn(".live-head {", css)
         self.assertNotIn(".skills-head {", css)
         self.assertNotIn(".pipeline-header {", css)
+
+    # ---- L Space design-system port (#247) -------------------------------
+    # The dashboard's look must BE the design's shipped CSS, not a parallel
+    # approximation. These guards keep the system from silently drifting again:
+    # the per-element patch history (e.g. the lowercase-title regression a test
+    # pinned in place) is the cautionary tale — appearance can't be markup-only.
+
+    def test_vendored_design_tokens_are_served(self) -> None:
+        # The token + type layer is the design's colors_and_type.css, vendored
+        # verbatim. Assert representative real tokens from across its ramp are
+        # present in the served file (not re-derived in app.css).
+        css = self.client.get("/static/design/colors_and_type.css").text
+        for token in ("--gray-900:", "--ink:", "--bg-app:", "--border-hairline:",
+                      "--fs-display:", "--space-4:", "--radius-sm:"):
+            self.assertIn(token, css, token)
+
+    def test_manrope_is_self_hosted(self) -> None:
+        # Self-hosting: a Manrope @font-face pointing at the bundled TTF, served
+        # 200 — and the Google-Fonts Manrope <link> is gone from index.html, so
+        # the brand font no longer depends on a CDN.
+        css = self.client.get("/static/design/colors_and_type.css").text
+        self.assertIn("@font-face", css)
+        self.assertIn("font-family: 'Manrope'", css)
+        self.assertIn("Manrope-VariableFont_wght.ttf", css)
+        font = self.client.get("/static/design/fonts/Manrope-VariableFont_wght.ttf")
+        self.assertEqual(font.status_code, 200)
+        body = self.client.get("/").text
+        self.assertNotIn("family=Manrope", body)
+        # The vendored file is loaded before app.css so its tokens win.
+        self.assertIn('href="/static/design/colors_and_type.css"', body)
+        # Material Symbols now arrives via the vendored file's @import; the
+        # duplicate Google-Fonts <link> is removed from the shell.
+        self.assertNotIn("family=Material+Symbols", body)
+
+    def test_app_css_consumes_design_tokens_not_a_parallel_set(self) -> None:
+        # app.css must reference the design tokens and must NOT redefine a
+        # parallel, approximate palette/scale. The retired token names are gone
+        # entirely (definitions AND usages), so the system can't drift back.
+        css = self.client.get("/static/app.css").text
+        # Consumes the design layer.
+        self.assertIn("var(--fg-primary)", css)
+        self.assertIn("var(--bg-app)", css)
+        self.assertIn("var(--border-default)", css)
+        self.assertIn("var(--space-4)", css)
+        self.assertIn("var(--ld-accent)", css)
+        # The ported lifecycle + accent extras (loony-dev.html's <style> :root).
+        self.assertIn("--st-merged:", css)
+        self.assertIn("--ld-accent:", css)
+        # Retired approximate tokens are absent — names that carried the drift.
+        for retired in ("--sp-1", "--sp-2", "--sp-3", "--sp-4", "--sp-5", "--sp-6",
+                        "--surface-2", "--surface:", "--state-merged", "--state-blocked",
+                        "--fs-0", "--fs-5", "--accent-soft", "--track-eyebrow"):
+            self.assertNotIn(retired, css, retired)
+
+    def test_app_css_ships_guarded_dark_ramp(self) -> None:
+        # The design is light-only; the dark ramp is deliberately app-authored
+        # (#247). Assert it re-points the design tokens (not orphaned ad-hoc
+        # neutrals) so dark mode tracks the same system.
+        css = self.client.get("/static/app.css").text
+        self.assertIn(':root[data-theme="dark"]', css)
+        dark = css.split(':root[data-theme="dark"] {', 1)[1]
+        for token in ("--fg-primary:", "--bg-app:", "--border-default:",
+                      "--ld-accent:", "--st-merged:"):
+            self.assertIn(token, dark, token)
 
     def test_index_declares_responsive_viewport(self) -> None:
         # The mobile companion pass (#192) needs the responsive viewport meta so
