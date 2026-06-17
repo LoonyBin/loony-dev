@@ -188,6 +188,32 @@ def create_api_router(
         )
         return [asdict(r) for r in repos]
 
+    @router.get("/repos/{owner}/{repo}/commits")
+    def get_repo_commits(
+        owner: str,
+        repo: str,
+        n: int = Query(5, ge=1, le=20),
+    ) -> dict:
+        """Recent local commits from ``owner/repo``'s base checkout (issue #224).
+
+        A real ``git log`` from the persistent main-branch checkout on disk (not
+        a GitHub fetch), powering the Live screen's "Recent commits" panel. All
+        validation lives in :func:`services.recent_commits`; this handler just
+        maps its failures — an absent/invalid checkout to 404 and a ``git``
+        failure to 503 (the frontend treats either as "history unavailable").
+        """
+        try:
+            commits = services.recent_commits(base_dir, owner, repo, n)
+        except services.CheckoutNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except services.GitCommandError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {
+            "repo": f"{owner}/{repo}",
+            "commits": [asdict(c) for c in commits],
+            "count": len(commits),
+        }
+
     @router.post("/sessions/{task_key}/inject")
     async def inject_turn(task_key: str, request: Request) -> dict:
         """Enqueue a one-shot operator-steered turn (``source: "operator"``).
@@ -636,6 +662,22 @@ async def _observe_session(base_dir: Path, websocket: WebSocket, task_key: str) 
             await websocket.close()
 
 
+def _resolve_bot_name() -> str | None:
+    """Best-effort GitHub bot login for owner resolution, or ``None``.
+
+    The read-only dashboard must never 500 because ``gh`` is unavailable, so any
+    failure resolving the login degrades to ``None`` (managed entries without an
+    explicit ``owner`` frontmatter simply list with no owner). Resolution itself
+    is ``lru_cache``d on ``Repo.detect_bot_name``.
+    """
+    from loony_dev.github.repo import Repo
+
+    try:
+        return Repo.detect_bot_name() or None
+    except Exception:
+        return None
+
+
 def _register_entry_routes(router: APIRouter, kind: str, *, base_dir: Path,
                            global_root: Path) -> None:
     """Register CRUD endpoints for one entry *kind* ("skills" / "commands").
@@ -656,7 +698,9 @@ def _register_entry_routes(router: APIRouter, kind: str, *, base_dir: Path,
         repo: str | None = None,
     ) -> list[dict]:
         try:
-            views = entries.list_entries(kind, **scope_kwargs(scope, owner, repo))
+            views = entries.list_entries(
+                kind, **scope_kwargs(scope, owner, repo), bot_name=_resolve_bot_name()
+            )
         except entries.EntryError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return [asdict(v) for v in views]
