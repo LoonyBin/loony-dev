@@ -1,14 +1,17 @@
 "use strict";
 
-// Sessions view: one card per repo's remote-control relay session. Each live
-// card surfaces the claude.ai join URL as a large tappable "Open session"
-// button plus a scannable QR code of that same URL, so the user can scan it
-// from a phone while looking at the dashboard on desktop and land in the exact
-// same remote-control session. The interactive surface is Claude's own hosted
-// relay (see loony_dev/supervisor.py) — there is no PTY/websocket bridge here.
+// Remote-control session card (#157). Builds one card per repo's remote-control
+// relay session, surfacing the claude.ai join URL as a large tappable "Open
+// session" button plus a scannable QR code of that same URL, so the user can
+// scan it from a phone while looking at the dashboard on desktop and land in the
+// exact same remote-control session. The interactive surface is Claude's own
+// hosted relay (see loony_dev/supervisor.py) — there is no PTY/websocket bridge
+// here.
 //
-// Pending (no join_url yet) and offline (process dead) sessions render an
-// explicit state instead of a broken link.
+// The standalone Sessions grid was retired in #221: the only consumer is now the
+// Live screen (repoDetail), which embeds renderSessionCard per repo in its
+// compact variant. Pending (no join_url yet) and offline (process dead) sessions
+// render an explicit state instead of a broken link.
 
 import { formatAge, icon } from "./dom.js";
 
@@ -151,11 +154,10 @@ function renderState(card, s) {
   card.appendChild(qrWrap);
 }
 
-// Build one session card. The standalone Sessions view calls this with no
-// options; the #189 Live repo-detail panel passes { compact: true } to drop the
-// per-card repo title + liveness badge (its panel header already carries them),
-// keeping the join button / QR / starting-offline-stale states identical so the
-// embed is a pure reuse rather than a duplicated surface.
+// Build one session card. The #189 Live repo-detail panel passes
+// { compact: true } to drop the per-card repo title + liveness badge (its panel
+// header already carries them); a non-compact call keeps them. The join button /
+// QR / starting-offline-stale states are identical either way.
 export function renderSessionCard(s, { compact = false } = {}) {
   const card = document.createElement("div");
   card.className = compact ? "session-card session-card-compact" : "session-card";
@@ -187,23 +189,4 @@ export function renderSessionCard(s, { compact = false } = {}) {
 
   renderState(card, s);
   return card;
-}
-
-export function render(sessions) {
-  const container = document.getElementById("sessions");
-  if (!container) return;
-  container.innerHTML = "";
-
-  if (!Array.isArray(sessions) || !sessions.length) {
-    const empty = document.createElement("p");
-    empty.className = "empty";
-    empty.textContent = "No active sessions.";
-    container.appendChild(empty);
-    return;
-  }
-
-  const sorted = [...sessions].sort((a, b) =>
-    (a.repo || a.session_id || "").localeCompare(b.repo || b.session_id || ""),
-  );
-  for (const s of sorted) container.appendChild(renderSessionCard(s));
 }

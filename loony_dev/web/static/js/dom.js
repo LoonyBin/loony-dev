@@ -11,9 +11,23 @@ export function cell(text, label) {
   return td;
 }
 
+// Track tables we've already warned about so the guard below logs once, not on
+// every SSE tick.
+const _missingTables = new Set();
+
 // Replace a table body with rendered rows, or a single empty-state row.
+// Defensive (#221): if the table was removed (e.g. a folded-in view), no-op with
+// a one-time warning instead of throwing a TypeError mid-applySnapshot — a throw
+// here would abort every writer queued after it.
 export function setRows(tableId, rows, render, emptyText) {
   const tbody = document.querySelector(`#${tableId} tbody`);
+  if (!tbody) {
+    if (!_missingTables.has(tableId)) {
+      _missingTables.add(tableId);
+      console.warn(`setRows: no table #${tableId} in the DOM — skipping.`);
+    }
+    return;
+  }
   tbody.innerHTML = "";
   if (!rows.length) {
     const table = tbody.closest("table");
@@ -58,12 +72,13 @@ export function goView(view) {
   else location.hash = view;
 }
 
-// Open the per-repo drill-down for `repo` ("owner/name"). Falls back to the URL
-// hash if Alpine has not started yet.
+// Open the Live screen for `repo` ("owner/name") — the per-repo drill-down,
+// promoted to a primary destination (#221). Falls back to the URL hash if Alpine
+// has not started yet.
 export function goRepo(repo) {
   const store = window.Alpine && window.Alpine.store("app");
   if (store) store.goRepo(repo);
-  else location.hash = `repo/${repo}`;
+  else location.hash = `live/${repo}`;
 }
 
 // Open the Issue ▸ PR pipeline-detail view (#190) for `repo` ("owner/name") and

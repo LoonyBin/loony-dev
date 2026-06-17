@@ -61,10 +61,11 @@
           integrity="sha384-X9kJyAubVxnP0hcA+AMMs21U445qsnqhnUF8EBlEpP3a42Kh/JwWjlv2ZcvGfphb"
           crossorigin="anonymous" defer></script>
 
-  <!-- QR generator for the Sessions view: renders a join-URL QR client-side so
-       a phone can scan into the same remote-control relay session. Pure JS, no
-       build step; exposes a global `qrcode`. sessions.js degrades gracefully
-       (link only, no QR) if this fails to load. -->
+  <!-- QR generator for the remote-control session cards (now folded into the
+       Live screen, #221): renders a join-URL QR client-side so a phone can scan
+       into the same remote-control relay session. Pure JS, no build step;
+       exposes a global `qrcode`. sessions.js degrades gracefully (link only, no
+       QR) if this fails to load. -->
   <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"
           integrity="sha384-8FWZA6BGMXhsfO+BLtrJK0We6gg5o1JyO8xQm6peWDEUs17ACA5ziE/NIAkl9z2k"
           crossorigin="anonymous" defer></script>
@@ -87,27 +88,30 @@
   <script>
     document.addEventListener("alpine:init", () => {
       // Nav icons are Material Symbols Outlined ligature names (#186), rendered
-      // through the icon font by the .nav-icon span below. Skills & Commands is
-      // deliberately NOT a nav item — it moved into the settings gear flyout
-      // (#187) but stays routable (see VALID below). Each entry may carry an
-      // optional `dot` flag (a "needs attention" marker); Overview's trailing
+      // through the icon font by the .nav-icon span below. The primary nav is
+      // the design IA (#221): Fleet · Live, under an "Operate" eyebrow. Skills &
+      // Commands is deliberately NOT a nav item — it moved into the settings gear
+      // flyout (#187) but stays routable (see VALID below). Each entry may carry
+      // an optional `dot` flag (a "needs attention" marker); Fleet's trailing
       // badge is wired to the live stuck count in the rail markup.
       const NAV = [
-        { id: "overview", label: "Overview", icon: "dashboard" },
-        { id: "sessions", label: "Sessions", icon: "cable" },
-        { id: "logs", label: "Logs", icon: "receipt_long" },
+        { id: "fleet", label: "Fleet", icon: "dashboard" },
+        { id: "live", label: "Live", icon: "sensors" },
       ];
       // Routable views are decoupled from the nav list: `skills` and
       // `preferences` are reachable from the gear flyout but are not rail items,
-      // and the per-repo drill-down is reached by tapping a card (handled by the
-      // `repo/` hash prefix below).
+      // and the Issue ▸ PR pipeline detail is reached by tapping a task row
+      // (handled by the `pipeline/` hash prefix below). `live` doubles as both a
+      // primary destination and the per-repo drill-down (the `live/` prefix).
       const VALID = new Set([...NAV.map((n) => n.id), "skills", "preferences"]);
-      // The per-repo drill-down (#158) and the Issue ▸ PR pipeline detail (#190)
-      // are not nav items — they are reached by tapping a repo card / a task row
-      // and live at `#repo/<owner>/<name>` and
-      // `#pipeline/<owner>/<name>/<task_key>`. Parse the hash into a
-      // {view, repo, pipelineRoute} triple so both detail routes round-trip
-      // through the URL.
+      // Live is both a primary destination and the per-repo drill-down (#221):
+      // `#live/<owner>/<name>` scopes it to a repo, bare `#live` lets repoDetail
+      // resolve a default. The Issue ▸ PR pipeline detail (#190) lives at
+      // `#pipeline/<owner>/<name>/<task_key>`. Legacy hashes still resolve so old
+      // bookmarks/history keep working: overview→fleet, sessions→live, logs→live,
+      // and `repo/<owner>/<name>` aliases `live/<owner>/<name>`. Parse the hash
+      // into a {view, repo, pipelineRoute} triple so every route round-trips.
+      const ALIASES = { overview: "fleet", sessions: "live", logs: "live" };
       const parseHash = () => {
         const h = location.hash.replace(/^#/, "");
         if (h.startsWith("pipeline/")) {
@@ -119,13 +123,16 @@
           if (repo && taskKey) {
             return { view: "pipeline", repo, pipelineRoute: taskKey };
           }
-          return { view: "overview", repo: null, pipelineRoute: null };
+          return { view: "fleet", repo: null, pipelineRoute: null };
         }
-        if (h.startsWith("repo/")) {
-          const repo = h.slice("repo/".length);
-          return { view: repo ? "repo" : "overview", repo: repo || null, pipelineRoute: null };
+        // `live/<owner>/<name>` (and the legacy `repo/` alias) scope Live to a
+        // repo; bare `live`/`repo` open Live with no repo.
+        if (h.startsWith("live/") || h.startsWith("repo/")) {
+          const repo = h.slice(h.indexOf("/") + 1);
+          return { view: "live", repo: repo || null, pipelineRoute: null };
         }
-        return { view: VALID.has(h) ? h : "overview", repo: null, pipelineRoute: null };
+        const view = ALIASES[h] || h;
+        return { view: VALID.has(view) ? view : "fleet", repo: null, pipelineRoute: null };
       };
       const systemDark = window.matchMedia
         && window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -155,22 +162,32 @@
         density: root.getAttribute("data-density") || "comfortable",
         pulse: root.getAttribute("data-pulse") !== "off",
         go(view) {
-          if (!VALID.has(view)) view = "overview";
+          if (!VALID.has(view)) view = "fleet";
           this.view = view;
           this.repo = null;
           this.pipelineRoute = null;
           if (location.hash.replace(/^#/, "") !== view) location.hash = view;
         },
+        // Live is a primary destination (#221). Clicking it keeps an already-
+        // active repo (so toggling back to Live doesn't lose context); otherwise
+        // it lands on bare #live and repoDetail resolves a default repo.
+        goLive() {
+          if (this.repo) { this.goRepo(this.repo); return; }
+          this.view = "live";
+          this.repo = null;
+          this.pipelineRoute = null;
+          if (location.hash.replace(/^#/, "") !== "live") location.hash = "live";
+        },
         goRepo(repo) {
-          if (!repo) { this.go("overview"); return; }
-          this.view = "repo";
+          if (!repo) { this.goLive(); return; }
+          this.view = "live";
           this.repo = repo;
           this.pipelineRoute = null;
-          const target = "repo/" + repo;
+          const target = "live/" + repo;
           if (location.hash.replace(/^#/, "") !== target) location.hash = target;
         },
         goPipeline(repo, taskKey) {
-          if (!repo || !taskKey) { this.go("overview"); return; }
+          if (!repo || !taskKey) { this.go("fleet"); return; }
           this.view = "pipeline";
           this.repo = repo;
           this.pipelineRoute = taskKey;
@@ -286,22 +303,23 @@
         </button>
       </div>
 
+      <span class="rail-nav-eyebrow" aria-hidden="true">Operate</span>
       <nav class="rail-nav" aria-label="Primary">
         <template x-for="item in $store.app.nav" :key="item.id">
           <button
             class="nav-item"
             :class="{ active: $store.app.view === item.id }"
             :aria-current="$store.app.view === item.id ? 'page' : null"
-            @click="$store.app.go(item.id)"
+            @click="item.id === 'live' ? $store.app.goLive() : $store.app.go(item.id)"
             :data-tooltip="item.label"
             :title="item.label"
           >
             <span class="nav-icon material-symbols-outlined" aria-hidden="true" x-text="item.icon"></span>
             <span class="nav-label" x-text="item.label"></span>
-            <!-- Overview's badge carries the folded stuck count so the signal
+            <!-- Fleet's badge carries the folded stuck count so the signal
                  surfaces on the rail even when the banner/table are offscreen. -->
             <span class="nav-badge" x-cloak
-                  x-show="item.id === 'overview' && $store.app.stuckCount > 0"
+                  x-show="item.id === 'fleet' && $store.app.stuckCount > 0"
                   x-text="$store.app.stuckCount"></span>
             <span class="nav-dot" x-show="item.dot" x-cloak></span>
           </button>
@@ -309,12 +327,12 @@
       </nav>
 
       <div class="rail-footer">
-        <!-- Folded stuck pill: still clickable through to Overview. -->
+        <!-- Folded stuck pill: still clickable through to Fleet. -->
         <button
           class="stuck-pill"
           x-show="$store.app.stuckCount > 0"
           x-cloak
-          @click="$store.app.go('overview')"
+          @click="$store.app.go('fleet')"
           :title="`${$store.app.stuckCount} stuck`"
           :data-tooltip="`${$store.app.stuckCount} stuck`"
           :aria-label="`${$store.app.stuckCount} stuck processes`"
@@ -397,10 +415,9 @@
       <!-- Fleet (#188): the cross-repo worklist. A stat strip up top, then a
            board/kanban worklist with composable badge + repo filters. The
            global stuck banner/table stays here because a wedged process is an
-           urgent, cross-repo signal. The section keeps its `overview` view id /
-           x-show binding (owned by #187's nav store); only the body is the
-           Fleet layout. fleet.js renders into the slots below. -->
-      <section class="view" x-show="$store.app.view === 'overview'">
+           urgent, cross-repo signal. The section is the `fleet` primary
+           destination (#221); fleet.js renders into the slots below. -->
+      <section class="view" x-show="$store.app.view === 'fleet'">
         <div id="stuck-banner" class="banner banner-danger" hidden></div>
 
         <div id="stuck-section" hidden>
@@ -491,12 +508,14 @@
         </div>
       </section>
 
-      <!-- Repo detail: everything for one repo in one place (#158). Reached by
-           tapping a repo card; not a primary nav item. The view module renders
+      <!-- Live (#158 → promoted to a primary destination by #221): everything for
+           one repo in one place, including the folded-in remote-control session
+           surface. Reached from the Live nav item (bare #live resolves a default
+           repo) or by tapping a Fleet/switcher repo row. The view module renders
            into these slots and live-tails this repo's worker log. -->
-      <section class="view repo-detail" x-show="$store.app.view === 'repo'"
-               x-effect="window.repoDetail && window.repoDetail.show($store.app.view === 'repo' ? $store.app.repo : null)">
-        <button class="back-link" type="button" @click="$store.app.go('overview')">
+      <section class="view repo-detail" x-show="$store.app.view === 'live'"
+               x-effect="window.repoDetail && window.repoDetail.show($store.app.view === 'live' ? $store.app.repo : null)">
+        <button class="back-link" type="button" @click="$store.app.go('fleet')">
           <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>All repos</button>
 
         <!-- Live header: repo title + right-aligned quick actions. The actions
@@ -587,9 +606,9 @@
            lifecycle stepper, an inline "jump in & steer" panel (conversation +
            reply, reusing the existing inject/observe/attach paths), and a right
            sidebar (activity timeline, linked issue/PR cards, worktree info).
-           Reached by tapping a task in the Sessions table; not a nav item. The
-           issueDetail module fills the dynamic slots and streams the
-           conversation while open. -->
+           Reached from a Fleet row (Fleet ▸ Issue ▸ PR); not a nav item. The
+           issueDetail module fills the dynamic slots, streams the conversation,
+           and tails the worker log while open. -->
       <section class="view pipeline-detail" x-show="$store.app.view === 'pipeline'"
                x-effect="window.issueDetail && window.issueDetail.show($store.app.view === 'pipeline' ? $store.app.repo : null, $store.app.view === 'pipeline' ? $store.app.pipelineRoute : null)">
         <!-- Breadcrumb: Fleet ▸ repo ▸ #N. The JS module renders the segments
@@ -646,29 +665,17 @@
             </div>
           </aside>
         </div>
+
+        <!-- Folded-in log tail (#221): the pipeline's worker log, streamed while
+             this detail view is open (issueDetail manages the stream). -->
+        <h3>Log <span id="pipeline-log-title" class="muted"></span></h3>
+        <pre id="pipeline-log" class="log-pane">Loading…</pre>
       </section>
 
-      <!-- Sessions: remote-control sessions (join URL + QR land in #157) plus
-           per-task PTY sessions you can attach to / steer (#164). -->
-      <section class="view" x-show="$store.app.view === 'sessions'">
-        <h2>Task sessions</h2>
-        <p class="muted">In-flight worker-driven Claude sessions. Attach for a live
-          terminal, or send one-shot guidance the bot runs next.</p>
-        <div class="table-wrap">
-          <table id="task-sessions" class="data-table">
-            <thead><tr><th>Task</th><th>Repo</th><th>Status</th><th>Action</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-
-        <!-- Remote-control relay sessions (#157). Each card surfaces the
-             claude.ai join URL as a tappable button plus a scannable QR code so a
-             phone can drop straight into the same session. No PTY bridge — the
-             interactive surface is Claude's own hosted relay. -->
-        <h2>Remote-control sessions</h2>
-        <p class="muted">Open a remote-control session in a new tab, or scan its QR code to drive it from your phone.</p>
-        <div id="sessions" class="session-grid"></div>
-      </section>
+      <!-- Sessions are folded in (#221): the remote-control session card lives in
+           the Live screen (per repo) and the per-task attach/observe/steer
+           affordances live on the Issue ▸ PR detail view, reached from Fleet
+           rows. There is no standalone Sessions destination. -->
 
       <!-- Skills & Commands library (#191). The Kind/Scope/Repo selects stay as
            a filter bar; entries render as a card grid (one card per skill /
@@ -709,8 +716,8 @@
            reflect onto the <html> data-* attributes app.css keys off. Not a
            primary nav item. -->
       <section class="view" x-show="$store.app.view === 'preferences'">
-        <button class="back-link" type="button" @click="$store.app.go('overview')">
-          <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>Overview</button>
+        <button class="back-link" type="button" @click="$store.app.go('fleet')">
+          <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>Fleet</button>
         <h2>Preferences</h2>
         <p class="muted">Personalize the dashboard. Choices are saved in this browser.</p>
 
@@ -780,19 +787,9 @@
         </div>
       </section>
 
-      <!-- Logs: live tail of a worker's log -->
-      <section class="view" x-show="$store.app.view === 'logs'">
-        <h2>Logs <span id="log-title" class="muted"></span></h2>
-        <div class="controls">
-          <label>Repo
-            <select id="log-repo"></select>
-          </label>
-          <label>Scope
-            <select id="log-pipeline"></select>
-          </label>
-        </div>
-        <pre id="log" class="log-pane">Select a worker repo to live-tail its log.</pre>
-      </section>
+      <!-- Logs are folded in (#221): live log tailing now lives in the Live
+           screen (per repo) and on the Issue ▸ PR detail view (per pipeline).
+           There is no standalone Logs destination. -->
     </main>
   </div>
 
