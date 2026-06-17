@@ -491,12 +491,18 @@ def _fetch_github_state(
         repo_name = f"{owner}/{name}"
         try:
             repo = _repo_for(owner, name, checkout)
-            for pipeline in Pipeline.discover(repo):
-                pipelines.append(_pipeline_view(pipeline, repo_name))
+            # Stage rows in a per-repo local so a later counting failure (which
+            # marks the repo ok=False) never leaks half a repo's pipelines into
+            # the response — per-repo success is all-or-nothing.
+            repo_pipelines = [
+                _pipeline_view(pipeline, repo_name)
+                for pipeline in Pipeline.discover(repo)
+            ]
             # ``discover`` already populated the tick-cached open-PR list, so this
             # is a cache hit — no extra ``gh`` call.
             open_prs = len(PullRequest.list_open(repo=repo))
             open_issues = _count_open_issues(repo)
+            pipelines.extend(repo_pipelines)
             repos.append(
                 RepoGitHubView(
                     repo=repo_name, open_issues=open_issues, open_prs=open_prs, ok=True,
@@ -545,8 +551,16 @@ def github_state(
     if not _GH_LOCK.acquire(blocking=cached is None):
         return cached[1] if cached is not None else ([], [])
     try:
+        # Re-check under the lock: a waiter (e.g. a second cold-start call) may
+        # have refreshed the cache while we blocked, so don't fetch again within
+        # the same TTL window.
+        now = time.monotonic()
+        cached = _GH_CACHE.get(base_dir)
+        if cached is not None and now - cached[0] < refresh_seconds:
+            return cached[1]
         result = fetch(base_dir)
-        _GH_CACHE[base_dir] = (now, result)
+        # Stamp with completion time so a slow fetch doesn't look pre-aged.
+        _GH_CACHE[base_dir] = (time.monotonic(), result)
         return result
     except Exception:
         logger.warning("GitHub snapshot refresh failed", exc_info=True)

@@ -1556,6 +1556,29 @@ class FetchGitHubStateTestCase(unittest.TestCase):
         self.assertIsNone(by_repo["acme/bad"].open_prs)
         self.assertIsNone(by_repo["acme/bad"].open_issues)
 
+    def test_count_failure_drops_the_repos_pipelines(self) -> None:
+        # discover() succeeds (yields a pipeline) but the later count fails. The
+        # repo must be ok=False AND contribute zero pipelines — per-repo success
+        # is all-or-nothing, never half a repo's rows.
+        self._make_checkout("acme", "widgets")
+        pipe = _FakePipeline("issue-3", issue=_FakeFacet(title="t", labels=[]))
+
+        from loony_dev.github import PullRequest
+        from loony_dev.pipeline import Pipeline
+
+        def boom(repo):
+            raise RuntimeError("gh count exploded")
+
+        with mock.patch.object(services, "_repo_for", lambda o, n, c: object()), \
+                mock.patch.object(Pipeline, "discover", lambda repo: iter([pipe])), \
+                mock.patch.object(PullRequest, "list_open", lambda repo=None: []), \
+                mock.patch.object(services, "_count_open_issues", boom):
+            pipelines, repos = services._fetch_github_state(self.base)
+
+        self.assertEqual(pipelines, [])
+        self.assertEqual(len(repos), 1)
+        self.assertFalse(repos[0].ok)
+
 
 class GitHubStateCacheTestCase(unittest.TestCase):
     """`github_state` TTL cache: refresh past the window, degrade on error."""
@@ -1602,6 +1625,41 @@ class GitHubStateCacheTestCase(unittest.TestCase):
             raise RuntimeError("gh down")
         result = services.github_state(self.base, refresh_seconds=0.0, fetch_fn=boom)
         self.assertEqual(result, good)  # last good value, not an exception
+
+    def test_concurrent_cold_start_fetches_once(self) -> None:
+        # Two cold-start callers both block for the lock (no cache to fall back
+        # on). The one that loses the race must re-check the now-warm cache under
+        # the lock and reuse it, not run a duplicate fetch in the same window.
+        import threading
+
+        calls = []
+        started = threading.Event()
+        release = threading.Event()
+
+        def fetch(base):
+            calls.append(base)
+            started.set()
+            release.wait(2.0)  # hold the lock so the second caller queues
+            return ([f"call-{len(calls)}"], [])
+
+        results: dict[str, object] = {}
+
+        def run(tag):
+            results[tag] = services.github_state(
+                self.base, refresh_seconds=60.0, fetch_fn=fetch,
+            )
+
+        t1 = threading.Thread(target=run, args=("a",))
+        t2 = threading.Thread(target=run, args=("b",))
+        t1.start()
+        self.assertTrue(started.wait(2.0))  # t1 is inside fetch, holding the lock
+        t2.start()
+        release.set()
+        t1.join(2.0)
+        t2.join(2.0)
+
+        self.assertEqual(len(calls), 1)  # only one fetch ran
+        self.assertEqual(results["a"], results["b"])  # both saw the same value
 
 
 class GitHubStateApiTestCase(unittest.TestCase):
