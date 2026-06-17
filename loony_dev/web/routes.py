@@ -188,6 +188,32 @@ def create_api_router(
         )
         return [asdict(r) for r in repos]
 
+    @router.get("/repos/{owner}/{repo}/commits")
+    def get_repo_commits(
+        owner: str,
+        repo: str,
+        n: int = Query(5, ge=1, le=20),
+    ) -> dict:
+        """Recent local commits from ``owner/repo``'s base checkout (issue #224).
+
+        A real ``git log`` from the persistent main-branch checkout on disk (not
+        a GitHub fetch), powering the Live screen's "Recent commits" panel. All
+        validation lives in :func:`services.recent_commits`; this handler just
+        maps its failures — an absent/invalid checkout to 404 and a ``git``
+        failure to 503 (the frontend treats either as "history unavailable").
+        """
+        try:
+            commits = services.recent_commits(base_dir, owner, repo, n)
+        except services.CheckoutNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except services.GitCommandError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {
+            "repo": f"{owner}/{repo}",
+            "commits": [asdict(c) for c in commits],
+            "count": len(commits),
+        }
+
     @router.post("/sessions/{task_key}/inject")
     async def inject_turn(task_key: str, request: Request) -> dict:
         """Enqueue a one-shot operator-steered turn (``source: "operator"``).

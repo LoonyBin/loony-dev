@@ -276,6 +276,90 @@ class ServicesTestCase(unittest.TestCase):
         self.assertIsNone(sessions[0].join_url)
 
 
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "trixy", "GIT_AUTHOR_EMAIL": "trixy@example.com",
+    "GIT_COMMITTER_NAME": "trixy", "GIT_COMMITTER_EMAIL": "trixy@example.com",
+}
+
+
+def _git_repo_with_commits(checkout: Path, subjects: list[str]) -> None:
+    """Create a real git checkout at *checkout* with one commit per subject.
+
+    Commits are made oldest-first, so the newest subject is the last in the list.
+    """
+    checkout.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, **_GIT_ENV}
+
+    def run(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=checkout, check=True, capture_output=True, env=env)
+
+    run("init", "-q", "-b", "main")
+    for i, subject in enumerate(subjects):
+        (checkout / "f.txt").write_text(f"{i}\n")
+        run("add", "-A")
+        run("commit", "-q", "-m", subject)
+
+
+class RecentCommitsTestCase(unittest.TestCase):
+    """`recent_commits` reads a real local git log (issue #224)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_returns_commits_newest_first_with_fields(self) -> None:
+        _git_repo_with_commits(
+            self.base / "acme" / "widgets",
+            ["feat: one", "fix: two", "chore: three"],
+        )
+        commits = services.recent_commits(self.base, "acme", "widgets", limit=5)
+        # Newest first, and all three present.
+        self.assertEqual(
+            [c.subject for c in commits], ["chore: three", "fix: two", "feat: one"]
+        )
+        top = commits[0]
+        self.assertEqual(top.author, "trixy")
+        self.assertEqual(len(top.sha), 40)
+        self.assertTrue(top.sha.startswith(top.short_sha))
+        self.assertTrue(top.date_iso)  # ISO-8601 committer date
+        self.assertTrue(top.rel_date)  # relative ("… ago")
+
+    def test_limit_clamps_count(self) -> None:
+        _git_repo_with_commits(
+            self.base / "acme" / "widgets", [f"c{i}" for i in range(8)]
+        )
+        self.assertEqual(len(services.recent_commits(self.base, "acme", "widgets", limit=3)), 3)
+        # Below/above the 1–20 bound is clamped, never raised.
+        self.assertEqual(len(services.recent_commits(self.base, "acme", "widgets", limit=0)), 1)
+        self.assertEqual(len(services.recent_commits(self.base, "acme", "widgets", limit=999)), 8)
+
+    def test_non_git_checkout_raises_checkout_not_found(self) -> None:
+        (self.base / "acme" / "widgets").mkdir(parents=True)
+        with self.assertRaises(services.CheckoutNotFoundError):
+            services.recent_commits(self.base, "acme", "widgets")
+
+    def test_missing_checkout_raises_checkout_not_found(self) -> None:
+        with self.assertRaises(services.CheckoutNotFoundError):
+            services.recent_commits(self.base, "acme", "nope")
+
+    def test_invalid_segment_raises_checkout_not_found(self) -> None:
+        for owner, name in [("..", "widgets"), ("acme", ".."), ("a/b", "c"), ("", "x")]:
+            with self.subTest(owner=owner, name=name):
+                with self.assertRaises(services.CheckoutNotFoundError):
+                    services.recent_commits(self.base, owner, name)
+
+    def test_git_failure_raises_git_command_error(self) -> None:
+        # A checkout whose .git exists but is corrupt: git log exits non-zero,
+        # which must surface as GitCommandError (raise on failure, per CLAUDE.md)
+        # rather than silently degrading to an empty list.
+        checkout = self.base / "acme" / "broken"
+        checkout.mkdir(parents=True)
+        (checkout / ".git").write_text("not a git dir\n")
+        with self.assertRaises(services.GitCommandError):
+            services.recent_commits(self.base, "acme", "broken")
+
+
 class WebAppTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -318,6 +402,25 @@ class WebAppTestCase(unittest.TestCase):
         self.assertNotIn('id="sessions"', body)
         self.assertNotIn('class="session-grid"', body)
         self.assertNotIn('id="task-sessions"', body)
+
+    def test_index_live_has_greyed_steer_bar_and_diagnostics(self) -> None:
+        # The Live screen (#224): a disabled chat + Send steer bar below the
+        # session body, and the worktrees/stuck/log blocks collapsed into a
+        # <details> Diagnostics section (their IDs preserved for the JS).
+        body = self.client.get("/").text
+        # Greyed steer bar: a disabled input + a disabled Send button.
+        self.assertIn('class="live-steer-bar"', body)
+        self.assertIn('class="live-steer-input"', body)
+        self.assertIn('placeholder=\'Ask about the repo, or "open an issue to…"\'', body)
+        # Diagnostics <details> wraps the preserved worktrees / stuck / log IDs.
+        self.assertIn('class="diagnostics-section"', body)
+        self.assertIn("<summary>Diagnostics</summary>", body)
+        for preserved in ('id="repo-worktrees"', 'id="repo-stuck-section"',
+                          'id="repo-stuck"', 'id="repo-log"', 'id="repo-log-title"'):
+            self.assertIn(preserved, body)
+        # The Diagnostics wrapper precedes those blocks (it encloses them).
+        self.assertLess(body.index('class="diagnostics-section"'), body.index('id="repo-worktrees"'))
+        self.assertLess(body.index('class="diagnostics-section"'), body.index('id="repo-log"'))
 
     def test_index_wires_pipeline_view(self) -> None:
         # The Issue ▸ PR detail view (#190): the shell must expose the section,
@@ -629,6 +732,44 @@ class WebAppTestCase(unittest.TestCase):
 
     def test_pipeline_log_traversal_rejected(self) -> None:
         bad = self.client.get("/api/logs/acme/widgets/pipelines/%2e%2e/tail")
+        self.assertIn(bad.status_code, (404, 422))
+
+    # ── Recent-commits route (issue #224) ───────────────────────────────────
+
+    def test_commits_endpoint_happy_path(self) -> None:
+        _git_repo_with_commits(self.base / "acme" / "widgets", ["feat: a", "fix: b"])
+        resp = self.client.get("/api/repos/acme/widgets/commits")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["repo"], "acme/widgets")
+        self.assertEqual(body["count"], 2)
+        self.assertEqual([c["subject"] for c in body["commits"]], ["fix: b", "feat: a"])
+        self.assertIn("short_sha", body["commits"][0])
+        self.assertIn("rel_date", body["commits"][0])
+
+    def test_commits_endpoint_404_for_non_git_repo(self) -> None:
+        # The worker dir exists (acme/widgets) but has no git checkout: the
+        # service raises CheckoutNotFoundError → 404 (raise on failure, not a
+        # silent empty 200).
+        resp = self.client.get("/api/repos/acme/widgets/commits")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_commits_endpoint_503_on_git_failure(self) -> None:
+        # A corrupt .git makes git log fail → GitCommandError → 503.
+        checkout = self.base / "acme" / "broken"
+        checkout.mkdir(parents=True)
+        (checkout / ".git").write_text("not a git dir\n")
+        resp = self.client.get("/api/repos/acme/broken/commits")
+        self.assertEqual(resp.status_code, 503)
+
+    def test_commits_endpoint_clamps_n_via_query_bounds(self) -> None:
+        # Out-of-range n is a 422 (same Query(ge,le) contract as the log routes).
+        self.assertEqual(self.client.get("/api/repos/acme/widgets/commits?n=0").status_code, 422)
+        self.assertEqual(self.client.get("/api/repos/acme/widgets/commits?n=999").status_code, 422)
+        self.assertEqual(self.client.get("/api/repos/acme/widgets/commits?n=abc").status_code, 422)
+
+    def test_commits_endpoint_traversal_rejected(self) -> None:
+        bad = self.client.get("/api/repos/%2e%2e/etc/commits")
         self.assertIn(bad.status_code, (404, 422))
 
 

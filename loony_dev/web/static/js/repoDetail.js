@@ -21,10 +21,13 @@
 // Graceful-degradation contract (#189): every element with no backing snapshot
 // data is visibly non-functional — a disabled .ld-btn with a tooltip, an
 // external GitHub deep-link, or an explicit "—"/"unavailable" line — never a
-// fabricated value. The degraded items (spin-up worker, resync main, connect
-// repo, open issue/PR counts, last sync, recent-commits list) are follow-ups.
+// fabricated value. #224 wired the previously-degraded items to real data:
+// open issue/PR counts (the #219 GitHub feed), recent commits (a real local
+// `git log` via /api/repos/.../commits), and per-pipeline workers (issue# +
+// stage from the feed). The still-degraded items (spin-up worker, resync main,
+// connect repo, last sync, the disabled steer bar) remain honest placeholders.
 
-import { cell, setRows, formatAge, icon, goRepo } from "./dom.js";
+import { cell, setRows, formatAge, icon, goRepo, goPipeline } from "./dom.js";
 import { killProcess, interruptSession } from "./overview.js";
 import { streamLog } from "./logs.js";
 import { renderSessionCard } from "./sessions.js";
@@ -101,6 +104,26 @@ function pendingButton(label, why) {
   b.disabled = true;
   b.title = why;
   return b;
+}
+
+// Stage → .tag tone, aligned with fleet.js STAGE_TAG (the #186 palette) so a
+// pipeline's stage chip reads identically on Fleet and in the Live workers list.
+const STAGE_TONE = {
+  "Inbox": "ghost",
+  "Planning": "blue",
+  "Implementing": "blue",
+  "PR Open": "purple",
+  "In Review": "amber",
+  "Conflicts": "red",
+  "Merged": "green",
+};
+
+// A small .tag chip (reusing the shared palette classes).
+function tag(text, tone) {
+  const el = document.createElement("span");
+  el.className = `tag ${tone || "neutral"}`;
+  el.textContent = text;
+  return el;
 }
 
 // Header quick-actions: live deep-links where a zero-backend GitHub URL exists,
@@ -236,21 +259,49 @@ function stat(label, value) {
   return wrap;
 }
 
+// Active worker sessions in this repo, joined to the #219 GitHub pipeline feed
+// for issue# + stage. Deduped by pipeline_key (the per-pipeline identity, #181)
+// so the multiple phase sessions of one issue count once; falls back to task_key
+// when a session predates the pipeline_key field. Each row carries the task_key
+// for click-through to the Issue ▸ PR detail. This is the honest "an agent is
+// working this pipeline" signal — distinct from the one-per-repo OS worker.
+function repoWorkerRows(repo, state) {
+  const sessions = ((state ? state.task_sessions : []) || []).filter((s) => s.repo === repo);
+  const pipelines = (state ? state.pipelines : []) || [];
+  const byKey = new Map();
+  for (const s of sessions) {
+    const key = s.pipeline_key || s.task_key;
+    if (!key || byKey.has(key)) continue;
+    const pipe = s.pipeline_key
+      ? pipelines.find((p) => p.pipeline_key === s.pipeline_key)
+      : null;
+    byKey.set(key, {
+      task_key: s.task_key,
+      pipeline_key: s.pipeline_key || null,
+      number: pipe ? pipe.number : null,
+      stage: pipe ? pipe.stage : null,
+    });
+  }
+  return [...byKey.values()];
+}
+
 // Repo context: the facts the snapshot actually carries (branch + HEAD from the
-// main non-detached worktree, worker/worktree counts) as honest values; the
-// rest (open issues/PRs, last sync) as GitHub deep-links or "—" placeholders so
-// no count is fabricated.
+// main non-detached worktree, worktree count) plus the #219 GitHub feed's open
+// issue/PR counts and the per-pipeline worker count. A missing/failed repo feed
+// entry falls back to the honest GitHub deep-link so no count is fabricated;
+// last sync stays a "—" placeholder (no snapshot field yet).
 function renderContext(repo, state) {
   const box = document.getElementById("repo-context");
   if (!box) return;
   box.innerHTML = "";
-  const workers = ((state ? state.workers : []) || []).filter((w) => w.repo === repo);
   const worktrees = ((state ? state.worktrees : []) || []).filter((w) => w.repo === repo);
   const main = worktrees.find((w) => !w.detached) || worktrees[0];
+  const repoFeed = ((state ? state.repos : []) || []).find((r) => r.repo === repo);
+  const workerCount = repoWorkerRows(repo, state).length;
 
   const stats = document.createElement("div");
   stats.className = "context-stats";
-  stats.appendChild(stat("Workers here", workers.length));
+  stats.appendChild(stat("Workers here", workerCount));
   stats.appendChild(stat("Worktrees", worktrees.length));
   box.appendChild(stats);
 
@@ -268,13 +319,23 @@ function renderContext(repo, state) {
   add("Branch", main ? (main.detached ? "(detached)" : main.branch) : "—");
   add("HEAD", main && main.head ? main.head.slice(0, 10) : "—", "mono");
 
-  // No snapshot field carries these — link out to GitHub rather than fabricate.
-  const issuesLink = ghButton("View on GitHub ", `https://github.com/${repo}/issues`, "ghost");
-  issuesLink.appendChild(icon("open_in_new"));
-  add("Open issues", issuesLink);
-  const prsLink = ghButton("View on GitHub ", `https://github.com/${repo}/pulls`, "ghost");
-  prsLink.appendChild(icon("open_in_new"));
-  add("Open PRs", prsLink);
+  // Open counts come from the #219 feed when the repo's fetch succeeded; a
+  // missing entry or a failed fetch (ok=false / null count) degrades to the
+  // GitHub deep-link rather than fabricating a number.
+  const countOrLink = (count, href) => {
+    if (count != null) {
+      const span = document.createElement("span");
+      span.className = "b tnum";
+      span.textContent = String(count);
+      return span;
+    }
+    const link = ghButton("View on GitHub ", href, "ghost");
+    link.appendChild(icon("open_in_new"));
+    return link;
+  };
+  const feedOk = repoFeed && repoFeed.ok;
+  add("Open issues", countOrLink(feedOk ? repoFeed.open_issues : null, `https://github.com/${repo}/issues`));
+  add("Open PRs", countOrLink(feedOk ? repoFeed.open_prs : null, `https://github.com/${repo}/pulls`));
 
   const lastSync = document.createElement("span");
   lastSync.textContent = "—";
@@ -283,55 +344,76 @@ function renderContext(repo, state) {
   box.appendChild(dl);
 }
 
-// Recent commits: the snapshot has no commit log, so we surface the one known
-// commit pointer (the main worktree HEAD) and an explicit unavailable note
-// rather than fabricating a list.
-function renderCommits(repo, state) {
+// Recent commits: a real local `git log` from the repo's base checkout, fetched
+// on demand from /api/repos/{owner}/{repo}/commits (the snapshot deliberately
+// omits per-repo logs). Called once per repo switch from show() — not on every
+// 2s snapshot — so it never spams git. A stale response (the repo switched
+// mid-fetch) is dropped, and an empty/failed fetch keeps an honest note.
+async function loadCommits(repo) {
   const box = document.getElementById("repo-commits");
   if (!box) return;
   box.innerHTML = "";
-  const worktrees = ((state ? state.worktrees : []) || []).filter((w) => w.repo === repo);
-  const main = worktrees.find((w) => !w.detached) || worktrees[0];
-  if (main && main.head) {
+  box.appendChild(muted("Loading commits…"));
+  let commits = [];
+  try {
+    const resp = await fetch(`/api/repos/${repo}/commits`);
+    if (resp.ok) commits = (await resp.json()).commits || [];
+  } catch (e) {
+    commits = [];
+  }
+  // The repo switched while we were fetching — discard this now-stale result.
+  if (repo !== current) return;
+  box.innerHTML = "";
+  if (!commits.length) {
+    const note = muted("Commit history unavailable — open the repo on GitHub.");
+    note.title = "No local git log for this checkout (or git unavailable).";
+    box.appendChild(note);
+    return;
+  }
+  for (const c of commits) {
     const row = document.createElement("div");
     row.className = "commit-row";
+    row.title = c.subject;
+
     const sha = document.createElement("span");
-    sha.className = "mono";
-    sha.textContent = main.head.slice(0, 10);
-    const tag = document.createElement("span");
-    tag.className = "tag neutral";
-    tag.textContent = "HEAD";
-    row.append(tag, sha);
+    sha.className = "mono commit-sha";
+    sha.textContent = c.short_sha;
+
+    const mid = document.createElement("div");
+    mid.className = "commit-mid";
+    const subject = document.createElement("span");
+    subject.className = "commit-subject";
+    subject.textContent = c.subject;
+    const meta = document.createElement("span");
+    meta.className = "commit-meta muted";
+    meta.textContent = `${c.author} · ${c.rel_date}`;
+    mid.append(subject, meta);
+
+    row.append(sha, mid);
     box.appendChild(row);
   }
-  const note = muted("Full commit history is unavailable here — open the repo on GitHub.");
-  note.title = "No commit log in the snapshot — follow-up";
-  box.appendChild(note);
 }
 
-// Map a worker status to an .sdot lifecycle hue.
-function workerDot(status) {
-  if (status === "running") return "sdot active";
-  if (status === "stale") return "sdot gated";
-  return "sdot review";
-}
-
-// Workers in this repo: an actor avatar (the bot is trixy), a statepill state
-// indicator mapped from worker status, and the age since start. Richer stage
-// tags + issue/PR-row linkage + multi-actor avatars need data the snapshot
-// doesn't carry yet (follow-up).
+// Workers in this repo: one row per per-pipeline worker session (deduped), each
+// a trixy avatar + the issue/PR number + its lifecycle stage chip, click-through
+// to the Issue ▸ PR detail (#190). Sourced from the per-task sessions joined to
+// the #219 GitHub feed (issue# + stage) rather than the one-per-repo OS worker.
+// A session whose pipeline isn't in the feed still renders with its number /
+// pipeline_key / task_key; an empty set reads "none right now".
 function renderWorkers(repo, state) {
   const box = document.getElementById("repo-workers");
   if (!box) return;
   box.innerHTML = "";
-  const workers = ((state ? state.workers : []) || []).filter((w) => w.repo === repo);
-  if (!workers.length) {
-    box.appendChild(muted("No workers in this repo."));
+  const rows = repoWorkerRows(repo, state);
+  if (!rows.length) {
+    box.appendChild(muted("none right now"));
     return;
   }
-  for (const w of workers) {
-    const row = document.createElement("div");
-    row.className = "worker-row";
+  for (const r of rows) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "worker-row clickrow";
+    row.addEventListener("click", () => goPipeline(current, r.task_key));
 
     const avatar = document.createElement("span");
     avatar.className = "avatar trixy";
@@ -343,22 +425,14 @@ function renderWorkers(repo, state) {
     mid.className = "worker-mid";
     const name = document.createElement("span");
     name.className = "worker-name";
-    name.textContent = w.pid != null ? `trixy · pid ${w.pid}` : "trixy";
+    // Prefer the GitHub issue/PR number; fall back to the pipeline/task key.
+    name.textContent = r.number != null
+      ? `#${r.number}`
+      : (r.pipeline_key || r.task_key);
     mid.appendChild(name);
-
-    const pill = document.createElement("span");
-    pill.className = "statepill";
-    const dot = document.createElement("span");
-    dot.className = workerDot(w.status);
-    pill.append(dot, document.createTextNode(w.status || "unknown"));
-    mid.appendChild(pill);
     row.appendChild(mid);
 
-    const age = ageSeconds(w.started_at);
-    const when = document.createElement("span");
-    when.className = "worker-age muted";
-    when.textContent = age != null ? `${formatAge(age)} ago` : (w.started_at || "—");
-    row.appendChild(when);
+    if (r.stage) row.appendChild(tag(r.stage, STAGE_TONE[r.stage] || "neutral"));
 
     box.appendChild(row);
   }
@@ -420,7 +494,6 @@ function renderAll() {
   renderSession(repo, lastState);
   renderReposList(repo, lastState);
   renderContext(repo, lastState);
-  renderCommits(repo, lastState);
   renderWorkers(repo, lastState);
 
   const worktrees = (lastState ? lastState.worktrees : []).filter((w) => w.repo === repo);
@@ -445,6 +518,14 @@ function renderEmptyLive() {
   if (liveEl) liveEl.innerHTML = "";
   const metaEl = document.getElementById("repo-session-meta");
   if (metaEl) metaEl.innerHTML = "";
+  // No repo → clear the per-repo panels so stale content from a prior repo
+  // doesn't linger behind the "pick a repo" prompt.
+  const commitsEl = document.getElementById("repo-commits");
+  if (commitsEl) commitsEl.innerHTML = "";
+  const contextEl = document.getElementById("repo-context");
+  if (contextEl) contextEl.innerHTML = "";
+  const workersEl = document.getElementById("repo-workers");
+  if (workersEl) workersEl.innerHTML = "";
   const body = document.getElementById("repo-session-body");
   if (body) {
     body.innerHTML = "";
@@ -480,6 +561,9 @@ function show(repo) {
   lsSet(LAST_REPO_KEY, current);
 
   renderAll();
+  // Commits are a per-repo on-demand fetch (not snapshot-driven), so kick it off
+  // once here on the repo switch rather than from renderAll's per-tick path.
+  loadCommits(current);
   const pre = document.getElementById("repo-log");
   const title = document.getElementById("repo-log-title");
   if (title) title.textContent = `— ${current} (live)`;

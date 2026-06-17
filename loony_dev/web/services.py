@@ -17,6 +17,7 @@ import os
 import re
 import signal
 import socket
+import subprocess
 import threading
 import time
 from collections import deque
@@ -66,6 +67,23 @@ class WorktreeView:
     head: str | None
     detached: bool
     bare: bool
+
+
+@dataclass(frozen=True)
+class CommitView:
+    """One commit from a repo's local ``git log`` (issue #224).
+
+    Sourced from the persistent base checkout (``<base>/<owner>/<repo>``, which
+    tracks ``main``), never from GitHub — the "Recent commits" sidebar panel
+    shows what the bot has actually committed locally.
+    """
+
+    sha: str
+    short_sha: str
+    subject: str
+    author: str
+    date_iso: str  # committer date, ISO-8601 (``%cI``)
+    rel_date: str  # committer date, relative (``%cr``), e.g. "2 hours ago"
 
 
 @dataclass(frozen=True)
@@ -254,6 +272,92 @@ def list_worktrees(base_dir: Path) -> list[WorktreeView]:
                 )
             )
     return worktrees
+
+
+# Unit separator: a field delimiter that cannot appear inside a commit subject /
+# author name, so the per-field split is unambiguous (newlines are the record
+# delimiter). Mirrors the ``%x1f`` placeholders in the ``--format`` below.
+_COMMIT_FIELD_SEP = "\x1f"
+_COMMIT_FORMAT = _COMMIT_FIELD_SEP.join(["%H", "%h", "%s", "%an", "%cI", "%cr"])
+
+
+class CheckoutNotFoundError(Exception):
+    """Raised when a repo's base checkout is absent, not a git repo, or its path
+    segments are invalid (the request can't resolve to a real checkout)."""
+
+
+class GitCommandError(Exception):
+    """Raised when the ``git log`` invocation itself fails (non-zero exit, OS
+    error, or timeout) — a genuine failure, distinct from "no such checkout"."""
+
+
+def recent_commits(
+    base_dir: Path, owner: str, name: str, limit: int = 5
+) -> list[CommitView]:
+    """Return the newest commits from ``owner/name``'s base checkout (issue #224).
+
+    Targets the persistent main-branch checkout at ``<base>/<owner>/<name>`` and
+    runs a single ``git log`` there — a *local* history (not a GitHub fetch), so
+    it reflects exactly what the bot has committed on disk. *limit* is clamped to
+    a small bound (1–20).
+
+    Following the project's "raise on failure" convention (CLAUDE.md), this is the
+    single place validation + failures live (the route is a thin mapper). It
+    raises :class:`CheckoutNotFoundError` for an invalid path segment or a
+    missing/non-git checkout, and :class:`GitCommandError` when ``git`` itself
+    fails. A repo with a valid but empty log returns ``[]`` (a real, not-failed
+    result).
+    """
+    for segment in (owner, name):
+        if (
+            not segment
+            or segment in (".", "..")
+            or "/" in segment
+            or "\\" in segment
+            or "\x00" in segment
+        ):
+            raise CheckoutNotFoundError(f"invalid path segment: {segment!r}")
+
+    checkout = base_dir / owner / name
+    if not (checkout / ".git").exists():
+        raise CheckoutNotFoundError(f"no git checkout for {owner}/{name}")
+
+    capped = max(1, min(int(limit), 20))
+    try:
+        proc = subprocess.run(
+            [
+                "git", "-C", str(checkout), "log",
+                "-n", str(capped),
+                "--no-color",
+                f"--format={_COMMIT_FORMAT}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise GitCommandError(f"git log failed for {owner}/{name}: {exc}") from exc
+
+    commits: list[CommitView] = []
+    for line in proc.stdout.splitlines():
+        if not line:
+            continue
+        parts = line.split(_COMMIT_FIELD_SEP)
+        if len(parts) != 6:
+            continue  # malformed record (e.g. a subject smuggling the separator)
+        sha, short_sha, subject, author, date_iso, rel_date = parts
+        commits.append(
+            CommitView(
+                sha=sha,
+                short_sha=short_sha,
+                subject=subject,
+                author=author,
+                date_iso=date_iso,
+                rel_date=rel_date,
+            )
+        )
+    return commits
 
 
 def list_sessions(base_dir: Path) -> list[SessionView]:
