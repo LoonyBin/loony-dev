@@ -299,10 +299,14 @@
           :aria-label="$store.app.collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
           data-tooltip="loony-dev"
         >
-          <!-- 3×3 dot-grid brand mark (#222): nine CSS dots, accent-colored, no
-               new asset/font so it stays crisp at both rail widths. -->
+          <!-- 3×3 dot-grid brand mark (#252): a dark --ink rounded tile holding
+               nine CSS dots. Lit dots (0,1,2,5,7) form a Conway's Game of Life
+               glider; the top-middle dot is the blue accent ringed in white.
+               No new asset/font so it stays crisp at both rail widths. -->
           <span class="rail-mark" aria-hidden="true">
-            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            <i class="on"></i><i class="ac"></i><i class="on"></i>
+            <i></i><i></i><i class="on"></i>
+            <i></i><i class="on"></i><i></i>
           </span>
           <span class="rail-brand-text">loony-dev <span class="brand-sub">agent console</span></span>
           <!-- Hover/focus collapse hint (#222): a chevron that points the way the

@@ -300,22 +300,32 @@ section.view > h2:first-child { margin-top: 0; }
 .rail-brand:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: 2px; }
 .rail-brand-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; overflow: hidden; }
 
-/* 3×3 dot-grid brand mark (#222): nine accent dots laid out on a grid. CSS-only
-   so it stays crisp at both the expanded and collapsed (72px) rail widths and
-   needs no new asset/font. */
+/* Brand mark (#252): a dark --ink rounded tile holding a 3×3 round-dot grid.
+   Lit dots form a Conway's Game of Life glider; the top-middle dot is the
+   blue accent ringed in white. CSS-only so it stays crisp at both the
+   expanded and collapsed (72px) rail widths and needs no new asset/font. */
 .rail-mark {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   grid-template-rows: repeat(3, 1fr);
-  gap: 3px;
-  width: 1.4rem;
-  height: 1.4rem;
+  gap: 2.5px;
+  width: 30px;
+  height: 30px;
+  padding: 5px;
+  border-radius: 7px;
+  background: var(--ink);
+  box-sizing: border-box;
   flex: none;
 }
 .rail-mark i {
   display: block;
-  border-radius: 50%;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .32);   /* dim default */
+}
+.rail-mark i.on { background: #fff; }
+.rail-mark i.ac {
   background: var(--ld-accent);
+  box-shadow: 0 0 0 2px #fff;             /* prominent pure-white ring */
 }
 
 /* Hover/focus collapse chevron (#222): a quiet affordance pinned to the right
