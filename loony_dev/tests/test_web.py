@@ -683,6 +683,31 @@ class WebAppTestCase(unittest.TestCase):
                       "--ld-accent:", "--st-merged:"):
             self.assertIn(token, dark, token)
 
+    def test_app_css_nav_active_ships_soft_tint(self) -> None:
+        # Post-port fidelity (#251): the nav active state must be the mock's
+        # soft tint (--ld-accent-soft / --ld-accent-ink), matching the repo
+        # sidebar lists — not the retired solid --primary fill with white text.
+        # One rule covers the desktop rail, collapsed rail, and mobile bar.
+        css = self.client.get("/static/app.css").text
+        self.assertIn(
+            ".nav-item.active { background: var(--ld-accent-soft); "
+            "color: var(--ld-accent-ink); font-weight: 700; "
+            "border-radius: var(--radius-sm); }",
+            css,
+        )
+        # The pre-port solid-fill form is gone.
+        self.assertNotIn(".nav-item.active { background: var(--primary)", css)
+
+    def test_app_css_screen_title_wraps_long_titles(self) -> None:
+        # Post-port fidelity (#251): a long, free-text issue title in the
+        # pipeline-detail head must wrap instead of clipping past the right
+        # viewport edge. Anchor overflow-wrap to its selector so a bare
+        # substring elsewhere can't pass spuriously.
+        css = self.client.get("/static/app.css").text
+        self.assertIn(".screen-head-text h2 {", css)
+        head_h2 = css.split(".screen-head-text h2 {", 1)[1].split("}", 1)[0]
+        self.assertIn("overflow-wrap: anywhere;", head_h2)
+
     def test_index_declares_responsive_viewport(self) -> None:
         # The mobile companion pass (#192) needs the responsive viewport meta so
         # phones lay out at device width instead of a zoomed-out desktop page.
