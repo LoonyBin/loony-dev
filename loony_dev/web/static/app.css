@@ -325,7 +325,7 @@ section.view > h2:first-child { margin-top: 0; }
 .rail-mark i.on { background: #fff; }
 .rail-mark i.ac {
   background: var(--ld-accent);
-  box-shadow: 0 0 0 2px #fff;             /* prominent pure-white ring */
+  box-shadow: 0 0 0 1px #fff;             /* prominent pure-white ring */
 }
 
 /* Hover/focus collapse chevron (#222): a quiet affordance pinned to the right
