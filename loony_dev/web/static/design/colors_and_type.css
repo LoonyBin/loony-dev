@@ -19,7 +19,11 @@
   font-display: swap;
 }
 
-@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap');
+/* Material Symbols Outlined (the icon font) is loaded from the dashboard
+   <head> as a top-level <link>, NOT @imported here: a CSS @import must precede
+   all other rules (e.g. the @font-face above) to be honored, so an @import at
+   this point is silently ignored by the spec and the icon font never registers
+   (#250). This is the one intentional divergence from the verbatim #247 port. */
 
 :root {
   /* -----------------------------------------------------

@@ -648,9 +648,36 @@ class WebAppTestCase(unittest.TestCase):
         self.assertNotIn("family=Manrope", body)
         # The vendored file is loaded before app.css so its tokens win.
         self.assertIn('href="/static/design/colors_and_type.css"', body)
-        # Material Symbols now arrives via the vendored file's @import; the
-        # duplicate Google-Fonts <link> is removed from the shell.
-        self.assertNotIn("family=Material+Symbols", body)
+
+    def test_material_symbols_loads_via_head_link(self) -> None:
+        # #250: the icon font must load via a top-level <link rel="stylesheet">
+        # in the shell <head>, NOT via the design CSS's @import (which the spec
+        # ignores because it sits after the @font-face block). Without this the
+        # icons render as their literal ligature text ("dashboard", "warning", …).
+        body = self.client.get("/").text
+        self.assertIn("family=Material+Symbols+Outlined", body)
+        # It is a real stylesheet link in the markup, not only a CSS @import.
+        link = (
+            '<link rel="stylesheet"\n        '
+            'href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined'
+        )
+        self.assertIn(link, body)
+
+    def test_material_symbols_import_removed_from_design_css(self) -> None:
+        # #250 regression guard: the inert @import (ignored by the spec, the
+        # actual bug) must NOT be reintroduced into the vendored file. The single
+        # load path is the <head> <link> above.
+        css = self.client.get("/static/design/colors_and_type.css").text
+        self.assertNotIn("@import url", css)
+        self.assertNotIn("family=Material+Symbols", css)
+
+    def test_index_guards_icon_font_registration(self) -> None:
+        # #250: a guard surfaces (not masks) a blocked icon-font CDN — it flags
+        # <html data-icons-missing> and warns in devtools after fonts settle.
+        body = self.client.get("/").text
+        self.assertIn("document.fonts.ready", body)
+        self.assertIn('Material Symbols Outlined', body)
+        self.assertIn("data-icons-missing", body)
 
     def test_app_css_consumes_design_tokens_not_a_parallel_set(self) -> None:
         # app.css must reference the design tokens and must NOT redefine a
