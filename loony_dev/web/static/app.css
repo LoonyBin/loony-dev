@@ -389,7 +389,7 @@ section.view > h2:first-child { margin-top: 0; }
   cursor: pointer;
 }
 .nav-item:hover { background: var(--bg-chip); color: var(--fg-primary); }
-.nav-item.active { background: var(--primary); color: var(--primary-contrast); }
+.nav-item.active { background: var(--ld-accent-soft); color: var(--ld-accent-ink); font-weight: 700; border-radius: var(--radius-sm); }
 .nav-item:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: 2px; }
 /* Specific enough to beat the .material-symbols-outlined base font-size. */
 .nav-item .nav-icon { font-size: 1.35rem; line-height: 1; flex: none; }
@@ -1403,7 +1403,7 @@ button.action:hover,
 }
 /* The screen title carries the design's .screen-title treatment (loony-dev.html):
    display size, brand --ink, bold, tight tracking. */
-.screen-head-text h2 { margin: 0; font-size: var(--fs-display); font-weight: var(--fw-bold); color: var(--ink); letter-spacing: -0.02em; line-height: 1.05; }
+.screen-head-text h2 { margin: 0; font-size: var(--fs-display); font-weight: var(--fw-bold); color: var(--ink); letter-spacing: -0.02em; line-height: 1.05; overflow-wrap: anywhere; }
 /* The restored per-screen intro copy. */
 .screen-head-sub {
   margin: 0;

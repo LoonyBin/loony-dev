@@ -648,9 +648,36 @@ class WebAppTestCase(unittest.TestCase):
         self.assertNotIn("family=Manrope", body)
         # The vendored file is loaded before app.css so its tokens win.
         self.assertIn('href="/static/design/colors_and_type.css"', body)
-        # Material Symbols now arrives via the vendored file's @import; the
-        # duplicate Google-Fonts <link> is removed from the shell.
-        self.assertNotIn("family=Material+Symbols", body)
+
+    def test_material_symbols_loads_via_head_link(self) -> None:
+        # #250: the icon font must load via a top-level <link rel="stylesheet">
+        # in the shell <head>, NOT via the design CSS's @import (which the spec
+        # ignores because it sits after the @font-face block). Without this the
+        # icons render as their literal ligature text ("dashboard", "warning", …).
+        body = self.client.get("/").text
+        self.assertIn("family=Material+Symbols+Outlined", body)
+        # It is a real stylesheet link in the markup, not only a CSS @import.
+        link = (
+            '<link rel="stylesheet"\n        '
+            'href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined'
+        )
+        self.assertIn(link, body)
+
+    def test_material_symbols_import_removed_from_design_css(self) -> None:
+        # #250 regression guard: the inert @import (ignored by the spec, the
+        # actual bug) must NOT be reintroduced into the vendored file. The single
+        # load path is the <head> <link> above.
+        css = self.client.get("/static/design/colors_and_type.css").text
+        self.assertNotIn("@import url", css)
+        self.assertNotIn("family=Material+Symbols", css)
+
+    def test_index_guards_icon_font_registration(self) -> None:
+        # #250: a guard surfaces (not masks) a blocked icon-font CDN — it flags
+        # <html data-icons-missing> and warns in devtools after fonts settle.
+        body = self.client.get("/").text
+        self.assertIn("document.fonts.ready", body)
+        self.assertIn('Material Symbols Outlined', body)
+        self.assertIn("data-icons-missing", body)
 
     def test_app_css_consumes_design_tokens_not_a_parallel_set(self) -> None:
         # app.css must reference the design tokens and must NOT redefine a
@@ -682,6 +709,31 @@ class WebAppTestCase(unittest.TestCase):
         for token in ("--fg-primary:", "--bg-app:", "--border-default:",
                       "--ld-accent:", "--st-merged:"):
             self.assertIn(token, dark, token)
+
+    def test_app_css_nav_active_ships_soft_tint(self) -> None:
+        # Post-port fidelity (#251): the nav active state must be the mock's
+        # soft tint (--ld-accent-soft / --ld-accent-ink), matching the repo
+        # sidebar lists — not the retired solid --primary fill with white text.
+        # One rule covers the desktop rail, collapsed rail, and mobile bar.
+        css = self.client.get("/static/app.css").text
+        self.assertIn(
+            ".nav-item.active { background: var(--ld-accent-soft); "
+            "color: var(--ld-accent-ink); font-weight: 700; "
+            "border-radius: var(--radius-sm); }",
+            css,
+        )
+        # The pre-port solid-fill form is gone.
+        self.assertNotIn(".nav-item.active { background: var(--primary)", css)
+
+    def test_app_css_screen_title_wraps_long_titles(self) -> None:
+        # Post-port fidelity (#251): a long, free-text issue title in the
+        # pipeline-detail head must wrap instead of clipping past the right
+        # viewport edge. Anchor overflow-wrap to its selector so a bare
+        # substring elsewhere can't pass spuriously.
+        css = self.client.get("/static/app.css").text
+        self.assertIn(".screen-head-text h2 {", css)
+        head_h2 = css.split(".screen-head-text h2 {", 1)[1].split("}", 1)[0]
+        self.assertIn("overflow-wrap: anywhere;", head_h2)
 
     def test_index_declares_responsive_viewport(self) -> None:
         # The mobile companion pass (#192) needs the responsive viewport meta so

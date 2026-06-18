@@ -11,14 +11,18 @@
        single source of truth; app.css ports the component primitives on top and
        must load AFTER it. The file self-hosts Manrope via an @font-face whose
        url() is relative to the CSS, so /static/design/fonts/ sits beside it —
-       no Google-Fonts Manrope <link> needed. It also @imports Material Symbols
-       Outlined (the one icon font); if that CDN is blocked, Manrope falls back
-       to the system stack and Material Symbols spans show their ligature text
-       (e.g. "dashboard"), and icon-only buttons stay aria-labelled, so nothing
-       becomes unusable. -->
+       no Google-Fonts Manrope <link> needed. Material Symbols Outlined (the one
+       icon font) loads via the explicit <link> below — NOT from the CSS: an
+       @import there would have to precede the @font-face block to be honored,
+       and the design's own loony-dev.html loads it from <head> too. If that CDN
+       is blocked the <link> simply fails: Manrope falls back to the system stack
+       and Material Symbols spans show their ligature text (e.g. "dashboard"),
+       and icon-only buttons stay aria-labelled, so nothing becomes unusable. -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="/static/design/colors_and_type.css" />
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" />
 
   <link rel="stylesheet" href="/static/app.css" />
 
@@ -49,6 +53,24 @@
           d.setAttribute("data-rail", "collapsed");
         }
       } catch (e) { /* localStorage unavailable */ }
+    })();
+  </script>
+
+  <!-- Guard (#250): once web fonts settle, confirm Material Symbols actually
+       registered. If the icon-font <link> above was blocked, the spans degrade
+       to readable ligature text — this does not mask that, it just surfaces it:
+       a data-icons-missing attribute on <html> (a hook for CSS/tests/operators)
+       and a console.warn so the regression is obvious in devtools. -->
+  <script>
+    (function () {
+      if (!document.fonts || !document.fonts.ready) return;
+      document.fonts.ready.then(function () {
+        var ok = document.fonts.check('24px "Material Symbols Outlined"');
+        document.documentElement.toggleAttribute("data-icons-missing", !ok);
+        if (!ok) {
+          console.warn("[loony] Material Symbols icon font not registered — icons will show ligature text.");
+        }
+      });
     })();
   </script>
 
