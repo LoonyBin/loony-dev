@@ -1344,21 +1344,6 @@ button.action:hover,
 /* ---- Repo detail (#158) ---------------------------------------------- */
 .repo-detail h2 { word-break: break-all; }
 .repo-detail h3 { font-size: var(--fs-body); margin: var(--space-6) 0 var(--space-3); }
-.back-link {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  font: inherit;
-  font-size: var(--fs-sm);
-  background: none;
-  border: none;
-  padding: 0;
-  margin: 0 0 var(--space-2);
-  color: var(--primary);
-  cursor: pointer;
-}
-.back-link .material-symbols-outlined { font-size: 1.1rem; }
-.back-link:hover { text-decoration: underline; }
 
 .card {
   background: var(--bg-app);

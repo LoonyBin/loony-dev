@@ -546,9 +546,6 @@
            window.repoDetail before it was assigned and never re-ran (issue #239).
            x-show still gates visibility here. -->
       <section class="view repo-detail" x-show="$store.app.view === 'live'">
-        <button class="back-link" type="button" @click="$store.app.go('fleet')">
-          <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>All repos</button>
-
         <!-- Live header via the shared ScreenHead (#222): repo title + restored
              subtitle, with the quick-actions bar in the right-aligned controls
              slot. The actions are populated by repoDetail.js so they can carry
@@ -805,8 +802,6 @@
            reflect onto the <html> data-* attributes app.css keys off. Not a
            primary nav item. -->
       <section class="view" x-show="$store.app.view === 'preferences'">
-        <button class="back-link" type="button" @click="$store.app.go('fleet')">
-          <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>Fleet</button>
         <h2>Preferences</h2>
         <p class="muted">Personalize the dashboard. Choices are saved in this browser.</p>
 
