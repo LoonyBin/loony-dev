@@ -266,27 +266,44 @@ export function setDriveState(state) {
   renderState();
 }
 
+// Numbered-circle stepper matching the design: each step is a 22px round circle
+// holding its 1-based number (or a check glyph when done), joined by connector
+// bars; done/current/upcoming styling lives in app.css. The conflict detour
+// hangs off the spine after Implement.
 function renderStepper(staging) {
   const host = document.getElementById("pipeline-stepper");
   if (!host) return;
   host.innerHTML = "";
   const currentIdx = STAGES.indexOf(staging.stage);
   STAGES.forEach((name, idx) => {
+    // Connector bar before every step except the first; it is "done" (accent)
+    // when the preceding step is completed. Never sits adjacent to the detour.
+    if (idx > 0) {
+      const bar = document.createElement("span");
+      bar.className = "step-bar" + (idx <= currentIdx ? " done" : "");
+      bar.setAttribute("aria-hidden", "true");
+      host.appendChild(bar);
+    }
     const step = document.createElement("div");
-    step.className = "step";
     step.setAttribute("role", "listitem");
-    let dotClass = "gated";
-    if (idx < currentIdx) { step.classList.add("done"); dotClass = "merged"; }
-    else if (idx === currentIdx) { step.classList.add("active"); dotClass = "active"; }
-    else { step.classList.add("gated"); dotClass = "gated"; }
-    const dot = document.createElement("span");
-    dot.className = `sdot ${dotClass}`;
-    step.appendChild(dot);
+    const circle = document.createElement("span");
+    circle.className = "step-circle";
+    if (idx < currentIdx) {
+      step.className = "step done";
+      circle.appendChild(icon("check")); // completed → check, not a number
+    } else if (idx === currentIdx) {
+      step.className = "step current";
+      step.setAttribute("aria-current", "step");
+      circle.textContent = String(idx + 1);
+    } else {
+      step.className = "step upcoming";
+      circle.textContent = String(idx + 1);
+    }
+    step.appendChild(circle);
     const label = document.createElement("span");
     label.className = "step-label";
     label.textContent = name;
     step.appendChild(label);
-    if (idx === currentIdx) step.setAttribute("aria-current", "step");
     host.appendChild(step);
 
     // The conflict detour hangs off the spine just after Implement.
