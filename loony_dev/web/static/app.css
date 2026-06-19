@@ -974,16 +974,20 @@ button.action:hover,
   gap: var(--space-2);
 }
 .fleet-metric-n {
-  font-size: var(--fs-h1);
+  /* Design's `.stat-n` (loony-dev.html): 34px / line-height 1. 34px has no
+     --fs-* token — literal on purpose. */
+  font-size: 34px;
   font-weight: 700;
-  line-height: 1.1;
+  line-height: 1;
   font-variant-numeric: var(--num);
   color: var(--fg-primary);
 }
 .fleet-metric-deferred { color: var(--fg-secondary); }
 .fleet-metric-ico { font-size: 1.2rem; color: var(--fg-secondary); }
 .fleet-metric-label {
-  font-size: var(--fs-2xs);
+  /* Design's `.stat-l` (loony-dev.html): 13px (--fs-xs) / 6px top margin. */
+  font-size: var(--fs-xs);
+  margin-top: 6px;
   font-weight: 700;
   /* The mock's `.stat-l` has no text-transform: the metric labels render in the
      lowercase copy fleet.js already supplies ("repos online", "need you"), not
@@ -1026,11 +1030,11 @@ button.action:hover,
 .fleet-chip-x:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: 2px; }
 .fleet-chip-x .material-symbols-outlined { font-size: 1rem; }
 
-/* Body: worklist + right-hand repo sidebar (~284px). Sidebar collapses below
-   the worklist on narrow viewports (see responsive block below). */
+/* Body: worklist + right-hand repo sidebar (--side-w = 300px). Sidebar collapses
+   below the worklist on narrow viewports (see responsive block below). */
 .fleet-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 284px;
+  grid-template-columns: minmax(0, 1fr) var(--side-w);
   gap: var(--space-4);
   align-items: start;
 }
@@ -1350,7 +1354,9 @@ button.action:hover,
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-card);
-  padding: var(--space-4);
+  /* Design's --pad-card (18px; 13px under .dense). The
+     :root[data-density="compact"] override below is a separate knob — leave it. */
+  padding: var(--pad-card);
 }
 .card h3 { margin: 0 0 var(--space-3); font-size: var(--fs-body); }
 
@@ -1389,11 +1395,14 @@ button.action:hover,
 /* The screen title carries the design's .screen-title treatment (loony-dev.html):
    display size, brand --ink, bold, tight tracking. */
 .screen-head-text h2 { margin: 0; font-size: var(--fs-display); font-weight: var(--fw-bold); color: var(--ink); letter-spacing: -0.02em; line-height: 1.05; overflow-wrap: anywhere; }
-/* The restored per-screen intro copy. */
+/* The restored per-screen intro copy. Pinned to the design's `.screen-sub`
+   (loony-dev.html): 14.5px / line-height 1.5 / 7px top gap. These are literal
+   px on purpose — no --fs-*/--space-* token matches 14.5px or 7px. */
 .screen-head-sub {
-  margin: 0;
+  margin: 7px 0 0;
   color: var(--fg-secondary);
-  font-size: var(--fs-sm);
+  font-size: 14.5px;
+  line-height: 1.5;
 }
 .screen-head-controls {
   display: flex;
@@ -1413,10 +1422,10 @@ button.action:hover,
   flex-wrap: wrap;
 }
 
-/* Three-region body: a flexible center column + a fixed ~284px sidebar. */
+/* Three-region body: a flexible center column + a fixed --side-w (300px) sidebar. */
 .live-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 284px;
+  grid-template-columns: minmax(0, 1fr) var(--side-w);
   gap: var(--space-4);
   align-items: start;
   margin-top: var(--space-4);
@@ -1621,7 +1630,8 @@ button.action:hover,
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-card);
-  padding: var(--space-4);
+  /* Card surface → design --pad-card (18px), same knob as .card. */
+  padding: var(--pad-card);
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -2159,23 +2169,28 @@ button.action:hover,
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  padding: var(--space-4);
+  /* Card surface → design --pad-card (18px), same knob as .card. */
+  padding: var(--pad-card);
   background: var(--bg-app);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-card);
 }
 .stat .stat-label {
-  font-size: var(--fs-2xs);
+  /* Design's `.stat-l` (loony-dev.html): 13px (--fs-xs) / 6px top margin. */
+  font-size: var(--fs-xs);
+  margin-top: 6px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: var(--tracking-wide);
   color: var(--fg-secondary);
 }
 .stat .stat-value {
-  font-size: var(--fs-display);
+  /* Design's `.stat-n` (loony-dev.html): 34px / line-height 1. 34px has no
+     --fs-* token — literal on purpose. */
+  font-size: 34px;
   font-weight: 700;
-  line-height: 1.1;
+  line-height: 1;
   font-variant-numeric: var(--num);
 }
 

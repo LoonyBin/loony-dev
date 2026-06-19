@@ -735,6 +735,65 @@ class WebAppTestCase(unittest.TestCase):
         head_h2 = css.split(".screen-head-text h2 {", 1)[1].split("}", 1)[0]
         self.assertIn("overflow-wrap: anywhere;", head_h2)
 
+    # ---- Finish the design-system port (#256) ----------------------------
+    # #247 vendored the design tokens + a few primitives, but several impl
+    # classes kept *approximate* spacing/sizes instead of the design's exact
+    # px. These guards pin each corrected declaration to its selector so the
+    # drift can't silently return. NOTE: they assert the CSS *declaration*, not
+    # a computed pixel — the "measure to exact px" acceptance rests on the
+    # manual computed-style re-measure recorded in the PR.
+
+    def test_app_css_screen_sub_matches_design_px(self) -> None:
+        # Design `.screen-sub`: 14.5px / line-height 1.5 / 7px top gap. 14.5px
+        # and 7px have no --fs-*/--space-* token, so they are literal on purpose.
+        css = self.client.get("/static/app.css").text
+        self.assertIn(".screen-head-sub {", css)
+        sub = css.split(".screen-head-sub {", 1)[1].split("}", 1)[0]
+        self.assertIn("font-size: 14.5px;", sub)
+        self.assertIn("line-height: 1.5;", sub)
+        self.assertIn("margin: 7px 0 0;", sub)
+
+    def test_app_css_sidebar_widths_use_side_w_token(self) -> None:
+        # Both grid sites (.fleet-body, .live-grid) must use --side-w (300px),
+        # not the old approximate 284px.
+        css = self.client.get("/static/app.css").text
+        for selector in (".fleet-body {", ".live-grid {"):
+            self.assertIn(selector, css)
+            block = css.split(selector, 1)[1].split("}", 1)[0]
+            self.assertIn("var(--side-w)", block)
+            self.assertNotIn("284px", block)
+        # The retired literal is gone from the file entirely.
+        self.assertNotIn("284px", css)
+
+    def test_app_css_stat_numbers_and_labels_match_design_px(self) -> None:
+        # Design `.stat-n`: 34px / line-height 1 (literal — no --fs-* token).
+        # Design `.stat-l`: 13px (--fs-xs) / 6px top margin. Applied to both the
+        # fleet metric pair and the generic .stat pair.
+        css = self.client.get("/static/app.css").text
+        for number in (".fleet-metric-n {", ".stat .stat-value {"):
+            self.assertIn(number, css)
+            block = css.split(number, 1)[1].split("}", 1)[0]
+            self.assertIn("font-size: 34px;", block)
+            self.assertIn("line-height: 1;", block)
+        for label in (".fleet-metric-label {", ".stat .stat-label {"):
+            self.assertIn(label, css)
+            block = css.split(label, 1)[1].split("}", 1)[0]
+            self.assertIn("font-size: var(--fs-xs);", block)
+            self.assertIn("margin-top: 6px;", block)
+
+    def test_app_css_card_padding_uses_pad_card_token(self) -> None:
+        # Card surfaces consume --pad-card (18px; 13px under .dense), not the
+        # approximate --space-4 (16px). The :root[data-density="compact"]
+        # override is a separate knob and is intentionally left in place.
+        css = self.client.get("/static/app.css").text
+        # Anchor at line start so the `[data-density="compact"] .stat { … }`
+        # override (which ends in ".stat {") isn't matched instead.
+        for selector in ("\n.card {", "\n.session-card {", "\n.stat {"):
+            self.assertIn(selector, css)
+            block = css.split(selector, 1)[1].split("}", 1)[0]
+            self.assertIn("padding: var(--pad-card);", block)
+            self.assertNotIn("padding: var(--space-4);", block)
+
     def test_index_declares_responsive_viewport(self) -> None:
         # The mobile companion pass (#192) needs the responsive viewport meta so
         # phones lay out at device width instead of a zoomed-out desktop page.
