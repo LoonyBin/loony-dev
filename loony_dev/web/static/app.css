@@ -1397,7 +1397,7 @@ button.action:hover,
 .screen-head-text h2 { margin: 0; font-size: var(--fs-display); font-weight: var(--fw-bold); color: var(--ink); letter-spacing: -0.02em; line-height: 1.05; overflow-wrap: anywhere; }
 /* The restored per-screen intro copy. Pinned to the design's `.screen-sub`
    (loony-dev.html): 14.5px / line-height 1.5 / 7px top gap. These are literal
-   px on purpose — no --fs-*/--space-* token matches 14.5px or 7px. */
+   px on purpose — no matching --fs-* or --space-* token exists for 14.5px/7px. */
 .screen-head-sub {
   margin: 7px 0 0;
   color: var(--fg-secondary);
