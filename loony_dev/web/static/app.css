@@ -2248,38 +2248,72 @@ button.action:hover,
 .statepill.busy      { background: rgba(239, 68, 68, 0.14); color: var(--st-blocked); }
 
 /* stepper — Issue → Plan → Implement → PR → Review → Merge with a conflict
-   detour badge. Steps connect via a thin line; the current step is emphasized
-   and later steps are dimmed (gated). */
+   detour badge. Numbered 22px round circles (a check on completed steps) joined
+   by 26×2px connector bars; the current step is emphasized and later steps are
+   muted (upcoming). */
 .stepper {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   flex-wrap: wrap;
-  gap: var(--space-2) var(--space-3);
+  gap: 2px;
   margin-bottom: var(--space-6);
 }
+/* Each step stacks its circle over its label so connector bars join circle
+   centers (the standard numbered-stepper layout). */
 .stepper .step {
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
-  gap: var(--space-2);
-  font-size: var(--fs-xs);
-  font-weight: 600;
+  gap: var(--space-1);
+}
+/* The numbered circle — 22px round, 1.5px border; state colours below. */
+.stepper .step-circle {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1.5px solid var(--border-default);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  line-height: 1;
+  background: var(--bg-app);
   color: var(--fg-secondary);
-  position: relative;
-  padding-right: var(--space-3);
 }
-/* Connector line between steps (suppressed after the last one). */
-.stepper .step::after {
-  content: "";
-  width: var(--space-4);
-  height: 1px;
+.stepper .step-circle .material-symbols-outlined { font-size: 14px; line-height: 1; }
+.stepper .step.done .step-circle {
+  background: var(--ld-accent);
+  border-color: var(--ld-accent);
+  color: #fff;
+}
+.stepper .step.current .step-circle {
+  background: var(--ld-accent-soft);
+  border-color: var(--ld-accent);
+  color: var(--ld-accent-ink);
+}
+/* upcoming uses the .step-circle defaults (bg-app / border-default / secondary). */
+/* Connector bar between circles — 26×2px, accent when the segment is done.
+   Offset down to sit at the 22px circle's vertical centre rather than the
+   circle+label block centre. */
+.stepper .step-bar {
+  width: 26px;
+  height: 2px;
+  border-radius: 1px;
   background: var(--border-default);
+  flex: none;
+  align-self: flex-start;
+  margin-top: 10px;
 }
-.stepper .step:last-of-type { padding-right: 0; }
-.stepper .step:last-of-type::after { display: none; }
-.stepper .step.active { color: var(--fg-primary); }
-.stepper .step.done { color: var(--fg-primary); }
-.stepper .step.gated { opacity: 0.6; }
-.stepper .step-label { white-space: nowrap; }
+.stepper .step-bar.done { background: var(--ld-accent); }
+.stepper .step-label {
+  white-space: nowrap;
+  font-size: 13.5px;
+  color: var(--fg-secondary);
+}
+.stepper .step.current .step-label { font-weight: 700; color: var(--fg-primary); }
+.stepper .step.done .step-label { color: var(--fg-primary); }
 /* conflict detour badge — hangs off the spine after Implement. */
 .stepper .step-detour {
   display: inline-flex;
