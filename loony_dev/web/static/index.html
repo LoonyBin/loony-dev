@@ -24,6 +24,16 @@
   <link rel="stylesheet"
         href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" />
 
+  <!-- Design-system visual layer (single source of truth, static/ds) — loaded
+       BEFORE app.css so it provides the shared components + layout/utility layer
+       while app.css overrides app-specific bits. The app.css visual duplicates
+       are being trimmed onto this layer (#258 / Phase 4 convergence). -->
+  <link rel="stylesheet" href="/static/ds/ld-system.css" />
+  <link rel="stylesheet" href="/static/ds/css/fleet.css" />
+  <link rel="stylesheet" href="/static/ds/css/cockpit.css" />
+  <link rel="stylesheet" href="/static/ds/css/sessions.css" />
+  <link rel="stylesheet" href="/static/ds/css/mobile.css" />
+
   <link rel="stylesheet" href="/static/app.css" />
 
   <!-- Apply the pinned shell preferences (theme + the Preferences page's accent
@@ -330,13 +340,13 @@
             <i></i><i></i><i class="on"></i>
             <i></i><i class="on"></i><i></i>
           </span>
-          <span class="rail-brand-text">loony-dev <span class="brand-sub">agent console</span></span>
+          <span class="rail-brand-text"><span class="brand-word">loony<span class="brand-dot">·</span>dev</span><span class="brand-sub">agent console</span></span>
           <!-- Hover/focus collapse hint (#222): a chevron that points the way the
                brand will fold. Purely a visual affordance — the whole brand
                button already toggles collapse, so the chevron inherits the click
                and aria stays on the button. -->
           <span class="rail-collapse-chevron material-symbols-outlined" aria-hidden="true"
-                x-text="$store.app.collapsed ? 'chevron_right' : 'chevron_left'">chevron_left</span>
+                x-text="$store.app.collapsed ? 'left_panel_open' : 'left_panel_close'">left_panel_close</span>
         </button>
       </div>
 
@@ -399,7 +409,7 @@
           <span class="avatar operator" aria-hidden="true">OP</span>
           <span class="operator-id">
             <span class="operator-name">Operator</span>
-            <span class="operator-handle">human-in-the-loop</span>
+            <span class="operator-handle"><span class="operator-dot" aria-hidden="true"></span>human-in-the-loop</span>
           </span>
           <div class="flyout" x-data="{ open: false }" @keydown.escape.window="open = false">
             <button
@@ -481,16 +491,9 @@
             <p class="screen-head-sub">One operator, many repos — your operational worklist. Click a metric to filter the worklist, click a worker to open its issue ▸ PR session, or filter by repo on the right.</p>
           </div>
           <div class="screen-head-controls">
-            <div id="fleet-view" class="segmented" role="group" aria-label="Worklist layout">
-              <button type="button" data-fleet-view="board" class="active" aria-pressed="true">
-                <span class="material-symbols-outlined" aria-hidden="true">view_list</span>
-                <span>Board</span>
-              </button>
-              <button type="button" data-fleet-view="kanban" aria-pressed="false">
-                <span class="material-symbols-outlined" aria-hidden="true">view_kanban</span>
-                <span>Kanban</span>
-              </button>
-            </div>
+            <!-- Board/kanban toggle: the shared Segmented control, rendered by
+                 fleet.renderViewToggle() into this host (#258). -->
+            <div id="fleet-view"></div>
           </div>
         </header>
 
@@ -584,15 +587,9 @@
                  Claude's hosted relay — use the Open session link / QR above).
                  Static markup; no JS. Both controls carry the same explanatory
                  tooltip so the greyed affordance reads as intentional. -->
-            <div class="live-steer-bar"
-                 title="Driving from the dashboard isn't wired up yet — open the relay session above (join link / QR) to steer this repo.">
-              <input class="live-steer-input" type="text" disabled
-                     placeholder='Ask about the repo, or "open an issue to…"'
-                     aria-label="Steer this repo (disabled)"
-                     title="Driving from the dashboard isn't wired up yet — open the relay session above (join link / QR) to steer this repo." />
-              <button class="ld-btn sm primary" type="button" disabled
-                      title="Driving from the dashboard isn't wired up yet — open the relay session above (join link / QR) to steer this repo.">Send</button>
-            </div>
+            <!-- Steer bar: built by the shared ChatComposer factory (disabled)
+                 in repoDetail.renderSteer() (#258 / Phase 4). -->
+            <div id="repo-steer"></div>
           </section>
 
           <!-- Right sidebar: Repos switcher, repo context, recent commits,
@@ -674,7 +671,7 @@
       <section class="view pipeline-detail" x-show="$store.app.view === 'pipeline'">
         <!-- Breadcrumb: Fleet ▸ repo ▸ #N. The JS module renders the segments
              (the #N is parsed from the task_key) and wires their navigation. -->
-        <nav id="pipeline-breadcrumb" class="breadcrumb" aria-label="Breadcrumb"></nav>
+        <nav id="pipeline-breadcrumb" aria-label="Breadcrumb"></nav>
 
         <!-- ScreenHead (#222): the breadcrumb above is the route trail; this is
              the head proper — repo tag + title + restored subtitle, with the
@@ -682,18 +679,20 @@
              #pipeline-detail-* IDs are preserved (issueDetail.js fills them). -->
         <header class="screen-head">
           <div class="screen-head-text">
-            <span id="pipeline-detail-repo" class="tag neutral"></span>
             <h2 id="pipeline-detail-title">Pipeline</h2>
             <p class="screen-head-sub">Follow this pipeline from issue through to a merged PR.</p>
           </div>
+          <!-- design: repo tag + state pill both in the right-aligned controls slot -->
           <div class="screen-head-controls">
-            <span id="pipeline-detail-state" class="statepill"></span>
+            <span id="pipeline-detail-repo" class="tag neutral"></span>
+            <span id="pipeline-detail-state"></span>
           </div>
         </header>
 
         <!-- Lifecycle stepper: Issue → Plan → Implement → PR → Review → Merge,
-             with a conflict-detour badge. Filled by deriveStage(). -->
-        <div id="pipeline-stepper" class="stepper" role="list" aria-label="Lifecycle"></div>
+             with a conflict-detour badge. Filled by deriveStage(). The design
+             wraps it in its own pad-lg card. -->
+        <div id="pipeline-stepper" class="card pad-lg"></div>
 
         <!-- ready-for-* label controls (#225): the moved "Assign issue". Buttons
              to set ready-for-planning / ready-for-development on the issue (POST
@@ -755,44 +754,36 @@
            affordances live on the Issue ▸ PR detail view, reached from Fleet
            rows. There is no standalone Sessions destination. -->
 
-      <!-- Skills & Commands library (#191). The Kind/Scope/Repo selects stay as
-           a filter bar; entries render as a card grid (one card per skill /
-           command). The editor lives in a drawer overlay (sibling of the attach /
-           observe modals below) so it composes regardless of where the nav puts
-           this view. -->
+      <!-- Skills & Commands library (#191 → #258). The Skills/Commands switch is
+           the shared Segmented control; the source (Global ~/.claude + each repo)
+           is the shared Fleet repo-filter in a right sidebar. Entries render as a
+           card grid (one card per skill / command). The editor lives in a drawer
+           overlay (sibling of the attach / observe modals below) so it composes
+           regardless of where the nav puts this view. -->
       <section class="view" x-show="$store.app.view === 'skills'">
-        <!-- ScreenHead (#222/#226): "Skills library" title + the design subtitle,
-             with the primary "Author skill" affordance in the right-aligned
-             controls slot. #entry-new preserved (label set by kind in entries.js). -->
+        <!-- ScreenHead: "Skills library" title + the Skills/Commands toggle and
+             the primary "Author" affordance in the right-aligned controls slot.
+             #entry-kind-toggle + #entry-new are filled by entries.js. -->
         <header class="screen-head">
           <div class="screen-head-text">
             <h2>Skills library</h2>
             <p class="screen-head-sub">Worker &amp; manager behaviour is composed from named skills. Each fires on a trigger and runs at a stage of the lifecycle.</p>
           </div>
           <div class="screen-head-controls">
+            <div id="entry-kind-toggle"></div>
             <button id="entry-new" class="ld-btn md primary" type="button">
               <span class="material-symbols-outlined" aria-hidden="true">add</span><span id="entry-new-label">Author skill</span>
             </button>
           </div>
         </header>
-        <div class="controls">
-          <label>Kind
-            <select id="entry-kind">
-              <option value="skills">Skills</option>
-              <option value="commands">Commands</option>
-            </select>
-          </label>
-          <label>Scope
-            <select id="entry-scope">
-              <option value="global">Global (~/.claude)</option>
-              <option value="repo">Per-repo</option>
-            </select>
-          </label>
-          <label id="entry-repo-label" style="display:none">Repo
-            <select id="entry-repo"></select>
-          </label>
+        <!-- Two-column body mirroring Fleet: the card grid on the left, the
+             source filter (Global + repos) in the right sidebar. -->
+        <div class="fleet-body">
+          <div class="fleet-main">
+            <div id="entries-grid" class="skill-grid"></div>
+          </div>
+          <aside id="entry-repos" class="fleet-repos" aria-label="Filter by source"></aside>
         </div>
-        <div id="entries-grid" class="skill-grid"></div>
       </section>
 
       <!-- Preferences: the shell tweaks (theme / accent / density / live pulse)

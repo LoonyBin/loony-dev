@@ -1,0 +1,4 @@
+/* Mobile per-screen composite layer (ld-mobile). The phone frame / status bar /
+   tab bar base styles live in ld-system.css; this only carries the composable
+   `.dark` status-bar modifier (glyphs inherit the bar colour, no inline colour). */
+.phone-status.dark { color: #fff; }

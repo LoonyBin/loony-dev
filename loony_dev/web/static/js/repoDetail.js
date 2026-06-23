@@ -28,7 +28,10 @@
 // stage from the feed). The still-degraded items (spin-up worker, resync main,
 // connect repo, last sync, the disabled steer bar) remain honest placeholders.
 
-import { cell, setRows, formatAge, icon, goRepo, goPipeline } from "./dom.js";
+import { cell, setRows, formatAge, icon, goRepo, goPipeline, stageTone } from "./dom.js";
+// Shared design-system components (static/ds/) — single source of truth (#258 / Phase 4).
+import { StatePill, Tag, Avatar, Btn } from "/static/ds/components/primitives.js";
+import { ChatComposer } from "/static/ds/components/sessions.js";
 import { killProcess, interruptSession } from "./overview.js";
 import { streamLog } from "./logs.js";
 import { renderSessionCard } from "./sessions.js";
@@ -87,44 +90,22 @@ function ageSeconds(iso) {
 // An external GitHub anchor styled as an .ld-btn. Always opens in a new tab and
 // drops the opener so the dashboard tab can't be navigated by the target.
 function ghButton(label, href, variant) {
-  const a = document.createElement("a");
-  a.className = `ld-btn sm ${variant}`;
-  a.href = href;
-  a.target = "_blank";
-  a.rel = "noopener noreferrer";
-  a.textContent = label;
-  return a;
+  // Link-button via the shared factory: an <a class="ld-btn"> (rel=noopener
+  // noreferrer is applied automatically for target=_blank).
+  return Btn({ variant, size: "sm", label, href, target: "_blank" });
 }
 
 // A disabled-with-tooltip .ld-btn for an action with no backend yet.
 function pendingButton(label, why) {
-  const b = document.createElement("button");
-  b.type = "button";
-  b.className = "ld-btn sm ghost";
-  b.textContent = label;
-  b.disabled = true;
+  const b = Btn({ variant: "ghost", size: "sm", label, attrs: { disabled: "" } });
   b.title = why;
   return b;
 }
 
-// Stage → .tag tone, aligned with fleet.js STAGE_TAG (the #186 palette) so a
-// pipeline's stage chip reads identically on Fleet and in the Live workers list.
-const STAGE_TONE = {
-  "Inbox": "ghost",
-  "Planning": "blue",
-  "Implementing": "blue",
-  "PR Open": "purple",
-  "In Review": "amber",
-  "Conflicts": "red",
-  "Merged": "green",
-};
-
-// A small .tag chip (reusing the shared palette classes).
+// A small Tag chip via the shared factory (stage→tone is the canonical
+// stageTone() in dom.js, shared with Fleet).
 function tag(text, tone) {
-  const el = document.createElement("span");
-  el.className = `tag ${tone || "neutral"}`;
-  el.textContent = text;
-  return el;
+  return Tag({ tone: tone || "neutral", label: text });
 }
 
 // Header quick-actions: live deep-links where a zero-backend GitHub URL exists,
@@ -144,20 +125,10 @@ function renderQuickActions(repo) {
 
 // Map a session's liveness into a .statepill + .sdot indicator.
 function sessionLiveness(s) {
-  const pill = document.createElement("span");
-  pill.className = "statepill";
-  const dot = document.createElement("span");
-  if (!s || s.alive === false) {
-    dot.className = "sdot blocked";
-    pill.append(dot, document.createTextNode(s ? "offline" : "no session"));
-  } else if (s.alive === true) {
-    dot.className = "sdot active";
-    pill.append(dot, document.createTextNode("live"));
-  } else {
-    dot.className = "sdot review";
-    pill.append(dot, document.createTextNode("unknown"));
-  }
-  return pill;
+  // Shared StatePill (visual): the caller picks the colour tone for each liveness.
+  if (!s || s.alive === false) return StatePill({ tone: "red", label: s ? "offline" : "no session" });
+  if (s.alive === true) return StatePill({ tone: "accent", label: "live" });
+  return StatePill({ tone: "amber", label: "unknown" });
 }
 
 // One labelled meta line ("Key  loony-x") for the session panel header.
@@ -230,6 +201,7 @@ function renderReposList(repo, state) {
     box.appendChild(muted("No repos discovered."));
     return;
   }
+  const workers = (state ? state.workers : []) || [];
   for (const r of repos) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -238,10 +210,21 @@ function renderReposList(repo, state) {
       btn.classList.add("active");
       btn.setAttribute("aria-current", "true");
     }
+    // design Repos row: folder icon + name (left) + worker count (right)
+    const left = document.createElement("span");
+    left.className = "repo-switch-label";
+    const fi = icon("folder");
+    fi.classList.add("repo-switch-icon");
+    left.appendChild(fi);
     const name = document.createElement("span");
     name.className = "repo-switch-name";
     name.textContent = r;
-    btn.appendChild(name);
+    left.appendChild(name);
+    btn.appendChild(left);
+    const count = document.createElement("span");
+    count.className = "repo-switch-count tnum";
+    count.textContent = String(workers.filter((w) => w.repo === r).length);
+    btn.appendChild(count);
     btn.addEventListener("click", () => goRepo(r));
     box.appendChild(btn);
   }
@@ -416,9 +399,7 @@ function renderWorkers(repo, state) {
     row.className = "worker-row clickrow";
     row.addEventListener("click", () => goPipeline(current, r.task_key));
 
-    const avatar = document.createElement("span");
-    avatar.className = "avatar trixy";
-    avatar.textContent = "T";
+    const avatar = Avatar({ tone: "soft", glyph: "T" });
     avatar.title = "trixy";
     row.appendChild(avatar);
 
@@ -433,7 +414,7 @@ function renderWorkers(repo, state) {
     mid.appendChild(name);
     row.appendChild(mid);
 
-    if (r.stage) row.appendChild(tag(r.stage, STAGE_TONE[r.stage] || "neutral"));
+    if (r.stage) row.appendChild(tag(r.stage, stageTone(r.stage)));
 
     box.appendChild(row);
   }
@@ -488,10 +469,28 @@ function renderStuckRow(s) {
   return tr;
 }
 
+// The steer bar (#189 placeholder): the shared ChatComposer, disabled until the
+// dashboard drive bridge is wired. Built once — it carries no per-repo state, so
+// re-renders skip it. `.live-steer-bar` is the app's bottom-pin layout seam.
+const STEER_DISABLED_TIP =
+  "Driving from the dashboard isn't wired up yet — open the relay session above (join link / QR) to steer this repo.";
+function renderSteer() {
+  const host = document.getElementById("repo-steer");
+  if (!host || host.firstChild) return;
+  const bar = ChatComposer({
+    placeholder: 'Ask about the repo, or "open an issue to…"',
+    disabled: true,
+    class: "live-steer-bar",
+    attrs: { title: STEER_DISABLED_TIP },
+  });
+  host.appendChild(bar);
+}
+
 function renderAll() {
   const repo = current;
   if (!repo) return;
   renderQuickActions(repo);
+  renderSteer();
   renderSession(repo, lastState);
   renderReposList(repo, lastState);
   renderContext(repo, lastState);

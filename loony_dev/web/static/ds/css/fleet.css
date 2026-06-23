@@ -1,0 +1,54 @@
+/* ============================================================================
+   fleet.css — the Fleet per-screen COMPOSITE layer.
+
+   Per-screen companion to ld-system.css: it captures the visual recipes that
+   used to live as inline styles inside js/components/fleet.js (the
+   WorkerPoolMatrix gauge footer, the Metric tone colours, the FleetRow skill
+   cell, the RepoFilterItem, the KanbanColumn head/empty, and the KanbanCard
+   issue/PR lines). The factory now emits MINIMAL markup + these class names;
+   genuinely data-driven layout still rides custom properties set by the factory.
+
+   Token-driven: every value resolves from the design token foundation
+   (colors_and_type.css) and the ld-system.css :root overlay. It reuses
+   ld-system.css classes (.metric, .pool-dot, .kanban-card, …) wherever those
+   already cover the need; the rules below add ONLY what was previously inline.
+   ============================================================================ */
+
+/* ---------- WorkerPoolMatrix — card layout + big busy/total gauge ---------- */
+.pool-card { display: flex; flex-direction: column; }
+.pool-foot { margin-top: auto; }
+.pool-count { font-size: 40px; }                 /* the big "busy" figure (.stat-n sized up) */
+.pool-frac { font-weight: var(--fw-bold); font-size: 28px; }  /* the "/total" denominator */
+
+/* ---------- Metric — tone modifier classes (number + icon colour) ----------
+   The metric's tone is a composable STATE class on .metric; CSS colours the
+   number and the icon — the factory no longer passes an inline colour. A
+   bare .metric (no tone) is the muted default. */
+.metric .metric-n { color: var(--ink); }
+.metric .metric-ico .material-symbols-outlined { color: var(--fg-muted); }
+.metric.t-red   .metric-n { color: var(--st-blocked); }
+.metric.t-amber .metric-n { color: var(--st-review-ink); }
+.metric.t-blue  .metric-n { color: var(--ld-accent-ink); }
+.metric.t-red   .metric-ico .material-symbols-outlined { color: var(--st-blocked); }
+.metric.t-amber .metric-ico .material-symbols-outlined { color: var(--st-review); }
+.metric.t-blue  .metric-ico .material-symbols-outlined { color: var(--ld-accent); }
+
+/* ---------- FleetRow — running-skill cell + trailing action cell ---------- */
+.fleet-skill { font-size: 12.5px; }
+.fleet-action { text-align: right; white-space: nowrap; }   /* Review Btn / chevron sit right */
+
+/* ---------- RepoFilterItem — clickrow filter line + count ----------
+   Default (muted) look; the .on modifier promotes it to the active style. */
+.repo-filter { padding: 8px 10px; font-size: 13.5px; font-weight: var(--fw-medium); color: var(--fg-secondary); }
+.repo-filter.on { font-weight: var(--fw-bold); color: var(--ink); background: var(--ld-accent-soft); }
+.repo-filter .repo-filter-count { font-size: var(--fs-2xs); font-weight: var(--fw-bold); }
+
+/* ---------- KanbanColumn — eyebrow head + count + empty placeholder ---------- */
+.kanban-head { margin-bottom: 10px; padding: 0 2px; }
+.kanban-count { font-size: var(--fs-2xs); font-weight: var(--fw-bold); color: var(--fg-muted); }
+.kanban-count.conflict { color: var(--st-blocked); }   /* a column in conflict reddens its count */
+.kanban-empty { display: flex; align-items: center; justify-content: center; height: 100%; }
+
+/* ---------- KanbanCard — issue + PR reference lines ---------- */
+.kc-issue { font-size: var(--fs-2xs); font-weight: var(--fw-bold); }
+.kc-pr { font-size: 11.5px; }

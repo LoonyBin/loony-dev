@@ -89,3 +89,29 @@ export function goPipeline(repo, taskKey) {
   if (store) store.goPipeline(repo, taskKey);
   else location.hash = `pipeline/${repo}/${taskKey}`;
 }
+
+// Caller-side semantic→visual map (issue #258 / Phase 4): a domain lifecycle
+// state resolves to a domain-agnostic VISUAL colour the Sdot/StatePill components
+// understand. The app owns this bridge; the visual layer only knows colours.
+const DOT_TONE = { merged: "green", active: "accent", review: "amber", blocked: "red", gated: "hollow" };
+export function dotTone(state) {
+  return DOT_TONE[state] || "hollow";
+}
+
+// Canonical GitHub-stage → Tag tone (the #186 palette). One source of truth,
+// replacing the per-screen STAGE_TAG / STAGE_TONE copies (issueDetail's had
+// drifted: Planning amber, PR Open blue, no Merged). Tones are visual.
+const STAGE_TONE = {
+  "Inbox": "ghost", "Planning": "blue", "Implementing": "blue",
+  "PR Open": "purple", "In Review": "amber", "Conflicts": "red", "Merged": "green",
+};
+export function stageTone(stage) {
+  return STAGE_TONE[stage] || "neutral";
+}
+
+// Actor role → avatar colour tone (visual). worker(trixy/bot)→soft, operator→
+// green, capo→accent, system→neutral. The role/login is never a visual class.
+const AVATAR_TONE = { trixy: "soft", bot: "soft", capo: "accent", operator: "green", system: "neutral" };
+export function avatarTone(actor) {
+  return AVATAR_TONE[actor] || "soft";
+}

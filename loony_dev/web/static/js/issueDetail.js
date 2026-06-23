@@ -27,7 +27,12 @@
 // degrades to the filesystem heuristic when the GitHub feed is absent (disabled
 // / fetch failed / pipeline unseen) so it opens for any issue/PR.
 
-import { formatAge, icon, goView, goRepo } from "./dom.js";
+import { formatAge, icon, goView, goRepo, dotTone, stageTone, avatarTone } from "./dom.js";
+// Shared design-system components from the design-system lib (static/ds/) — the
+// single source of truth backing both the Storybook and the app (#258 / Phase 4).
+import { Stepper } from "/static/ds/components/lifecycle.js";
+import { Crumbs, StatePill, Tag, Btn } from "/static/ds/components/primitives.js";
+import { TimelineRow } from "/static/ds/components/sessions.js";
 import { streamObserve } from "./observe.js";
 import { injectTurn, openTerminal } from "./attach.js";
 import { interruptSession } from "./overview.js";
@@ -63,14 +68,8 @@ const STAGE_TO_STEP = {
 };
 
 // Tag tone for a linked-card / state pill, per GitHub stage.
-const STAGE_TONE = {
-  "Inbox": "ghost",
-  "Planning": "amber",
-  "Implementing": "blue",
-  "PR Open": "blue",
-  "In Review": "amber",
-  "Conflicts": "red",
-};
+// Stage → Tag tone is the canonical stageTone() in dom.js (one source of truth;
+// this file's old copy had drifted).
 
 // Shared tooltip for the steer affordances while no live PTY bridge exists. The
 // PTY bridge is unreliable (see CLAUDE.md), so reply/Interrupt/Take over are
@@ -183,30 +182,16 @@ function renderBreadcrumb(repo, key) {
   const nav = document.getElementById("pipeline-breadcrumb");
   if (!nav) return;
   nav.innerHTML = "";
-  const sep = () => {
-    const s = document.createElement("span");
-    s.className = "crumb-sep";
-    s.setAttribute("aria-hidden", "true");
-    s.textContent = "▸";
-    return s;
-  };
-  const link = (text, onClick) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "crumb";
-    b.textContent = text;
-    b.addEventListener("click", onClick);
-    return b;
-  };
-  nav.appendChild(link("Fleet", () => goView("fleet")));
-  nav.appendChild(sep());
-  nav.appendChild(link(repo, () => goRepo(repo)));
-  nav.appendChild(sep());
-  const last = document.createElement("span");
-  last.className = "crumb current";
-  last.setAttribute("aria-current", "page");
-  last.textContent = key.label;
-  nav.appendChild(last);
+  // Shared Crumbs factory: items with onClick are links, the last (no onClick) is
+  // the current segment. aria-current is set on it for parity with the old markup.
+  const crumbs = Crumbs({ items: [
+    { label: "Fleet", onClick: () => goView("fleet") },
+    { label: repo, onClick: () => goRepo(repo) },
+    { label: key.label },
+  ] });
+  const cur = crumbs.querySelector(".crumb-cur");
+  if (cur) cur.setAttribute("aria-current", "page");
+  nav.appendChild(crumbs);
 }
 
 function renderHeader(repo, key) {
@@ -247,15 +232,15 @@ function renderState() {
     dotClass = stageDot(lastGhView.stage);
     text = lastGhView.stage.toLowerCase();
   }
-  el.className = "statepill";
-  if (driveState !== "idle") el.classList.add(driveState);
   el.innerHTML = "";
-  const dot = document.createElement("span");
-  dot.className = `sdot ${dotClass}`;
-  el.appendChild(dot);
-  const span = document.createElement("span");
-  span.textContent = text;
-  el.appendChild(span);
+  // Shared StatePill (visual). The drive-state (observing/driving/busy) is a
+  // BEHAVIOURAL runtime modifier the app injects via the class seam; dotClass (a
+  // lifecycle state) maps to a visual dot colour via dotTone().
+  el.appendChild(StatePill({
+    tone: dotTone(dotClass),
+    label: text,
+    class: driveState !== "idle" ? driveState : undefined,
+  }));
 }
 
 // Documented hook for #200: flip the header/stepper into a drive-state. A 409
@@ -274,47 +259,19 @@ function renderStepper(staging) {
   const host = document.getElementById("pipeline-stepper");
   if (!host) return;
   host.innerHTML = "";
-  const currentIdx = STAGES.indexOf(staging.stage);
-  STAGES.forEach((name, idx) => {
-    // Connector bar before every step except the first; it is "done" (accent)
-    // when the preceding step is completed. Never sits adjacent to the detour.
-    if (idx > 0) {
-      const bar = document.createElement("span");
-      bar.className = "step-bar" + (idx <= currentIdx ? " done" : "");
-      bar.setAttribute("aria-hidden", "true");
-      host.appendChild(bar);
-    }
-    const step = document.createElement("div");
-    step.setAttribute("role", "listitem");
-    const circle = document.createElement("span");
-    circle.className = "step-circle";
-    if (idx < currentIdx) {
-      step.className = "step done";
-      circle.appendChild(icon("check")); // completed → check, not a number
-    } else if (idx === currentIdx) {
-      step.className = "step current";
-      step.setAttribute("aria-current", "step");
-      circle.textContent = String(idx + 1);
-    } else {
-      step.className = "step upcoming";
-      circle.textContent = String(idx + 1);
-    }
-    step.appendChild(circle);
-    const label = document.createElement("span");
-    label.className = "step-label";
-    label.textContent = name;
-    step.appendChild(label);
-    host.appendChild(step);
-
-    // The conflict detour hangs off the spine just after Implement.
-    if (staging.conflict && name === "Implement") {
-      const detour = document.createElement("span");
-      detour.className = "step-detour";
-      detour.appendChild(icon("call_split"));
-      detour.appendChild(document.createTextNode(" conflict"));
-      host.appendChild(detour);
-    }
+  // `staging.stage` is already a spine label (STAGE_TO_STEP maps the GitHub feed
+  // onto STAGES). The shared Stepper factory renders the <ol>; we mark the active
+  // step with aria-current for parity with the previous a11y.
+  const current = STAGES.indexOf(staging.stage);
+  const ol = Stepper({
+    current,
+    conflict: !!staging.conflict,
+    steps: STAGES,
+    attrs: { "aria-label": "Lifecycle" },
   });
+  const here = ol.querySelector(".here");
+  if (here) here.setAttribute("aria-current", "step");
+  host.appendChild(ol);
 }
 
 // Map a log level to an .sdot tone for the timeline dot.
@@ -411,32 +368,20 @@ function renderTimeline(host, events, row, stuckEntries) {
     return;
   }
   for (const r of rows) {
-    const line = document.createElement("div");
-    line.className = "timeline-row";
-    const dot = document.createElement("span");
-    dot.className = `sdot ${r.tone}`;
-    dot.setAttribute("aria-hidden", "true");
-    line.appendChild(dot);
-    const av = document.createElement("span");
-    av.className = `avatar ${r.actor}`;
-    av.setAttribute("aria-hidden", "true");
-    av.textContent = actorGlyph(r.actor);
-    line.appendChild(av);
-    const label = document.createElement("span");
-    label.className = "timeline-label";
-    label.textContent = r.text;
-    if (r.skill) {
-      const chip = document.createElement("span");
-      chip.className = "skill-chip";
-      chip.textContent = r.skill;
-      label.appendChild(document.createTextNode(" "));
-      label.appendChild(chip);
-    }
-    line.appendChild(label);
-    const time = document.createElement("span");
-    time.className = "timeline-time";
-    time.textContent = r.age == null ? "" : formatAge(r.age);
-    line.appendChild(time);
+    // The shared TimelineRow factory (SoT), flat shape: dot (state→dotTone) +
+    // actor avatar + message (+ skill chip) + trailing relative time. `r.tone`
+    // is already a dotTone lifecycle key (active / review / blocked).
+    const line = TimelineRow({
+      rail: false,
+      whenAlign: "right",
+      state: r.tone,
+      avatar: { tone: avatarTone(r.actor), glyph: actorGlyph(r.actor) },
+      title: r.text,
+      chip: r.skill || null,
+      when: r.age == null ? "" : formatAge(r.age),
+    });
+    // The dot + avatar are decorative; hide them from the a11y tree.
+    line.querySelectorAll(".tl-dot, .ava").forEach((n) => n.setAttribute("aria-hidden", "true"));
     host.appendChild(line);
   }
 }
@@ -450,10 +395,7 @@ function linkedCard(title, stateText, stateClass, dl) {
   h.className = "linked-title";
   h.textContent = title;
   head.appendChild(h);
-  const tag = document.createElement("span");
-  tag.className = `tag ${stateClass}`;
-  tag.textContent = stateText;
-  head.appendChild(tag);
+  head.appendChild(Tag({ tone: stateClass, label: stateText }));
   card.appendChild(head);
   card.appendChild(dl);
   return card;
@@ -464,10 +406,7 @@ function labelChips(labels) {
   const wrap = document.createElement("div");
   wrap.className = "linked-labels";
   for (const name of labels) {
-    const chip = document.createElement("span");
-    chip.className = "tag neutral";
-    chip.textContent = name;
-    wrap.appendChild(chip);
+    wrap.appendChild(Tag({ tone: "neutral", label: name }));
   }
   return wrap;
 }
@@ -485,7 +424,7 @@ function renderLinked(repo, key, worktree) {
   kvRow(issueDl, "Issue", key.kind === "issue" ? key.label : "—");
   if (gh && gh.title) kvRow(issueDl, "Title", gh.title);
   const issueState = gh ? (gh.stage || "—").toLowerCase() : "no GitHub data";
-  const issueTone = gh ? (STAGE_TONE[gh.stage] || "ghost") : "ghost";
+  const issueTone = gh ? stageTone(gh.stage) : "ghost";
   const issueCard = linkedCard("Issue", issueState, issueTone, issueDl);
   if (gh && Array.isArray(gh.labels) && gh.labels.length) {
     issueCard.appendChild(labelChips(gh.labels));
@@ -545,13 +484,14 @@ function renderControls(row, pipelineKey) {
   const taskKey = row && row.task_key;
 
   const btn = (text, opts = {}) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "ld-btn sm" + (opts.variant ? " " + opts.variant : "");
-    b.textContent = text;
+    const b = Btn({
+      variant: opts.variant || "ghost",   // steer-toolbar default (matches the design)
+      size: "sm",
+      label: text,
+      onClick: opts.onClick || undefined,
+      attrs: opts.disabled ? { disabled: "" } : undefined,
+    });
     if (opts.title) b.title = opts.title;
-    if (opts.disabled) b.disabled = true;
-    if (opts.onClick) b.addEventListener("click", opts.onClick);
     host.appendChild(b);
     return b;
   };
@@ -634,18 +574,14 @@ function renderLifecycle(repo, key) {
   host.appendChild(caption);
   const mk = (text, value) => {
     const active = labels.includes(value);
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "ld-btn sm" + (active ? " primary" : " outline");
-    b.textContent = text;
-    if (active) {
-      b.disabled = true;
-      b.setAttribute("aria-pressed", "true");
-      b.title = `Already ${value}`;
-    } else {
-      b.title = `Set ${value} on ${key.label}`;
-      b.addEventListener("click", () => submitLabel(repo, value));
-    }
+    const b = Btn({
+      variant: active ? "primary" : "outline",
+      size: "sm",
+      label: text,
+      onClick: active ? undefined : () => submitLabel(repo, value),
+      attrs: active ? { disabled: "", "aria-pressed": "true" } : undefined,
+    });
+    b.title = active ? `Already ${value}` : `Set ${value} on ${key.label}`;
     host.appendChild(b);
   };
   mk("Mark ready for planning", "ready-for-planning");
