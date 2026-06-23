@@ -8,6 +8,10 @@
 
 import { getJSON, apiText } from "./api.js";
 import { openModalA11y, closeModalA11y } from "./modal.js";
+import { renderRepoFilter } from "./repoFilter.js";
+// Shared design-system components (static/ds/) — single source of truth (#258 / Phase 4).
+import { Btn, Segmented } from "/static/ds/components/primitives.js";
+import { SkillCard } from "/static/ds/components/sessions.js";
 
 const VALID_KINDS = new Set(["skills", "commands"]);
 
@@ -24,10 +28,12 @@ const PHASE_COLORS = {
 
 let knownRepos = [];      // ["owner/repo", ...] from the latest workers/worktrees fetch
 let selectedEntry = null; // name being edited in the drawer (create mode => null)
+let currentKind = "skills";   // "skills" | "commands" — the Segmented toggle state
+let currentSource = "global"; // "global" | "owner/name" — the repo-filter selection
 
-// Guard the kind segment before it is interpolated into an API path. The
-// <select> only offers known values, but validate anyway so a tampered DOM
-// can't redirect requests to an arbitrary endpoint.
+// Guard the kind segment before it is interpolated into an API path. The toggle
+// only offers known values, but validate anyway so a tampered call can't
+// redirect requests to an arbitrary endpoint.
 function validateKind(value) {
   if (!VALID_KINDS.has(value)) throw new Error(`Unknown entry kind: ${value}`);
   return value;
@@ -39,10 +45,6 @@ const KIND_ICONS = { skills: "bolt", commands: "terminal" };
 
 function entryEls() {
   return {
-    kind: document.getElementById("entry-kind"),
-    scope: document.getElementById("entry-scope"),
-    repoLabel: document.getElementById("entry-repo-label"),
-    repo: document.getElementById("entry-repo"),
     name: document.getElementById("entry-name"),
     owner: document.getElementById("entry-owner"),
     trigger: document.getElementById("entry-trigger"),
@@ -57,13 +59,13 @@ function entryEls() {
 
 // Singular noun for the current kind, for drawer titles ("New skill").
 function kindNoun() {
-  return entryEls().kind.value === "commands" ? "command" : "skill";
+  return currentKind === "commands" ? "command" : "skill";
 }
 
 // Material-symbols glyph for an entry's icon tile: an explicit `icon` field
 // wins, else the per-kind default.
 function entryIcon(e) {
-  return e.icon || KIND_ICONS[entryEls().kind.value] || "bolt";
+  return e.icon || KIND_ICONS[currentKind] || "bolt";
 }
 
 // --- Frontmatter round-trip helpers ----------------------------------------
@@ -141,16 +143,17 @@ function mergeFrontmatter(content, updates) {
   return `---\n${out.join("\n")}\n---\n${body.startsWith("\n") ? body : "\n" + body}`;
 }
 
+// The API scope params for the current source: "global" → ~/.claude; otherwise
+// the selected "owner/name" repo's .claude.
 function entryScopeParams() {
-  const { scope, repo } = entryEls();
   const params = new URLSearchParams();
-  if (scope.value === "repo") {
-    const [owner, name] = (repo.value || "").split("/");
+  if (currentSource === "global") {
+    params.set("scope", "global");
+  } else {
+    const [owner, name] = currentSource.split("/");
     params.set("scope", "repo");
     if (owner) params.set("owner", owner);
     if (name) params.set("repo", name);
-  } else {
-    params.set("scope", "global");
   }
   return params;
 }
@@ -159,27 +162,51 @@ function showEntryError(msg) {
   entryEls().error.textContent = msg || "";
 }
 
-// Returns true if the selected repo changed (e.g. the previous one vanished),
-// so callers can avoid silently retargeting Save/Delete to a different repo.
-function updateRepoPicker() {
-  const { scope, repoLabel, repo } = entryEls();
-  const isRepo = scope.value === "repo";
-  repoLabel.style.display = isRepo ? "" : "none";
-  if (!isRepo) return false;
-  const prev = repo.value;
-  repo.innerHTML = "";
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = knownRepos.length ? "Select a repo…" : "No repos discovered";
-  repo.appendChild(placeholder);
-  for (const r of knownRepos) {
-    const opt = document.createElement("option");
-    opt.value = r;
-    opt.textContent = r;
-    repo.appendChild(opt);
-  }
-  repo.value = knownRepos.includes(prev) ? prev : "";
-  return repo.value !== prev;
+// The Skills/Commands switch: the shared Segmented control (#258), re-rendered
+// with the active kind. onChange swaps kind, resets the editor, and reloads.
+function renderKindToggle() {
+  const host = document.getElementById("entry-kind-toggle");
+  if (!host) return;
+  host.replaceChildren(Segmented({
+    ariaLabel: "Entry kind",
+    value: currentKind,
+    options: [
+      { value: "skills", label: "Skills" },     // design .seg is text-only
+      { value: "commands", label: "Commands" },
+    ],
+    onChange: (v) => {
+      if (v === currentKind) return;
+      currentKind = v;
+      renderKindToggle();   // re-render so the active segment updates
+      syncNewLabel();
+      resetEditor();
+      refreshEntries();
+    },
+  }));
+}
+
+// The source filter: the shared Fleet repo-filter (#258), a "Global (~/.claude)"
+// row over each discovered repo. Selecting one switches `currentSource` and
+// reloads the grid from that source.
+function renderSourceFilter() {
+  const host = document.getElementById("entry-repos");
+  if (!host) return;
+  const items = [{ key: "global", label: "Global", title: "~/.claude" }];
+  for (const r of knownRepos) items.push({ key: r, label: r.split("/").pop(), title: r });
+  renderRepoFilter(host, {
+    eyebrow: "Filter by source",
+    items,
+    activeKey: currentSource,
+    emptyText: "No sources.",
+    onSelect: (key) => {
+      const next = key || "global";
+      if (next === currentSource) return;
+      currentSource = next;
+      renderSourceFilter();   // re-render so the active row updates
+      resetEditor();
+      refreshEntries();
+    },
+  });
 }
 
 // Replace the card grid with rendered cards, or a single empty-state message.
@@ -197,14 +224,9 @@ function setCards(containerId, rows, render, emptyText) {
 }
 
 async function refreshEntries() {
-  const { kind, scope } = entryEls();
   showEntryError("");
-  if (scope.value === "repo" && !entryScopeParams().get("repo")) {
-    setCards("entries-grid", [], renderCard, "Select a repo.");
-    return;
-  }
   try {
-    const k = validateKind(kind.value);
+    const k = validateKind(currentKind);
     const params = entryScopeParams();
     const rows = await getJSON(`/api/${k}?${params}`);
     setCards("entries-grid", rows, renderCard, "No entries installed.");
@@ -214,118 +236,28 @@ async function refreshEntries() {
   }
 }
 
-function mi(name) {
-  const i = document.createElement("span");
-  i.className = "material-symbols-outlined";
-  i.setAttribute("aria-hidden", "true");
-  i.textContent = name;
-  return i;
-}
-
-// The card's owner badge (#226): a managed entry renders the bot-avatar style
-// (avatar + login), keyed off the structural `managed` flag — never a literal
-// name. A hand-authored entry with an explicit owner shows a manager tag; with
-// no owner, a neutral "hand-authored" tag.
-function renderOwnerBadge(e) {
-  if (e.managed) {
-    const badge = document.createElement("span");
-    badge.className = "skill-owner";
-    const av = document.createElement("span");
-    av.className = "avatar bot";
-    av.textContent = (e.owner || "?").charAt(0).toUpperCase();
-    const label = document.createElement("span");
-    label.className = "skill-owner-name";
-    label.textContent = e.owner || "managed";
-    badge.title = `${e.owner || "managed"} (managed entry)`;
-    badge.append(av, label);
-    return badge;
-  }
-  const tag = document.createElement("span");
-  if (e.owner) {
-    tag.className = "tag blue";
-    tag.title = `${e.owner} (manager)`;
-    tag.append(mi("hub"), document.createTextNode(e.owner));
-  } else {
-    tag.className = "tag ghost";
-    tag.title = "Hand-authored";
-    tag.textContent = "hand-authored";
-  }
-  return tag;
-}
-
-// Build one library card (#226): an accent icon tile + monospace name + owner
-// badge head row, a description, a hairline divider, a "Triggers on" eyebrow +
-// trigger / ghost phase-tag row, then per-card Edit / Delete actions. Reuses the
-// #186 .avatar / .tag / .eyebrow / .ld-btn primitives.
+// Build one library card (#226 / Phase 4): delegates entirely to the shared
+// design-system SkillCard composite (static/ds/components/sessions.js) — the
+// single source of truth for this card's visuals. We only map the app's entry
+// shape `e` onto the factory's props. The owner badge is structural: a managed
+// entry (the `managed` flag, never a literal name) renders the avatar + login
+// style; a hand-authored entry renders a ghost tag.
 function renderCard(e) {
-  const card = document.createElement("div");
-  card.className = "skill-card";
-
-  const head = document.createElement("div");
-  head.className = "skill-card-head";
-  const ident = document.createElement("div");
-  ident.className = "skill-ident";
-  const tile = document.createElement("span");
-  tile.className = "skill-icon";
-  tile.appendChild(mi(entryIcon(e)));
-  const name = document.createElement("span");
-  name.className = "skill-name";
-  name.textContent = e.name;
-  ident.append(tile, name);
-  head.append(ident, renderOwnerBadge(e));
-  card.appendChild(head);
-
-  if (e.description) {
-    const desc = document.createElement("p");
-    desc.className = "skill-desc";
-    desc.textContent = e.description;
-    desc.title = e.description;
-    card.appendChild(desc);
-  }
-
-  if (e.trigger || e.phase) {
-    card.appendChild(document.createElement("hr")).className = "skill-divider";
-    const meta = document.createElement("div");
-    meta.className = "skill-card-meta";
-    const trig = document.createElement("div");
-    trig.className = "skill-trigger";
-    if (e.trigger) {
-      const eyebrow = document.createElement("span");
-      eyebrow.className = "eyebrow";
-      eyebrow.textContent = "Triggers on";
-      const val = document.createElement("span");
-      val.className = "skill-trigger-value";
-      val.textContent = e.trigger;
-      val.title = e.trigger;
-      trig.append(eyebrow, val);
-    }
-    meta.appendChild(trig);
-    if (e.phase) {
-      const tag = document.createElement("span");
-      tag.className = `tag ${PHASE_COLORS[e.phase] || "ghost"}`;
-      tag.textContent = e.phase;
-      meta.appendChild(tag);
-    }
-    card.appendChild(meta);
-  }
-
-  const actions = document.createElement("div");
-  actions.className = "skill-card-actions";
-  const edit = document.createElement("button");
-  edit.type = "button";
-  edit.className = "ld-btn sm outline";
-  edit.textContent = "Edit";
-  edit.addEventListener("click", () => openEdit(e.name));
-  actions.appendChild(edit);
-  const del = document.createElement("button");
-  del.type = "button";
-  del.className = "ld-btn sm ghost";
-  del.textContent = "Delete";
-  del.addEventListener("click", () => confirmDelete(e.name));
-  actions.appendChild(del);
-  card.appendChild(actions);
-
-  return card;
+  const owner = e.managed
+    ? { managed: true, label: e.owner || "managed" }
+    : { managed: false, label: e.owner || "hand-authored" };
+  return SkillCard({
+    icon: entryIcon(e),
+    name: e.name,
+    owner,
+    desc: e.description,
+    trigger: e.trigger,
+    phase: e.phase ? { label: e.phase, tone: PHASE_COLORS[e.phase] || "ghost" } : null,
+    actions: [
+      Btn({ variant: "outline", size: "sm", label: "Edit", onClick: () => openEdit(e.name) }),
+      Btn({ variant: "ghost", size: "sm", label: "Delete", onClick: () => confirmDelete(e.name) }),
+    ],
+  });
 }
 
 // --- Drawer (editor overlay) ----------------------------------------------
@@ -397,12 +329,12 @@ async function loadEntry(name) {
 }
 
 async function saveEntry() {
-  const { kind, name, owner, trigger, phase, content } = entryEls();
+  const { name, owner, trigger, phase, content } = entryEls();
   const entryName = (name.value || "").trim();
   showEntryError("");
   if (!entryName) { showEntryError("Name is required."); return; }
   try {
-    const k = validateKind(kind.value);
+    const k = validateKind(currentKind);
     const params = entryScopeParams();
     // Fold the structured fields back into the content's frontmatter so the
     // cards re-render the metadata. The raw-markdown PUT contract is unchanged.
@@ -429,7 +361,7 @@ async function saveEntry() {
 async function deleteNamed(entryName) {
   if (!entryName) return "Name is required.";
   try {
-    const k = validateKind(entryEls().kind.value);
+    const k = validateKind(currentKind);
     const params = entryScopeParams();
     await apiText(`/api/${k}/${encodeURIComponent(entryName)}?${params}`, { method: "DELETE" });
     return null;
@@ -460,25 +392,28 @@ async function confirmDelete(name) {
 }
 
 export function init() {
-  const els = entryEls();
-  els.kind.addEventListener("change", () => { syncNewLabel(); resetEditor(); refreshEntries(); });
-  els.scope.addEventListener("change", () => { updateRepoPicker(); resetEditor(); refreshEntries(); });
-  els.repo.addEventListener("change", () => { resetEditor(); refreshEntries(); });
+  renderKindToggle();
+  renderSourceFilter();
   document.getElementById("entry-new").addEventListener("click", newEntry);
   document.getElementById("entry-save").addEventListener("click", saveEntry);
   document.getElementById("entry-delete").addEventListener("click", deleteFromDrawer);
   document.getElementById("entry-cancel").addEventListener("click", closeDrawer);
   document.getElementById("entry-cancel-2").addEventListener("click", closeDrawer);
   syncNewLabel();
-  updateRepoPicker();
   refreshEntries();
 }
 
-// Keep the per-repo picker in sync with discovered repos (cheap, no clobber).
-// If the picker had to drop the previously-selected repo, reset the editor
-// rather than silently letting Save/Delete act on a different repo.
+// Keep the source filter in sync with discovered repos (cheap, no clobber). If
+// the currently-selected repo source vanished, fall back to Global rather than
+// silently letting Save/Delete act on a stale repo.
 export function setKnownRepos(next) {
   if (next.join("\n") === knownRepos.join("\n")) return;
   knownRepos = next;
-  if (updateRepoPicker()) { resetEditor(); refreshEntries(); }
+  let changed = false;
+  if (currentSource !== "global" && !knownRepos.includes(currentSource)) {
+    currentSource = "global";
+    changed = true;
+  }
+  renderSourceFilter();
+  if (changed) { resetEditor(); refreshEntries(); }
 }

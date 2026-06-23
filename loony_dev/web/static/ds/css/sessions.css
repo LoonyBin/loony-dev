@@ -1,0 +1,73 @@
+/* ============================================================================
+   sessions.css — the Sessions per-screen COMPOSITE layer.
+
+   This is the screen-local visual recipe for the ld-sessions factories
+   (ChatBubble / ChatComposer / TimelineRow / SkillCard / LinkedMini / KVRow in
+   js/components/sessions.js). It sits ON TOP of ld-system.css: the factories
+   emit minimal markup + class names only, and every static visual value that
+   used to live inline now resolves here. Token-driven — values come from the
+   L Space token foundation (--ink, --border-*, --font-*, --radius-*, --gray-*,
+   --fg-*, --bg-*) and never hard-code a colour/size. Reuses ld-system.css
+   classes (.bubble, .code-chip, .ref-chip, .tl-dot, .tl-line, .skill-icon,
+   .diffstat, .card, .pad-*, .hairline); only the gaps below are net-new.
+   ============================================================================ */
+
+/* ---------- ChatBubble — the .msg row + .bubble live in ld-system.css ---------- */
+.bubble-speaker { color: var(--ink); }          /* leading "Speaker:" label inside the bubble */
+
+/* ---------- ChatComposer — steer input row ---------- */
+.chat-input {
+  flex: 1;
+  padding: 11px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  color: var(--ink);
+  background: var(--bg-app);
+}
+.chat-composer { padding: var(--pad-card); border-top: 1px solid var(--border-hairline); }
+.chat-input:disabled { opacity: 0.6; cursor: not-allowed; }   /* steer bar before its drive bridge is wired */
+
+/* ---------- TimelineRow — one activity event ---------- */
+.tl-row { padding-bottom: 16px; }               /* base row spacing */
+.tl-row:last-child { padding-bottom: 0; }       /* last row closes the rail — structural, no class */
+.tl-row:last-child .tl-line { display: none; }  /* …and has no trailing connector */
+.tl-marker { width: 14px; flex: none; }         /* dot + connector column */
+.tl-text { margin-top: -2px; }                  /* optical alignment of text to the dot */
+.tl-title { font-size: 13.5px; line-height: 1.25; color: var(--ink); }
+.tl-title.t-blocked { color: var(--st-blocked-ink); }   /* state === 'blocked' */
+.tl-meta { font-size: 11.5px; margin-top: 1px; }
+/* Flat shape (rail:false) — the app's activity row: centred, no rail spacing
+   (the .timeline container gaps the rows), avatar + label + trailing time. */
+.tl-flat { padding-bottom: 0; }
+.tl-flat .tl-text { margin-top: 0; }                    /* centred, not nudged to a top dot */
+.tl-flat .ava { width: 24px; height: 24px; }           /* compact actor avatar */
+.tl-chip {                                              /* inline skill chip after the title */
+  display: inline-block; padding: 0 4px; border-radius: var(--radius-xs);
+  background: var(--ld-accent-soft); color: var(--ld-accent-ink);
+  font-size: 11px; font-weight: var(--fw-bold); white-space: nowrap;
+}
+.tl-when { font-size: 11px; white-space: nowrap; }      /* trailing relative time */
+
+/* ---------- SkillCard — skill catalog card ---------- */
+.skill-card { flex: 1 1 320px; min-width: 300px; }
+.skill-id { font-size: 14.5px; color: var(--ink); font-family: ui-monospace, monospace; }
+.skill-owner { font-size: 12px; color: var(--fg-secondary); }
+.skill-desc { font-size: 13.5px; line-height: 1.45; margin: 12px 0 14px; }
+.skill-trig { font-size: 12.5px; margin-top: 4px; color: var(--gray-700); }
+/* The divider matches the design's inline `marginBottom: 12` (the 14px gap above
+   comes from .skill-desc's bottom margin). Resetting the UA <hr> margin is what
+   makes the 12px exact rather than the browser default ~8px. */
+.skill-card .hairline { margin: 0 0 12px; }
+.skill-foot { margin-top: 14px; }
+.skill-foot .skill-actions { margin-left: auto; }   /* keep actions right when the hidden 'used' line is gone */
+.skill-used { font-size: 12px; }
+.skill-used .skill-runs { color: var(--fg-secondary); }   /* the "N×" run count */
+
+/* ---------- LinkedMini — compact linked-PR card ---------- */
+.linked-title { font-size: 13px; color: var(--ink); }
+
+/* ---------- KVRow — key/value line ---------- */
+.kv-row { font-size: 13.5px; }
+.kv-val { color: var(--ink); }

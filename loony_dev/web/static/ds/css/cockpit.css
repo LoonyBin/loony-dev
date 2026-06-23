@@ -1,0 +1,59 @@
+/* ============================================================================
+   cockpit.css — the COCKPIT per-screen composite layer.
+
+   This is the screen-local visual recipe for the ld-cockpit catalog (the
+   dependency DAG, the compact dag-field, the epic-zone card, the story list,
+   and the live-activity row). It sits ON TOP of ld-system.css: it reuses the
+   canonical primitives/classes there (.dag, .node, .dagfield, .df-node,
+   .dotgrid, .clickrow, .crumb, tones…) and only ADDS the classes that used to
+   live as inline styles inside the cockpit.js factory.
+
+   Token-driven: every value resolves from the L Space token foundation
+   (design/colors_and_type.css) via the same vars ld-system.css consumes. The
+   factory emits MINIMAL markup + class names; the only inline `.style` that
+   survives is DATA-DRIVEN LAYOUT, carried as CSS custom properties:
+     --x / --y  → DAG / dag-field node position (left/top)
+     --w / --h  → Dag canvas + dagfield size
+   so the recipe (sizes, colours, type) lives here and the data lives there.
+   ============================================================================ */
+
+/* ---- DAG canvas + node (ld-cockpit Dag / DagNode) ---------------------------
+   The canvas size and each node's position are data-driven (computed from the
+   graph layout), so they ride custom properties set by the factory. The node's
+   FIXED footprint (132×52) is static recipe and lives here. The <svg>'s
+   inset/overflow/pointer-events are already covered by `.dag > svg` in
+   ld-system.css. */
+.dag { width: var(--w); height: var(--h); }
+.node { left: var(--x); top: var(--y); width: 132px; height: 52px; }
+
+/* ---- dag-field (ld-cockpit DagFieldNode) ----------------------------------
+   `.dagfield` / `.df-node` base recipe lives in ld-system.css; here we add the
+   data-driven size/position hooks and the inner-<svg> overlay rule. */
+.dagfield { width: var(--w); height: var(--h); }
+.dagfield > svg { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.dagfield .df-node { left: var(--x); top: var(--y); }
+.df-dot-wrap { position: relative; }
+
+/* ---- DAG legend (ld-cockpit DagLegend) ------------------------------------ */
+.dag-legend-item { font-size: 12.5px; color: var(--fg-secondary); }
+
+/* ---- epic zone card (ld-cockpit EpicZoneCard) ------------------------------ */
+.zone-repo { min-width: 320px; }
+.zone-repo .zr-name { font-size: 15.5px; color: var(--ink); }
+.zone-epic { font-size: 12.5px; margin-top: 4px; }
+.zone-hr { margin: 10px 0; }
+.zone-foot { font-size: 12.5px; }
+
+/* ---- story list item (ld-cockpit StoryListItem) ---------------------------- */
+.story-item { opacity: 1; }
+.story-item.gated { opacity: 0.72; }
+.story-gated { font-size: 11.5px; margin-top: 6px; }
+.story-chips { margin-top: 8px; }
+
+/* ---- live activity row (ld-cockpit LiveActivityRow) ------------------------
+   The `tone` that inks the verb is a composable modifier on the verb element. */
+.activity-row { padding: 2px; }
+.activity-row .act-who { color: var(--ink); }
+.act-what.t-blocked { color: var(--st-blocked-ink); font-weight: 600; }
+.act-what.t-review { color: var(--st-review-ink); font-weight: 600; }
+.act-meta { font-size: 11.5px; margin-top: 1px; }

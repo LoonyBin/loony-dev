@@ -16,7 +16,11 @@
 // title and the deferred `—` counts. Everything derivable from workers /
 // worktrees / sessions / task_sessions / stuck stays live regardless.
 
-import { goRepo, icon, formatAge } from "./dom.js";
+import { goRepo, icon, formatAge, stageTone } from "./dom.js";
+// Shared design-system components (static/ds/) — single source of truth (#258 / Phase 4).
+import { Tag, Btn, Segmented } from "/static/ds/components/primitives.js";
+import { FleetRow, KanbanCard } from "/static/ds/components/fleet.js";
+import { renderRepoFilter } from "./repoFilter.js";
 
 // Lifecycle stages, in board order. Only a coarse subset is derivable from the
 // filesystem snapshot (Inbox / Implementing / PR Open); the rest render as
@@ -25,16 +29,7 @@ const STAGES = [
   "Inbox", "Planning", "Implementing", "PR Open", "In Review", "Conflicts", "Merged",
 ];
 
-// Stage → .tag color variant (#186 palette).
-const STAGE_TAG = {
-  "Inbox": "ghost",
-  "Planning": "blue",
-  "Implementing": "blue",
-  "PR Open": "purple",
-  "In Review": "amber",
-  "Conflicts": "red",
-  "Merged": "green",
-};
+// Stage → Tag tone is the canonical stageTone() in dom.js (one source of truth).
 
 // Stat-metric filters (#223). The four state metric cards double as a single
 // mutually-exclusive worklist filter: clicking a metric sets it, clicking the
@@ -289,7 +284,7 @@ function el(tag, className, text) {
 }
 
 function stageTag(stage) {
-  return el("span", `tag ${STAGE_TAG[stage] || "neutral"}`, stage);
+  return Tag({ tone: stageTone(stage), label: stage });
 }
 
 // Single worker (the trixy bot). Deep-link a row to the Issue ▸ PR pipeline
@@ -396,76 +391,37 @@ function clickable(node, row) {
   });
 }
 
-// A repo tag: folder glyph + short repo name, full repo in the title.
-function repoTag(repo) {
-  const tag = el("span", "tag neutral");
-  const ico = icon("folder");
-  ico.classList.add("tag-ico");
-  tag.appendChild(ico);
-  tag.appendChild(document.createTextNode(repoShort(repo)));
-  if (repo) tag.title = repo;
-  return tag;
-}
-
 // Columns: Worker · Issue · Repo · Stage · Skill running · Updated · action.
 // The bot worker identity isn't surfaced in the snapshot (one bot per repo), so
 // the Worker cell reuses the existing `trixy` avatar convention rather than the
 // mock's illustrative `tx-NN` / `capo` sample names (#218).
 function boardRow(row) {
-  const tr = el("tr", "fleet-row");
-  clickable(tr, row);
+  // Compose the shared FleetRow factory (SoT). Identity is app DATA — the single
+  // `trixy` bot per repo (#218), not a sample worker number: a soft avatar + the
+  // `trixy` login. The trailing action is caller-supplied: a Review button when
+  // the row needs a human (deep-links to the pipeline), else a chevron affordance.
+  const action = needsYou(row)
+    ? Btn({
+        variant: "danger", size: "sm", label: "Review", iconRight: "arrow_forward",
+        onClick: (ev) => { ev.stopPropagation(); goPipeline(row); },
+      })
+    : icon("chevron_right");
 
-  const worker = el("td", null);
-  worker.dataset.label = "Worker";
-  const wrap = el("div", "fleet-worker");
-  wrap.appendChild(el("span", "avatar trixy", "TX"));
-  wrap.appendChild(el("span", "fleet-worker-name", "trixy"));
-  worker.appendChild(wrap);
-  tr.appendChild(worker);
-
-  const issue = el("td", "fleet-issue-cell");
-  issue.dataset.label = "Issue";
-  issue.appendChild(el("span", "fleet-num", `#${row.number}`));
-  issue.appendChild(document.createTextNode(" "));
-  issue.appendChild(el("span", "fleet-issue-title", row.title));
-  tr.appendChild(issue);
-
-  const repo = el("td", null);
-  repo.dataset.label = "Repo";
-  repo.appendChild(repoTag(row.repo));
-  tr.appendChild(repo);
-
-  const stage = el("td", null);
-  stage.dataset.label = "Stage";
-  stage.appendChild(stageTag(row.stage));
-  tr.appendChild(stage);
-
-  const skill = el("td", "fleet-skill", skillFor(row));
-  skill.dataset.label = "Skill running";
-  tr.appendChild(skill);
-
-  const updated = el("td", "fleet-updated", relTime(row.lastUpdate));
-  updated.dataset.label = "Updated";
-  tr.appendChild(updated);
-
-  // Review-action: a Review button when the row needs a human, else a chevron.
-  const action = el("td", "fleet-action-cell");
-  action.dataset.label = "";
-  if (needsYou(row)) {
-    const btn = el("button", "ld-btn danger sm");
-    btn.type = "button";
-    btn.appendChild(document.createTextNode("Review"));
-    btn.appendChild(icon("arrow_forward"));
-    btn.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      goPipeline(row);
-    });
-    action.appendChild(btn);
-  } else {
-    action.appendChild(icon("chevron_right"));
-  }
-  tr.appendChild(action);
-
+  const tr = FleetRow({
+    worker: {
+      name: "trixy",
+      avatar: { tone: "neutral", glyph: "TX" },   // design worker avatar is .ava.trixy (neutral gray)
+      issue: row.number,
+      title: row.title,
+      repo: row.repo,
+      stage: row.stage,
+      skill: skillFor(row),
+      upd: relTime(row.lastUpdate),
+    },
+    actions: action,
+    class: "fleet-row",   // app interaction styling (cursor / hover / focus)
+  });
+  clickable(tr, row);     // whole-row click + keyboard → goPipeline
   return tr;
 }
 
@@ -567,25 +523,22 @@ function renderTriage(rows) {
 // (the number *is* the PR); issue rows know a PR exists but not its number, so
 // it's omitted there.
 function kanbanCard(row) {
-  const card = el("div", "fleet-card");
-  if (needsYou(row)) card.classList.add("needs");
-  clickable(card, row);
-
-  const head = el("div", "fleet-card-head");
-  head.appendChild(el("span", "fleet-num", `#${row.number}`));
-  if (needsYou(row)) head.appendChild(el("span", "tag red", "needs you"));
-  card.appendChild(head);
-
-  card.appendChild(el("div", "fleet-card-title", row.title));
-
-  const meta = el("div", "fleet-card-meta");
-  meta.appendChild(repoTag(row.repo));
-  const actor = el("div", "fleet-card-actor");
-  if (row.kind === "pr") actor.appendChild(el("span", "fleet-card-pr", `PR #${row.number}`));
-  actor.appendChild(el("span", "avatar trixy", "TX"));
-  meta.appendChild(actor);
-  card.appendChild(meta);
-
+  // Compose the shared KanbanCard factory (SoT). Identity is app DATA — the
+  // single `trixy` bot (soft avatar), not a sample worker number. PR# is only
+  // known for `pr`-kind rows (the number IS the PR); issue rows know a PR exists
+  // but not its number, so it's omitted there.
+  const card = KanbanCard({
+    worker: {
+      issue: row.number,
+      title: row.title,
+      repo: row.repo,
+      needs: needsYou(row),
+      pr: row.kind === "pr" ? row.number : null,
+      avatar: { tone: "soft", glyph: "TX" },
+    },
+    class: "fleet-card",   // app interaction styling (hover / focus ring)
+  });
+  clickable(card, row);    // whole-card click + keyboard → goPipeline
   return card;
 }
 
@@ -628,63 +581,31 @@ function renderRepoSidebar(rows) {
     counts.set(r.repo, (counts.get(r.repo) || 0) + 1);
   }
   const repos = [...counts.keys()].sort((a, b) => a.localeCompare(b));
+  const items = repos.map((r) => ({ key: r, label: repoShort(r), title: r, count: counts.get(r) }));
 
-  host.innerHTML = "";
-  const head = el("div", "fleet-repos-head");
-  head.appendChild(el("span", "eyebrow", "Filter by repo"));
-  if (state.repo) {
-    const clear = el("button", "fleet-clear", "Clear");
-    clear.type = "button";
-    clear.addEventListener("click", () => {
-      state.repo = null;
-      draw();
-    });
-    head.appendChild(clear);
-  }
-  host.appendChild(head);
-
-  if (!repos.length) {
-    host.appendChild(el("p", "empty", "No repos."));
-  } else {
-    const list = el("div", "fleet-repo-list");
-    for (const repo of repos) {
-      const btn = el("button", "fleet-repo");
-      btn.type = "button";
-      if (repo === state.repo) {
-        btn.classList.add("active");
-        btn.setAttribute("aria-pressed", "true");
-      } else {
-        btn.setAttribute("aria-pressed", "false");
-      }
-      btn.appendChild(el("span", "fleet-repo-name", repoShort(repo)));
-      btn.title = repo;
-      btn.appendChild(el("span", "fleet-repo-count", String(counts.get(repo))));
-      btn.addEventListener("click", () => {
-        state.repo = state.repo === repo ? null : repo;
-        draw();
-      });
-      list.appendChild(btn);
-    }
-    host.appendChild(list);
-  }
-
-  // "Connect repo" (#240): the mock shows an outline button beneath the repo
-  // list. There is no connect-repo endpoint yet, so this is a disabled stub with
-  // the same honest tooltip as the Live sidebar's "+ Connect repo" affordance —
-  // matching the project's honest-placeholder convention.
-  const connect = el("button", "ld-btn sm outline fleet-repos-connect", "Connect repo");
-  connect.type = "button";
-  connect.disabled = true;
+  // Footer (Fleet-specific): the disabled "Connect repo" stub (#240) + the note
+  // that repos filter the worklist rather than navigate.
+  const footer = document.createDocumentFragment();
+  const connect = Btn({
+    variant: "outline", size: "sm", icon: "add", label: "Connect repo",
+    class: "fleet-repos-connect", attrs: { disabled: "" },
+  });
   connect.title = "No endpoint yet — follow-up";
-  connect.prepend(icon("add"));
-  host.appendChild(connect);
-
-  // The explanatory note: repos filter the worklist; they don't navigate.
+  footer.append(connect);
   const note = el("p", "fleet-repos-note");
   note.appendChild(document.createTextNode("Repos filter the worklist — they don't navigate. Open a repo's session from "));
   note.appendChild(el("strong", null, "Live"));
   note.appendChild(document.createTextNode("."));
-  host.appendChild(note);
+  footer.append(note);
+
+  renderRepoFilter(host, {
+    eyebrow: "Filter by repo",
+    items,
+    activeKey: state.repo,
+    clearable: true,   // faceted: a chosen repo can be cleared / toggled off
+    onSelect: (key) => { state.repo = (key === null || state.repo === key) ? null : key; draw(); },
+    footer,
+  });
 }
 
 // ---- Filter chip ------------------------------------------------------------
@@ -705,14 +626,22 @@ function chip(label, onRemove) {
 
 // ---- Control state sync -----------------------------------------------------
 
-// Sync the view toggle's active state. The metric-filter active state is
-// rebuilt inside renderStatStrip on every draw, so it needs no sync here.
-function syncControls() {
-  document.querySelectorAll("#fleet-view [data-fleet-view]").forEach((btn) => {
-    const on = btn.dataset.fleetView === state.view;
-    btn.classList.toggle("active", on);
-    btn.setAttribute("aria-pressed", String(on));
-  });
+// The board/kanban view toggle: the shared Segmented control (the generic pill
+// switch, #258). Re-rendered each draw with the active view; onChange flips
+// state.view and redraws. (The metric-filter active state is rebuilt inside
+// renderStatStrip on every draw, so it needs no sync here.)
+function renderViewToggle() {
+  const host = document.getElementById("fleet-view");
+  if (!host) return;
+  host.replaceChildren(Segmented({
+    ariaLabel: "Worklist layout",
+    value: state.view,
+    options: [
+      { value: "board", label: "Board" },     // design .seg is text-only
+      { value: "kanban", label: "Kanban" },
+    ],
+    onChange: (v) => { state.view = v; draw(); },
+  }));
 }
 
 // ---- Draw -------------------------------------------------------------------
@@ -723,7 +652,7 @@ function draw() {
   const shown = filteredRows(rows);
 
   renderStatStrip(state.snapshot, rows);
-  syncControls();
+  renderViewToggle();
   renderRepoSidebar(rows);
   // Mobile-only triage list (#227): pass the full pre-filter rows so a
   // metric-card selection never empties it. CSS shows it at phone widths only.
@@ -742,16 +671,12 @@ function draw() {
   }
 }
 
-// Wire the static controls once. Called from app.js start().
+// Nothing to wire once anymore: the board/kanban toggle is the Segmented control,
+// re-rendered (with its onChange) on every draw(). Kept as a no-op so app.js's
+// start() call site is unchanged.
 export function init() {
   if (wired) return;
   wired = true;
-  document.querySelectorAll("#fleet-view [data-fleet-view]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      state.view = btn.dataset.fleetView;
-      draw();
-    });
-  });
 }
 
 // Re-entrant on every SSE snapshot; preserves the current view/filter state.

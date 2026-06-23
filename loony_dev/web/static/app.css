@@ -38,7 +38,7 @@
   /* ---- App-shell-only tokens (the design system has no source) -------- */
   /* Monospace stack for SHAs, branch names, log/terminal panes. */
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --maxw: 1100px;
+  --maxw: 1320px;   /* design .stage max-width */
   /* Left rail width (#187): expanded by default, 72px when collapsed (keyed off
      :root[data-rail="collapsed"] below). The .shell grid + rail both read it. */
   --rail-w: 236px;
@@ -184,7 +184,19 @@ section.view > h2:first-child { margin-top: 0; }
 
 /* ---- Shell controls (shared by the rail) ----------------------------- */
 .brand { font-weight: 700; font-size: var(--fs-h3); white-space: nowrap; }
-.brand-sub { color: var(--fg-secondary); font-weight: 500; }
+/* Brand wordmark + tag — the design's .brand-word / .brand-tag. The wordmark is
+   "loony·dev" with the middot in the accent color; the tag is small uppercase
+   caps. (Overrides the .rail-brand button font so they aren't ~20px each.) */
+.brand-word { font-size: 18px; font-weight: 800; letter-spacing: -0.02em; color: var(--ink); line-height: 1; }
+.brand-dot { color: var(--ld-accent); }
+.brand-sub {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  margin-top: 3px;
+}
 .spacer { flex: 1; }
 
 .icon-btn {
@@ -261,7 +273,7 @@ section.view > h2:first-child { margin-top: 0; }
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  padding: var(--space-3);
+  padding: 22px 16px 16px;   /* design .rail */
   background: var(--bg-app);
   border-right: 1px solid var(--border-default);
   position: sticky;
@@ -349,10 +361,10 @@ section.view > h2:first-child { margin-top: 0; }
    hidden when the rail is icon-only (tooltips carry the labels there). */
 .rail-nav-eyebrow {
   padding: var(--space-2) var(--space-3) var(--space-1);
-  font-size: var(--fs-2xs);
-  font-weight: 600;
+  font-size: 10px;                            /* design .nav-eyebrow */
+  font-weight: 700;                           /* design .nav-eyebrow */
   text-transform: uppercase;
-  letter-spacing: var(--tracking-wide);
+  letter-spacing: var(--tracking-widest);     /* design .nav-eyebrow .16em */
   color: var(--fg-muted, var(--fg-secondary));
 }
 
@@ -368,8 +380,8 @@ section.view > h2:first-child { margin-top: 0; }
 .rail-footer {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding-top: var(--space-3);
+  gap: 10px;             /* design .railfoot */
+  padding-top: 14px;     /* design .railfoot */
   border-top: 1px solid var(--border-default);
 }
 
@@ -377,14 +389,16 @@ section.view > h2:first-child { margin-top: 0; }
   position: relative;
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: 11px;               /* design .navitem */
   width: 100%;
-  padding: var(--space-3);
+  padding: 9px 10px;       /* design .navitem */
   border: none;
   border-radius: var(--radius-xs);
   background: none;
   color: var(--fg-secondary);
-  font: inherit;
+  font-family: inherit;
+  font-size: 14.5px;       /* design .navitem */
+  font-weight: 600;        /* design .navitem (inactive); .active bumps to 700 */
   text-align: left;
   cursor: pointer;
 }
@@ -420,12 +434,18 @@ section.view > h2:first-child { margin-top: 0; }
   flex: none;
 }
 
-/* Operator profile widget (the human-in-the-loop) + settings gear. */
+/* Operator profile widget (the human-in-the-loop) + settings gear — the design's
+   .user-card: a bordered, padded card (not a bare row). */
 .rail-operator {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-app);
 }
+.rail-operator:hover { background: var(--bg-subtle); }
 .operator-id {
   display: flex;
   flex-direction: column;
@@ -434,19 +454,24 @@ section.view > h2:first-child { margin-top: 0; }
   line-height: 1.2;
 }
 .operator-name {
-  font-weight: 600;
-  font-size: var(--fs-sm);
+  font-weight: 700;          /* design .user-card .nm */
+  font-size: 13px;           /* design .user-card .nm */
+  color: var(--ink);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .operator-handle {
-  font-size: var(--fs-2xs);
-  color: var(--fg-secondary);
+  font-size: 11px;           /* design .user-card .st */
+  color: var(--fg-muted);    /* design .user-card .st */
+  display: flex;
+  align-items: center;
+  gap: 5px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.operator-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--st-merged); flex: none; }   /* design .st .d (green presence) */
 
 /* ---- Flyout: settings gear menu -------------------------------------- */
 .flyout { position: relative; flex: none; }
@@ -454,13 +479,13 @@ section.view > h2:first-child { margin-top: 0; }
   position: absolute;
   left: 0;
   z-index: 60;
-  min-width: 14rem;
+  min-width: 216px;                  /* design .settings-pop */
   max-width: min(20rem, 90vw);
   background: var(--bg-app);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-card);
-  padding: var(--space-2);
+  box-shadow: var(--shadow-pop);     /* design .settings-pop uses the larger pop shadow */
+  padding: 6px;                      /* design .settings-pop */
 }
 /* The gear sits in the footer -> pop the menu above it. It grows rightward over
    <main> so it stays on-screen in both expanded and collapsed rail widths. */
@@ -499,35 +524,36 @@ section.view > h2:first-child { margin-top: 0; }
 .gear-menu { display: flex; flex-direction: column; gap: 2px; }
 /* Non-interactive "Settings" cap header on the gear menu (#222): an uppercase
    micro-label with a divider, mirroring the .rail-nav-eyebrow treatment. */
-.menu-cap {
-  padding: var(--space-1) var(--space-3) var(--space-2);
-  font-size: var(--fs-2xs);
+.menu-cap {                          /* design .pop-cap */
+  padding: 8px 10px 4px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: var(--tracking-wide);
-  color: var(--fg-secondary);
+  letter-spacing: 0.14em;
+  color: var(--fg-muted);
   border-bottom: 1px solid var(--border-default);
   margin-bottom: 2px;
 }
-.menu-item {
+.menu-item {                         /* design .pop-item */
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: 11px;
   width: 100%;
-  padding: var(--space-2) var(--space-3);
+  padding: 9px 10px;
   border: none;
   border-radius: var(--radius-xs);
   background: none;
-  font: inherit;
-  font-size: var(--fs-sm);
-  color: var(--fg-primary);
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--fg-secondary);
   text-align: left;
   cursor: pointer;
 }
-.menu-item:hover:not(:disabled) { background: var(--bg-chip); }
+.menu-item:hover:not(:disabled) { background: var(--bg-chip); color: var(--fg-primary); }
 .menu-item.active { background: var(--bg-chip); color: var(--fg-primary); }
 .menu-item:disabled { color: var(--fg-secondary); cursor: not-allowed; }
-.menu-item .material-symbols-outlined { font-size: 1.2rem; color: var(--fg-secondary); flex: none; }
+.menu-item .material-symbols-outlined { font-size: 19px; color: var(--fg-muted); flex: none; }
 .menu-soon {
   margin-left: auto;
   font-size: var(--fs-2xs);
@@ -540,8 +566,11 @@ section.view > h2:first-child { margin-top: 0; }
   padding: 1px var(--space-2);
 }
 
+/* The content frame IS the design's `.stage`: fixed, asymmetric, and
+   density-INDEPENDENT (the design's density toggle only changes --pad-card /
+   --row-gap, never the page frame). 26px top, 32px sides, 96px bottom. */
 main {
-  padding: var(--space-6);
+  padding: 26px 32px 96px;
   overflow: auto;
   width: 100%;
   max-width: var(--maxw);
@@ -629,10 +658,12 @@ main {
    the global --sp-* scale (which would cascade everywhere). Comfortable is the
    default spacing. */
 :root[data-density="compact"] .nav-item { padding: var(--space-2) var(--space-3); }
-:root[data-density="compact"] main { padding: var(--space-4); }
 :root[data-density="compact"] .data-table th,
 :root[data-density="compact"] .data-table td { padding: var(--space-1) var(--space-2); }
-:root[data-density="compact"] .card,
+/* NOTE: density must NOT touch the page frame (`main`) or the shared `.card` —
+   the design's density only changes --pad-card / --row-gap. `main` is the fixed
+   .stage frame; `.card` density flows through --pad-card (see the .card rule).
+   Only app-specific surfaces keep an explicit compact padding. */
 :root[data-density="compact"] .session-card,
 :root[data-density="compact"] .stat { padding: var(--space-3); }
 
@@ -706,7 +737,7 @@ main {
   /* The operator identity (name/handle already hidden) folds to just the gear
      on the bar; drop the avatar too so the footer can't crowd the nav into a
      horizontal scroll on the narrowest phones. */
-  .rail-operator > .avatar { display: none; }
+  .rail-operator > .ava { display: none; }
   .nav-item {
     flex-direction: column;
     gap: 2px;
@@ -743,7 +774,15 @@ main {
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border-default);
 }
-.data-table th { font-weight: 600; color: var(--fg-secondary); }
+.data-table td { font-size: 13.5px; }   /* design table.board td */
+/* design table.board th: small uppercase letter-spaced caps */
+.data-table th {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);   /* .12em */
+  color: var(--fg-muted);
+}
 .empty { color: var(--fg-secondary); font-style: italic; }
 
 .status { font-weight: 600; }
@@ -854,25 +893,9 @@ button.action:hover,
 .kill-btn { background: var(--danger-strong); }
 .kill-btn:hover { background: var(--danger); }
 
-/* ---- Controls -------------------------------------------------------- */
-.controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  align-items: center;
-  margin-bottom: var(--space-3);
-}
-.controls label { font-size: var(--fs-sm); display: inline-flex; align-items: center; gap: var(--space-2); }
-.controls select,
-.controls input {
-  font: inherit;
-  padding: var(--space-1) var(--space-2);
-  background: var(--bg-app);
-  color: var(--fg-primary);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-xs);
-  min-height: 2.2rem;
-}
+/* The Skills library's Kind/Scope/Repo `.controls` filter bar was replaced by
+   the shared Segmented toggle (in the screen head) + the Fleet repo-filter
+   sidebar (#258), so the `.controls` block is gone. */
 .muted { color: var(--fg-secondary); font-size: var(--fs-xs); }
 
 /* ---- Fleet worklist (#188) ------------------------------------------- */
@@ -923,9 +946,10 @@ button.action:hover,
 .fleet-pool-dot.busy { background: var(--ld-accent); border-color: var(--ld-accent); }
 .fleet-pool-count {
   margin-top: auto;
-  font-size: var(--fs-display);
-  font-weight: 700;
-  line-height: 1.1;
+  font-size: 40px;            /* design pool .stat-n (fontSize 40) */
+  font-weight: 800;           /* design .stat-n */
+  line-height: 1;
+  letter-spacing: -0.02em;    /* design .stat-n */
   font-variant-numeric: var(--num);
 }
 .fleet-pool-total { color: var(--fg-secondary); font-size: 0.7em; }
@@ -974,11 +998,10 @@ button.action:hover,
   gap: var(--space-2);
 }
 .fleet-metric-n {
-  /* Design's `.stat-n` (loony-dev.html): 34px / line-height 1. 34px has no
-     --fs-* token — literal on purpose. */
-  font-size: 34px;
-  font-weight: 700;
+  font-size: 28px;            /* design metric .stat-n (fontSize 28) */
+  font-weight: 800;           /* design .stat-n */
   line-height: 1;
+  letter-spacing: -0.02em;    /* design .stat-n */
   font-variant-numeric: var(--num);
   color: var(--fg-primary);
 }
@@ -1034,8 +1057,8 @@ button.action:hover,
    below the worklist on narrow viewports (see responsive block below). */
 .fleet-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--side-w);
-  gap: var(--space-4);
+  grid-template-columns: minmax(0, 1fr) var(--side-w);   /* design .side = 300px */
+  gap: var(--space-5);                                   /* design row g20 = 20px */
   align-items: start;
 }
 .fleet-main { min-width: 0; }
@@ -1110,20 +1133,17 @@ button.action:hover,
    own. */
 .fleet-board-card .table-wrap { border: none; border-radius: 0; box-shadow: none; }
 
-/* Board rows are deep-link targets: whole-row click + keyboard focusable. */
+/* The board rows are now built by the shared FleetRow factory (#258 / Phase 4):
+   the per-cell visuals (worker identity, issue, repo/stage Tags, skill, updated)
+   and the trailing .fleet-action cell come from ds/ld-system.css + ds/css/
+   fleet.css. Only the row's INTERACTION styling stays here — the <tr> carries
+   the app's `.fleet-row` class via the factory seam — plus the chevron tint and
+   the empty-state row, both still app-built. */
 .fleet-row { cursor: pointer; }
 .fleet-row:hover td { background: var(--bg-chip); }
 .fleet-row:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: -2px; }
-.fleet-num { font-weight: 700; font-variant-numeric: var(--num); color: var(--fg-secondary); }
-.fleet-worker { display: inline-flex; align-items: center; gap: var(--space-2); }
-.fleet-worker-name { font-weight: 600; }
-.fleet-issue-cell { font-weight: 600; }
-.fleet-issue-title { font-weight: 600; }
-.fleet-skill { color: var(--fg-secondary); font-size: var(--fs-xs); }
-.fleet-updated { color: var(--fg-secondary); font-variant-numeric: var(--num); }
-.fleet-action-cell { text-align: right; white-space: nowrap; }
-.fleet-action-cell .ld-btn .material-symbols-outlined { font-size: 1.05rem; }
-.fleet-action-cell > .material-symbols-outlined { color: var(--fg-secondary); }
+.fleet-action > .material-symbols-outlined { color: var(--fg-secondary); }   /* chevron affordance */
+.fleet-num { font-weight: 700; font-variant-numeric: var(--num); color: var(--fg-secondary); }  /* mobile triage cards */
 .fleet-empty-row { padding: var(--space-8) var(--space-3); text-align: center; color: var(--fg-secondary); font-style: italic; }
 /* A folder glyph inside a .tag reads as a small inline mark. */
 .tag .tag-ico { font-size: 0.95rem; }
@@ -1137,6 +1157,11 @@ button.action:hover,
   overflow-x: auto;
   padding-bottom: var(--space-2);
 }
+/* draw() toggles the view by setting the `hidden` attribute, but the bare-class
+   `display: grid` above outranks the UA `[hidden]` rule — so the kanban stayed
+   visible after switching back to the board. Restore it with the attribute
+   selector (same pattern as .fleet-triage[hidden] / .modal[hidden]). */
+.fleet-kanban[hidden] { display: none; }
 /* Column = a plain header over a recessed (dark) body surface (design's
    --bg-app), so the cards lift off the column. */
 .fleet-col {
@@ -1177,35 +1202,15 @@ button.action:hover,
   padding: var(--space-2);
 }
 .fleet-col-empty { color: var(--fg-secondary); font-size: var(--fs-xs); margin: auto 0; text-align: center; }
-.fleet-card {
-  background: var(--bg-app);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-xs);
-  box-shadow: var(--shadow-card);
-  padding: var(--space-3);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  text-align: left;
-  width: 100%;
-  cursor: pointer;
-}
+/* The kanban card is now built by the shared KanbanCard factory (#258 / Phase 4):
+   the surface, padding, title, repo/PR/avatar row and the `.needs` border come
+   from ds/ld-system.css (.card / .pad-sm / .kanban-card) + ds/css/fleet.css.
+   Only the card's INTERACTION styling stays here — the node carries the app's
+   `.fleet-card` class via the factory seam. `width: 100%` keeps it filling the
+   app's flex column body (which is laid out differently from the ds demo). */
+.fleet-card { width: 100%; }
 .fleet-card:hover { border-color: var(--ld-accent); }
 .fleet-card:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: 2px; }
-/* A card that needs a human gets a soft red border to draw the eye. */
-.fleet-card.needs { border-color: var(--st-blocked); }
-.fleet-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
-.fleet-card-title { font-weight: 600; line-height: 1.3; }
-.fleet-card-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  font-size: var(--fs-xs);
-  color: var(--fg-secondary);
-}
-.fleet-card-actor { display: inline-flex; align-items: center; gap: var(--space-2); }
-.fleet-card-pr { font-variant-numeric: var(--num); font-weight: 600; }
 
 /* Repo filter sidebar. */
 .fleet-repos {
@@ -1216,7 +1221,7 @@ button.action:hover,
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-card);
-  padding: var(--space-3);
+  padding: 22px;        /* design sidebar is a .card.pad-lg (22px) */
 }
 .fleet-repos-head {
   display: flex;
@@ -1246,7 +1251,7 @@ button.action:hover,
   background: none;
   border: none;
   border-radius: var(--radius-xs);
-  padding: var(--space-1) var(--space-2);
+  padding: 8px 10px;        /* design repo rows: 8px 10px */
   cursor: pointer;
   text-align: left;
 }
@@ -1335,10 +1340,10 @@ button.action:hover,
      Repo, Stage, Updated and the Review/chevron action. */
   .fleet-table td[data-label="Worker"],
   .fleet-table td[data-label="Skill running"] { display: none; }
-  /* The action cell carries an empty data-label; suppress its blank ::before and
-     right-align the Review button / chevron. */
-  .fleet-table td.fleet-action-cell { justify-content: flex-end; }
-  .fleet-table td.fleet-action-cell::before { content: none; }
+  /* The action cell (ds .fleet-action) carries an empty data-label; suppress its
+     blank ::before and right-align the Review button / chevron. */
+  .fleet-table td.fleet-action { justify-content: flex-end; }
+  .fleet-table td.fleet-action::before { content: none; }
   /* The single empty-state row spans all columns — keep its message left-aligned
      with no label pseudo-element. */
   .fleet-table td.fleet-empty-row { justify-content: flex-start; }
@@ -1347,18 +1352,38 @@ button.action:hover,
 
 /* ---- Repo detail (#158) ---------------------------------------------- */
 .repo-detail h2 { word-break: break-all; }
-.repo-detail h3 { font-size: var(--fs-body); margin: var(--space-6) 0 var(--space-3); }
+/* Standalone (non-card) Live section headers (Diagnostics) — same eyebrow look,
+   but keep the larger top margin for the section break. */
+.repo-detail h3 { font-size: var(--fs-micro); font-weight: var(--fw-bold); letter-spacing: var(--tracking-widest); text-transform: uppercase; color: var(--fg-muted); margin: var(--space-6) 0 var(--space-3); }
 
+/* The shared card surface is the design's: flat (border only, NO shadow) — the
+   design's `.card` has no box-shadow; cards lift off the bg-subtle stage via the
+   border alone. (ds/ld-system.css owns `.card`; this app rule only adds the
+   guarded default padding below for bare app cards.) */
 .card {
   background: var(--bg-app);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-card);
-  /* Design's --pad-card (18px; 13px under .dense). The
-     :root[data-density="compact"] override below is a separate knob — leave it. */
-  padding: var(--pad-card);
 }
-.card h3 { margin: 0 0 var(--space-3); font-size: var(--fs-body); }
+/* The legacy app `.card` default padding must NOT clobber the design-system
+   pad-helpers: `.card` and `.pad-lg` have equal specificity, and app.css loads
+   after ds/ld-system.css, so a bare `.card { padding }` would override the ds
+   `.pad-lg`/`.pad-sm`/`.pad` on every ds composite (SkillCard, KanbanCard, …) —
+   collapsing 22px/12px to 16px. Only pad cards that opt out of the pad classes. */
+.card:not(.pad):not(.pad-sm):not(.pad-lg) { padding: var(--pad-card); }
+/* In-card section labels render as the design's EYEBROW (the design uses
+   <Eyebrow> for every in-card section heading, never a mid-level h3). We keep
+   the <h3> element for the a11y heading outline but compose it to the eyebrow
+   look — small uppercase muted caps — preserving the section-gap margin. The one
+   h3 that's a real card TITLE (.live-session-repo) overrides this below. */
+.card h3 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
 
 /* Key/value lists inside the worker & session cards. */
 .kv {
@@ -1382,9 +1407,9 @@ button.action:hover,
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: var(--space-4);
+  gap: var(--space-5);        /* 20px — design .screen-head gap */
   flex-wrap: wrap;
-  margin-bottom: var(--space-4);
+  margin-bottom: 22px;        /* design .screen-head margin-bottom (= --pad-card) */
 }
 .screen-head-text {
   display: flex;
@@ -1394,15 +1419,18 @@ button.action:hover,
 }
 /* The screen title carries the design's .screen-title treatment (loony-dev.html):
    display size, brand --ink, bold, tight tracking. */
-.screen-head-text h2 { margin: 0; font-size: var(--fs-display); font-weight: var(--fw-bold); color: var(--ink); letter-spacing: -0.02em; line-height: 1.05; overflow-wrap: anywhere; }
-/* The restored per-screen intro copy. Pinned to the design's `.screen-sub`
-   (loony-dev.html): 14.5px / line-height 1.5 / 7px top gap. These are literal
-   px on purpose — no matching --fs-* or --space-* token exists for 14.5px/7px. */
+/* The design's .screen-title is an unreset <h1>, so it carries the browser
+   default 0.67em (≈21.44px) block margin — which sets the title's top offset AND
+   the title→subtitle gap. Match it (the app title is an <h2>, so set 0.67em
+   explicitly rather than rely on the h2 default 0.83em). */
+.screen-head-text h2 { margin: 0.67em 0; font-size: var(--fs-display); font-weight: var(--fw-bold); color: var(--ink); letter-spacing: -0.02em; line-height: 1.05; overflow-wrap: anywhere; }
+/* The restored per-screen intro copy. */
 .screen-head-sub {
-  margin: 7px 0 0;
+  margin: 7px 0 0;        /* design .screen-sub: margin-top 7px */
   color: var(--fg-secondary);
-  font-size: 14.5px;
-  line-height: 1.5;
+  font-size: 14.5px;      /* design .screen-sub font-size (between --fs-sm 14 and body) */
+  line-height: 1.5;       /* design .screen-sub line-height */
+  max-width: 660px;       /* design .screen-sub: wraps at 660, not full width */
 }
 .screen-head-controls {
   display: flex;
@@ -1425,8 +1453,8 @@ button.action:hover,
 /* Three-region body: a flexible center column + a fixed --side-w (300px) sidebar. */
 .live-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--side-w);
-  gap: var(--space-4);
+  grid-template-columns: minmax(0, 1fr) var(--side-w);   /* design .side = 300px */
+  gap: var(--space-5);                                   /* design row g20 = 20px */
   align-items: start;
   margin-top: var(--space-4);
 }
@@ -1438,7 +1466,18 @@ button.action:hover,
   justify-content: space-between;
   gap: var(--space-3);
 }
-.live-session-repo { margin: var(--space-1) 0 0; word-break: break-all; }
+/* The session-head repo name is a card TITLE (design: 14px/700/ink "repo · main"),
+   NOT a section label — override the .card h3 eyebrow treatment. The compound
+   selector (0,2,0) outranks `.card h3` (0,1,1). */
+.live-session-head .live-session-repo {
+  margin: var(--space-1) 0 0;
+  word-break: break-all;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--ink);
+}
 .live-session-meta {
   display: flex;
   flex-direction: column;
@@ -1477,23 +1516,28 @@ button.action:hover,
 .repo-switch-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;   /* design: name left, count right */
   gap: var(--space-2);
   font: inherit;
-  font-size: var(--fs-xs);
+  font-size: 13.5px;                /* design repo row */
   text-align: left;
   background: none;
   border: 1px solid transparent;
   border-radius: var(--radius-xs);
-  padding: var(--space-1) var(--space-2);
-  color: var(--fg-primary);
+  padding: 8px 10px;                /* design repo row */
+  color: var(--fg-secondary);
   cursor: pointer;
 }
 .repo-switch-row:hover { background: var(--bg-chip); }
 .repo-switch-row.active {
   background: var(--ld-accent-soft);
-  color: var(--ld-accent-ink);
-  font-weight: 600;
+  color: var(--ink);               /* design: active text is ink, icon is accent */
+  font-weight: 700;
 }
+.repo-switch-label { display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.repo-switch-icon { font-size: 16px; color: var(--fg-muted); flex: none; }
+.repo-switch-row.active .repo-switch-icon { color: var(--ld-accent); }
+.repo-switch-count { font-size: 12px; font-weight: 700; color: var(--fg-muted); flex: none; font-variant-numeric: var(--num); }
 .repo-switch-name { word-break: break-all; }
 
 /* Repo-context metric cards + commit rows. */
@@ -1559,29 +1603,22 @@ button.action:hover,
 /* Greyed steer bar (#224): the design's chat input + Send, present but disabled
    until an in-dashboard drive bridge is reliable. A top hairline separates it
    from the session body; the disabled affordance mirrors .ld-btn:disabled. */
+/* The steer bar IS the shared ChatComposer (built disabled in repoDetail.js);
+   its visuals (row, input, Send, border-top) come from ds/ld-system.css +
+   ds/css/sessions.css. This rule only composes it into the live-session card:
+   pin it to the card's bottom and cancel the ds composer's horizontal padding so
+   the input spans the card width (the card already insets its content). The
+   not-allowed cursor reads the disabled bar as intentional. */
+/* The factory host is transparent to layout so the composer below is a DIRECT
+   flex child of the .live-session card — that's what lets margin-top:auto pin it
+   to the card's bottom edge. */
+#repo-steer { display: contents; }
 .live-steer-bar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
   margin-top: auto;
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--border-default);
+  padding-left: 0;
+  padding-right: 0;
   cursor: not-allowed;
 }
-.live-steer-input {
-  flex: 1;
-  min-width: 0;
-  padding: var(--space-2) var(--space-3);
-  font: inherit;
-  font-size: var(--fs-sm);
-  color: var(--fg-primary);
-  background: var(--bg-chip);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-xs);
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-.live-steer-bar .ld-btn:disabled { opacity: 0.5; }
 
 /* Collapse to a single column at the existing mobile breakpoint. */
 @media (max-width: 720px) {
@@ -1716,75 +1753,16 @@ button.action:hover,
 }
 .skill-grid .empty { color: var(--fg-secondary); font-size: var(--fs-sm); }
 
-/* One library card — surface/border/shadow like .repo-card, flex column. */
-.skill-card {
-  background: var(--bg-app);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-card);
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-.skill-card-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  justify-content: space-between;
-}
-/* Icon tile + monospace name, the left of the head row. */
-.skill-ident { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
-.skill-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2.25rem;
-  height: 2.25rem;
-  border-radius: var(--radius-xs);
-  background: var(--ld-accent-soft);
-  color: var(--ld-accent-ink);
-  flex: none;
-}
-.skill-icon .material-symbols-outlined { font-size: 1.25rem; }
-.skill-name {
-  font-family: var(--font-mono);
-  font-weight: 600;
-  word-break: break-all;
-}
-/* Managed owner badge: a bot avatar + login (the design's avatar+name pair). */
-.skill-owner { display: inline-flex; align-items: center; gap: var(--space-2); flex: none; }
-.skill-owner .avatar { width: 1.25rem; height: 1.25rem; font-size: var(--fs-2xs); }
-.skill-owner-name { font-size: var(--fs-xs); font-weight: 600; color: var(--fg-secondary); }
-.skill-desc {
-  margin: 0;
-  font-size: var(--fs-xs);
-  color: var(--fg-secondary);
-  /* Clamp long descriptions; the full text is on the title attribute. */
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-/* Hairline divider above the triggers/phase row. */
-.skill-divider { width: 100%; height: 0; margin: var(--space-2) 0; border: 0; border-top: 1px solid var(--border-default); }
-/* Triggers/phase row: a "Triggers on" eyebrow + value on the left, phase tag right. */
-.skill-card-meta { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-2); }
-.skill-trigger { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.skill-trigger-value {
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  color: var(--fg-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.skill-card-actions {
-  display: flex;
-  gap: var(--space-2);
-  margin-top: auto;   /* pin actions to the bottom of equal-height cards */
-  padding-top: var(--space-2);
-}
+/* The library card itself (.skill-card and its parts) is now owned by the shared
+   design-system: ds/ld-system.css (.card / .pad-lg / .skill-icon) +
+   ds/css/sessions.css (.skill-id / .skill-desc / .skill-trig / .skill-foot).
+   The factory is SkillCard() in ds/components/sessions.js (#258 / Phase 4). Only
+   the grid container above stays app-local. */
+
+/* The footer sits 14px below the trigger row per the design (.skill-foot in
+   ds/css/sessions.css) — NOT pinned to the card bottom. (An earlier version used
+   `margin-top: auto` to line actions up across equal-height cards, but the design
+   leaves the footer at a fixed 14px gap, so we match it.) */
 
 /* Editor drawer — reuses the shared .modal backdrop + .modal-card surface, but
    slides in from the right as a full-height panel. */
@@ -2028,141 +2006,12 @@ button.action:hover,
 /* onto these. Every class consumes the design tokens, so theme + lifecycle */
 /* colors stay centralized. */
 
-/* eyebrow — uppercase micro label; ported verbatim from loony-dev.html. */
-.eyebrow {
-  font-size: var(--fs-micro);
-  font-weight: var(--fw-bold);
-  letter-spacing: var(--tracking-widest);
-  color: var(--fg-muted);
-  text-transform: uppercase;
-}
-
-/* card modifiers — extend the .card primitive (defined above):
-   .subtle drops the shadow to a hairline-only card; .pad adds roomier space. */
-.card.subtle { box-shadow: none; }
-.card.pad { padding: var(--space-6); }
-
-/* ld-btn — the button primitive, ported from loony-dev.html's <style> verbatim
-   (square --radius-xxs corners, soft/outline/ghost/danger variants). The app's
-   markup already uses these exact size + variant modifiers. */
-.ld-btn {
-  font-family: var(--font-sans);
-  font-weight: 600;
-  border-radius: var(--radius-xxs);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  cursor: pointer;
-  border: 1px solid transparent;
-  white-space: nowrap;
-  text-decoration: none;
-  transition: background var(--dur-fast), border-color var(--dur-fast), transform var(--dur-fast);
-  line-height: 1.1;
-}
-.ld-btn:active { transform: scale(0.985); }
-.ld-btn:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: 2px; }
-.ld-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.ld-btn .material-symbols-outlined { font-size: 18px; }
-/* sizes */
-.ld-btn.sm { padding: 6px 11px; font-size: 13px; }
-.ld-btn.md { padding: 9px 15px; font-size: 14px; }
-/* variants */
-.ld-btn.primary { background: var(--ld-accent); color: #fff; box-shadow: var(--shadow-card); }
-.ld-btn.primary:hover { background: var(--ld-accent-hover); }
-.ld-btn.soft { background: var(--ld-accent-soft); color: var(--ld-accent-ink); }
-.ld-btn.soft:hover { background: color-mix(in srgb, var(--ld-accent-soft) 70%, var(--ld-accent) 12%); }
-.ld-btn.outline { background: var(--bg-app); border-color: var(--border-default); color: var(--fg-primary); }
-.ld-btn.outline:hover { background: var(--bg-subtle); border-color: var(--border-strong); }
-.ld-btn.ghost { background: transparent; color: var(--fg-secondary); }
-.ld-btn.ghost:hover { background: var(--bg-chip); color: var(--fg-primary); }
-.ld-btn.danger { background: var(--bg-app); border-color: color-mix(in srgb, var(--st-blocked) 45%, var(--border-default)); color: var(--st-blocked-ink); }
-.ld-btn.danger:hover { background: var(--st-blocked-soft); }
-@media (prefers-reduced-motion: reduce) {
-  .ld-btn { transition: none; }
-  .ld-btn:active { transform: none; }
-}
-
-/* tag — small inline label chip, ported verbatim: a soft rounded-rect (not a
-   pill), ink-on-soft color pairings (#244). */
-.tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 2px 9px;
-  border-radius: var(--radius-xs);
-  line-height: 1.5;
-  white-space: nowrap;
-  border: 1px solid transparent;
-}
-.tag .material-symbols-outlined { font-size: 14px; }
-.tag.neutral { background: var(--bg-chip); color: var(--gray-600); }
-.tag.ghost   { background: transparent; border-color: var(--border-default); color: var(--fg-muted); }
-.tag.blue    { background: var(--tag-blue-bg); color: var(--tag-blue-ink); }
-.tag.green   { background: var(--st-merged-soft); color: var(--st-merged-ink); }
-.tag.amber   { background: var(--st-review-soft); color: var(--st-review-ink); }
-.tag.red     { background: var(--st-blocked-soft); color: var(--st-blocked-ink); }
-.tag.purple  { background: var(--tag-purple-bg); color: var(--tag-purple-ink); }
-
-/* statepill — a bordered white pill that pairs an .sdot state dot with a label.
-   Ported verbatim from loony-dev.html. */
-.statepill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 2px 9px 2px 7px;
-  border-radius: 999px;
-  border: 1px solid var(--border-default);
-  background: var(--bg-app);
-  color: var(--fg-secondary);
-  white-space: nowrap;
-}
-
-/* sdot — a small lifecycle state dot, ported verbatim: a bordered dot so the
-   gated state can render as a dashed hairline ring. The app self-sizes it. */
-.sdot {
-  width: 0.55rem;
-  height: 0.55rem;
-  border-radius: 999px;
-  border: 1.5px solid transparent;
-  display: inline-block;
-  flex: none;
-  box-sizing: border-box;
-  background: var(--st-gated);
-}
-.sdot.merged  { background: var(--st-merged); border-color: var(--st-merged); }
-.sdot.active  { background: var(--st-active); border-color: var(--st-active); }
-.sdot.review  { background: var(--st-review); border-color: var(--st-review); }
-.sdot.blocked { background: var(--st-blocked); border-color: var(--st-blocked); }
-.sdot.gated   { background: var(--bg-app); border-color: var(--border-strong); border-style: dashed; }
-
-/* avatar — a small round actor chip (initial or icon). Variant tints per actor:
-   trixy (the bot, accent), capo (purple), operator (the human, green). */
-.avatar {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.75rem;
-  height: 1.75rem;
-  border-radius: 50%;
-  font-size: var(--fs-xs);
-  font-weight: 700;
-  text-transform: uppercase;
-  flex: none;
-  background: var(--bg-chip);
-  color: var(--fg-secondary);
-}
-/* .bot is the name-agnostic alias for the managed-agent avatar (#218/#226):
-   same accent tint as .trixy, selected structurally (entry.managed) so the
-   skills rendering path never couples to a literal bot login. */
-.avatar.trixy,
-.avatar.bot      { background: var(--ld-accent-soft); color: var(--ld-accent-ink); }
-.avatar.capo     { background: rgba(124, 58, 237, 0.16); color: #7C3AED; }
-.avatar.operator { background: rgba(16, 185, 129, 0.16); color: var(--st-merged); }
+/* The component primitives (.eyebrow / .ld-btn / .tag / .statepill / .sdot /
+   .ava / .card.subtle / .pad) are now owned SOLELY by the design system
+   (ds/ld-system.css) — the legacy copies that used to live here were deleted so
+   the design is the single source. The app-specific extensions that ds does NOT
+   define stay below / elsewhere (.statepill.observing/.driving/.busy, the
+   .ld-btn:focus-visible was folded into ds, etc.). */
 
 /* stat — a metric card: an eyebrow label over a large tabular-num value. */
 .stat {
@@ -2230,27 +2079,13 @@ button.action:hover,
 /* detail layout, built on the existing tokens and the .tag/.statepill/    */
 /* .sdot/.avatar primitives so theme + lifecycle colors stay centralized.  */
 
-/* breadcrumb — Fleet ▸ repo ▸ #N. Crumb links are bare buttons; the trailing
-   current segment is plain text. */
-.breadcrumb {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  font-size: var(--fs-xs);
-  margin-bottom: var(--space-3);
-}
-.breadcrumb .crumb {
-  font: inherit;
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--primary);
-  cursor: pointer;
-}
-.breadcrumb .crumb:hover { text-decoration: underline; }
-.breadcrumb .crumb.current { color: var(--fg-secondary); cursor: default; }
-.breadcrumb .crumb-sep { color: var(--fg-secondary); }
+/* Breadcrumb — rendered by the shared Crumbs factory (.crumbs): bare-button
+   links joined by chevron separators, a muted trailing current segment. */
+.crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; font-size: 13px; }
+.crumb { border: 0; background: transparent; padding: 0; font-family: var(--font-sans); font-size: 13px; font-weight: 600; color: var(--fg-secondary); cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+.crumb:hover { color: var(--ld-accent); }
+.crumb-sep { color: var(--border-strong); display: inline-flex; align-items: center; }
+.crumb-cur { font-size: 13px; color: var(--fg-muted); font-weight: 600; }
 
 /* The pipeline head uses the shared ScreenHead (#222); the breadcrumb above is
    the route trail, the statepill sits in the head's right-aligned controls slot. */
@@ -2266,89 +2101,36 @@ button.action:hover,
    detour badge. Numbered 22px round circles (a check on completed steps) joined
    by 26×2px connector bars; the current step is emphasized and later steps are
    muted (upcoming). */
-.stepper {
-  display: flex;
-  align-items: flex-start;
-  flex-wrap: wrap;
-  gap: 2px;
-  margin-bottom: var(--space-6);
+/* Stepper — minimal markup (<ol class="stepper"><li class="done|here">…</li></ol>),
+   rendered by the shared Stepper factory (storybook/js/components/lifecycle.js).
+   CSS does the work: counter() draws the number, ::before the node, ::after the
+   connector; done/here are composable item-level state classes. Replaces the old
+   .step-circle/.step-bar markup (issue #258). */
+.stepper { list-style: none; margin: 0; padding: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 2px; counter-reset: step; }   /* the stepper lives in its own .card.pad-lg (design) */
+.stepper > li { counter-increment: step; display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; color: var(--fg-muted); }
+.stepper > li::before {
+  content: counter(step); font-family: var(--font-sans); font-weight: 700; font-size: 11px;
+  width: 22px; height: 22px; flex: none; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1.5px solid var(--border-strong); background: var(--bg-app); color: var(--fg-muted);
 }
-/* Each step stacks its circle over its label so connector bars join circle
-   centers (the standard numbered-stepper layout). */
-.stepper .step {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-1);
-}
-/* The numbered circle — 22px round, 1.5px border; state colours below. */
-.stepper .step-circle {
-  width: 22px;
-  height: 22px;
-  border-radius: 999px;
-  border: 1.5px solid var(--border-default);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  font-size: var(--fs-2xs);
-  font-weight: 700;
-  line-height: 1;
-  background: var(--bg-app);
-  color: var(--fg-secondary);
-}
-.stepper .step-circle .material-symbols-outlined { font-size: 14px; line-height: 1; }
-.stepper .step.done .step-circle {
-  background: var(--ld-accent);
-  border-color: var(--ld-accent);
-  color: #fff;
-}
-.stepper .step.current .step-circle {
-  background: var(--ld-accent-soft);
-  border-color: var(--ld-accent);
-  color: var(--ld-accent-ink);
-}
-/* upcoming uses the .step-circle defaults (bg-app / border-default / secondary). */
-/* Connector bar between circles — 26×2px, accent when the segment is done.
-   Offset down to sit at the 22px circle's vertical centre rather than the
-   circle+label block centre. */
-.stepper .step-bar {
-  width: 26px;
-  height: 2px;
-  border-radius: 1px;
-  background: var(--border-default);
-  flex: none;
-  align-self: flex-start;
-  margin-top: 10px;
-}
-.stepper .step-bar.done { background: var(--ld-accent); }
-.stepper .step-label {
-  white-space: nowrap;
-  font-size: 13.5px;
-  color: var(--fg-secondary);
-}
-.stepper .step.current .step-label { font-weight: 700; color: var(--fg-primary); }
-.stepper .step.done .step-label { color: var(--fg-primary); }
-/* conflict detour badge — hangs off the spine after Implement. */
-.stepper .step-detour {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--fs-2xs);
-  font-weight: 600;
-  padding: 3px var(--space-2);
-  border-radius: 999px;
-  background: rgba(239, 68, 68, 0.14);
-  color: var(--st-blocked);
-}
-.stepper .step-detour .material-symbols-outlined { font-size: 1rem; }
+.stepper > li:not(:last-child)::after { content: ''; width: 26px; height: 2px; flex: none; border-radius: 2px; margin: 0 4px; background: var(--border-default); }
+.stepper > li.done { color: var(--ink); }
+.stepper > li.done::before { content: 'check'; font-family: 'Material Symbols Outlined'; font-size: 14px; background: var(--ld-accent); border-color: var(--ld-accent); color: #fff; }
+.stepper > li.done::after { background: var(--ld-accent); }
+.stepper > li.here { color: var(--ink); font-weight: 700; }
+.stepper > li.here::before { background: var(--ld-accent-soft); border-color: var(--ld-accent); color: var(--ld-accent-ink); }
+.stepper > li.detour { counter-increment: none; gap: 5px; margin-left: 10px; padding: 2px 9px; border-radius: 999px; background: var(--st-blocked-soft); color: var(--st-blocked-ink); font-size: 12px; font-weight: 600; }
+.stepper > li.detour::before, .stepper > li.detour::after { content: none; }
+.stepper > li.detour .material-symbols-outlined { font-size: 14px; }
+.stepper > li:has(+ .detour)::after { content: none; }
 
 /* detail-2col — the steer panel (main) + sidebar. Collapses to a single column
    on narrow viewports. Extends the .detail-grid idiom with a fixed sidebar. */
 .detail-2col {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem);
-  gap: var(--space-4);
+  gap: var(--space-5);   /* design row g20 = 20px (sidebar stays responsive 16–22rem) */
   align-items: start;
 }
 @media (max-width: 56rem) {
@@ -2402,7 +2184,7 @@ button.action:hover,
   border: 1px solid var(--border-default);
   border-radius: var(--radius-xs);
   padding: var(--space-3);
-  margin-bottom: var(--space-3);
+  margin-bottom: var(--space-2);   /* design: col g8 (8px) between linked cards */
 }
 .linked-card:last-child { margin-bottom: 0; }
 .linked-head {
@@ -2411,33 +2193,15 @@ button.action:hover,
   gap: var(--space-2);
   margin-bottom: var(--space-2);
 }
-.linked-title { font-weight: 700; font-size: var(--fs-sm); }
+.linked-title { font-weight: 700; font-size: 13px; }   /* design linked-card title */
 .linked-head .tag { margin-left: auto; }
 
 /* timeline — actor chip + label + relative time, one row per event. */
+/* The activity-timeline ROWS are now built by the shared TimelineRow factory
+   (flat shape) — dot + actor avatar + message (+ skill chip) + trailing time all
+   come from ds/ld-system.css + ds/css/sessions.css (.tl-row / .tl-flat / .tl-dot
+   / .tl-chip / .tl-when). Only the column container stays app-local. */
 .timeline { display: flex; flex-direction: column; gap: var(--space-2); }
-.timeline-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--fs-xs);
-}
-.timeline-row .avatar { width: 1.5rem; height: 1.5rem; font-size: var(--fs-2xs); }
-.timeline-row .sdot { flex: none; }
-.timeline-label { flex: 1; min-width: 0; overflow-wrap: break-word; }
-.timeline-time { color: var(--fg-secondary); font-size: var(--fs-2xs); white-space: nowrap; }
-
-/* skill chip — a small inline tag attributing a timeline event to a skill. */
-.skill-chip {
-  display: inline-block;
-  padding: 0 var(--space-1);
-  border-radius: var(--radius-xs);
-  background: var(--ld-accent-soft);
-  color: var(--ld-accent-ink);
-  font-size: var(--fs-2xs);
-  font-weight: 600;
-  white-space: nowrap;
-}
 
 /* label chips below a linked card (raw issue/PR labels from the feed). */
 .linked-labels {
@@ -2448,6 +2212,8 @@ button.action:hover,
 }
 
 /* ready-for-* lifecycle controls (#225) — the moved "Assign issue" button row. */
+/* The stepper card carries the design's 20px gap below it (Card marginBottom 20). */
+#pipeline-stepper { margin-bottom: var(--space-5); }
 .pipeline-lifecycle {
   display: flex;
   flex-wrap: wrap;

@@ -1,0 +1,353 @@
+/* ============================================================================
+   ld-system.css — the loony-dev VISUAL LAYER, extracted from the design
+   source-of-truth (loony-dev.html <style> + the screen JSX inline styles).
+
+   This is the canonical visual axis. It is token-driven: every value resolves
+   from design/colors_and_type.css (the L Space token foundation). It knows
+   nothing about repos/issues/workers — semantic + behavioural axes are injected
+   by the factory callers. The dashboard's app.css is the (drifted) CONSUMER of
+   this layer; Phase 4 reconciles app.css onto these names/values.
+
+   Sections:
+     0. :root overlay (accent + lifecycle + layout tokens)
+     1. primitives        (btn, tag, statepill, sdot, avatar, eyebrow, card, …)
+     2. typography + crumbs + stat
+     3. navigation shell   (rail, brand, navitem, user-card, settings pop)
+     4. controls           (seg, subtab)
+     5. data display       (table.board, dag/node, tl-line timeline, dotgrid)
+     6. composites          (promoted from screen inline styles: metric, pool,
+                             kanban, chat bubbles, skill, linked, epic, phone)
+     7. flex/util helpers   (row/col/gap/align — the design's atomic utilities)
+   ============================================================================ */
+
+/* ---------- 0. :root overlay (from loony-dev.html) ---------- */
+:root {
+  --ld-accent: var(--jeeves-primary);
+  --ld-accent-hover: var(--jeeves-primary-hover);
+  --ld-accent-soft: var(--jeeves-primary-soft);
+  --ld-accent-ink: var(--jeeves-primary-ink);
+
+  --st-merged: #10B981;  --st-merged-soft: #ECFDF5;  --st-merged-ink: #047857;
+  --st-active: var(--ld-accent); --st-active-soft: var(--ld-accent-soft); --st-active-ink: var(--ld-accent-ink);
+  --st-review: #F59E0B;  --st-review-soft: #FFFBEB;  --st-review-ink: #B45309;
+  --st-blocked:#EF4444;  --st-blocked-soft:#FEF2F2;  --st-blocked-ink:#B91C1C;
+  --st-gated:  #9CA3AF;  --st-gated-soft:#F9FAFB;
+
+  --rail-w: 236px;
+  --side-w: 300px;
+  --pad-card: 18px;
+  --row-gap: 12px;
+}
+.dense { --pad-card: 13px; --row-gap: 8px; }
+
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal; font-style: normal;
+  line-height: 1; letter-spacing: normal; text-transform: none;
+  display: inline-block; white-space: nowrap; word-wrap: normal; direction: ltr;
+  -webkit-font-feature-settings: 'liga'; -webkit-font-smoothing: antialiased;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+
+/* ---------- 1. primitives ---------- */
+.ld-btn {
+  font-family: var(--font-sans); font-weight: 600; border-radius: var(--radius-xxs);
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer;
+  border: 1px solid transparent; white-space: nowrap; text-decoration: none;
+  transition: background var(--dur-fast), border-color var(--dur-fast), transform var(--dur-fast);
+  line-height: 1.1;
+}
+.ld-btn:active { transform: scale(.985); }
+.ld-btn:focus-visible { outline: 2px solid var(--ld-accent); outline-offset: 2px; }
+.ld-btn:disabled { opacity: .5; cursor: not-allowed; }
+.ld-btn:disabled:active { transform: none; }
+.ld-btn.sm { padding: 6px 11px; font-size: 13px; }
+.ld-btn.md { padding: 9px 15px; font-size: 14px; }
+.ld-btn .material-symbols-outlined { font-size: 18px; }
+.ld-btn.primary { background: var(--ld-accent); color: #fff; box-shadow: var(--shadow-card); }
+.ld-btn.primary:hover { background: var(--ld-accent-hover); }
+.ld-btn.soft { background: var(--ld-accent-soft); color: var(--ld-accent-ink); }
+.ld-btn.soft:hover { background: color-mix(in srgb, var(--ld-accent-soft) 70%, var(--ld-accent) 12%); }
+.ld-btn.outline { background: var(--bg-app); border-color: var(--border-default); color: var(--fg-primary); }
+.ld-btn.outline:hover { background: var(--bg-subtle); border-color: var(--border-strong); }
+.ld-btn.ghost { background: transparent; color: var(--fg-secondary); }
+.ld-btn.ghost:hover { background: var(--bg-chip); color: var(--fg-primary); }
+.ld-btn.danger { background: var(--bg-app); border-color: color-mix(in srgb, var(--st-blocked) 45%, var(--border-default)); color: var(--st-blocked-ink); }
+.ld-btn.danger:hover { background: var(--st-blocked-soft); }
+@media (prefers-reduced-motion: reduce) { .ld-btn { transition: none; } .ld-btn:active { transform: none; } }
+
+.tag {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600;
+  padding: 2px 9px; border-radius: var(--radius-xs); line-height: 1.5; white-space: nowrap; border: 1px solid transparent;
+}
+.tag .material-symbols-outlined { font-size: 14px; }
+.tag.neutral { background: var(--bg-chip); color: var(--gray-600); }
+.tag.ghost { background: transparent; border-color: var(--border-default); color: var(--fg-muted); }
+.tag.blue { background: var(--tag-blue-bg); color: var(--tag-blue-ink); }
+.tag.green { background: var(--st-merged-soft); color: var(--st-merged-ink); }
+.tag.amber { background: var(--st-review-soft); color: var(--st-review-ink); }
+.tag.red { background: var(--st-blocked-soft); color: var(--st-blocked-ink); }
+.tag.purple { background: var(--tag-purple-bg); color: var(--tag-purple-ink); }
+
+.statepill {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600;
+  padding: 2px 9px 2px 7px; border-radius: 999px; border: 1px solid var(--border-default);
+  background: var(--bg-app); color: var(--fg-secondary); white-space: nowrap;
+}
+.statepill .d { width: 7px; height: 7px; border-radius: 999px; flex: none; }
+
+/* Avatar — size is data-driven, so it rides a custom property (--ava-sz) rather
+   than per-instance inline width/height. Font scales off the same var. */
+.ava { --ava-sz: 26px; width: var(--ava-sz); height: var(--ava-sz); font-size: calc(var(--ava-sz) * 0.42); border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; flex: none; }
+/* Tones are VISUAL colour classes (domain-agnostic). The design named these by
+   ACTOR (.trixy/.capo/.user) — bot/operator names are per-install config and
+   must not be visual classes; the actor→tone map (avatarTone) lives in the caller. */
+.ava.neutral { background: var(--bg-chip); color: var(--gray-700); border: 1px solid var(--border-default); }
+.ava.soft    { background: var(--ld-accent-soft); color: var(--ld-accent-ink); }   /* soft-accent — the app's worker avatar */
+.ava.accent  { background: var(--ld-accent); color: #fff; }
+.ava.ink     { background: var(--ink); color: #fff; }
+.ava.green   { background: color-mix(in srgb, var(--st-merged) 16%, transparent); color: var(--st-merged); }
+
+/* Dot — size via --dot-sz custom property (default 8px). Tones are VISUAL,
+   domain-agnostic COLOUR classes (composable). A 'merged' issue (semantic) is
+   rendered .green; the semantic→colour map lives in the caller (dotTone()). */
+.sdot { --dot-sz: 8px; width: var(--dot-sz); height: var(--dot-sz); border-radius: 999px; border: 1.5px solid transparent; display: inline-block; flex: none; box-sizing: border-box; }
+.sdot.green  { background: var(--st-merged);  border-color: var(--st-merged); }
+.sdot.accent { background: var(--st-active);   border-color: var(--st-active); }
+.sdot.amber  { background: var(--st-review);   border-color: var(--st-review); }
+.sdot.red    { background: var(--st-blocked);  border-color: var(--st-blocked); }
+.sdot.hollow { background: var(--bg-app); border-color: var(--border-strong); border-style: dashed; }
+
+@keyframes ldpulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ld-accent) 55%, transparent); } 70% { box-shadow: 0 0 0 7px rgba(0,0,0,0); } 100% { box-shadow: 0 0 0 0 rgba(0,0,0,0); } }
+.pulse { animation: ldpulse 1.9s ease-out infinite; }
+body.no-pulse .pulse { animation: none; }
+@media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
+
+.card { background: var(--bg-app); border: 1px solid var(--border-default); border-radius: var(--radius-sm); }
+.card.subtle { background: var(--bg-subtle); }
+.card.flat { box-shadow: none; }
+.pad { padding: var(--pad-card); }
+.pad-sm { padding: 12px; }
+.pad-lg { padding: 22px; }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px var(--pad-card); border-bottom: 1px solid var(--border-hairline); }
+.hairline { height: 1px; background: var(--border-hairline); border: 0; }
+
+/* Stepper — minimal markup: <ol class="stepper"><li class="done|here">…</li></ol>.
+   CSS does the heavy lifting: counter() draws the number, ::after draws the
+   connector, and the done/here STATE classes (composable, item-level) recolour.
+   A bare <li> is the "future" state (the muted default). */
+.stepper { list-style: none; margin: 0; padding: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 2px; counter-reset: step; }
+.stepper > li { counter-increment: step; display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; color: var(--fg-muted); }
+.stepper > li::before {                 /* the node — future/default look */
+  content: counter(step); font-family: var(--font-sans); font-weight: 700; font-size: 11px;
+  width: 22px; height: 22px; flex: none; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1.5px solid var(--border-strong); background: var(--bg-app); color: var(--fg-muted);
+}
+.stepper > li:not(:last-child)::after {  /* the connector — muted by default */
+  content: ''; width: 26px; height: 2px; flex: none; border-radius: 2px; margin: 0 4px; background: var(--border-default);
+}
+.stepper > li.done { color: var(--ink); }
+.stepper > li.done::before { content: 'check'; font-family: 'Material Symbols Outlined'; font-size: 14px; background: var(--ld-accent); border-color: var(--ld-accent); color: #fff; }
+.stepper > li.done::after { background: var(--ld-accent); }   /* only a DONE step's trailing connector is accent (so the bar after the active node stays muted) */
+.stepper > li.here { color: var(--ink); font-weight: 700; }
+.stepper > li.here::before { background: var(--ld-accent-soft); border-color: var(--ld-accent); color: var(--ld-accent-ink); }
+.stepper > li.detour { counter-increment: none; gap: 5px; margin-left: 10px; padding: 2px 9px; border-radius: 999px; background: var(--st-blocked-soft); color: var(--st-blocked-ink); font-size: 12px; font-weight: 600; }
+.stepper > li.detour::before, .stepper > li.detour::after { content: none; }
+.stepper > li.detour .material-symbols-outlined { font-size: 14px; }
+.stepper > li:has(+ .detour)::after { content: none; }   /* no connector running into the detour pill */
+
+/* ---------- 2. typography + crumbs + stat ---------- */
+.screen-title { font-size: var(--fs-display); font-weight: var(--fw-bold); color: var(--ink); letter-spacing: -.02em; line-height: 1.05; }
+.screen-sub { color: var(--fg-secondary); font-size: 14.5px; max-width: 660px; line-height: 1.5; margin-top: 7px; }
+.screen-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 22px; flex-wrap: wrap; }
+.screen-head-right { flex: none; }
+.eyebrow { font-size: var(--fs-micro); font-weight: var(--fw-bold); letter-spacing: var(--tracking-widest); color: var(--fg-muted); text-transform: uppercase; }
+.tnum { font-variant-numeric: tabular-nums; }
+.mut { color: var(--fg-secondary); }
+.faint { color: var(--fg-muted); }
+.ink { color: var(--ink); }
+.b { font-weight: 700; }
+.sb { font-weight: 600; }
+.center { text-align: center; }
+.crumbs { display: flex; align-items: center; gap: 7px; margin-bottom: 12px; font-size: 13px; }
+.crumb { border: 0; background: transparent; padding: 0; font-family: var(--font-sans); font-size: 13px; font-weight: 600; color: var(--fg-secondary); cursor: pointer; display:inline-flex; align-items:center; gap:5px; }
+.crumb:hover { color: var(--ld-accent); }
+.crumb-sep { color: var(--border-strong); }
+.crumb-cur { font-size: 13px; color: var(--fg-muted); font-weight: 600; }
+.stat-n { font-size: 34px; font-weight: 800; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.stat-l { font-size: 13px; color: var(--fg-secondary); margin-top: 6px; }
+
+/* ---------- 3. navigation shell ---------- */
+.rail { width: var(--rail-w); flex: none; border-right: 1px solid var(--border-default); background: var(--bg-app); padding: 22px 16px 16px; display: flex; flex-direction: column; transition: width var(--dur-base) var(--ease-in-out), padding var(--dur-base) var(--ease-in-out); }
+.brand { display: flex; align-items: center; gap: 11px; padding: 6px 8px; width: 100%; border: 0; background: transparent; cursor: pointer; font-family: var(--font-sans); border-radius: var(--radius-sm); text-align: left; }
+.brand:hover { background: var(--bg-chip); }
+.brand-mark { width: 30px; height: 30px; flex: none; border-radius: 7px; display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3,1fr); gap: 2.5px; padding: 5px; background: var(--ink); }
+.brand-mark i { border-radius: 999px; background: rgba(255,255,255,.32); }
+.brand-mark i.on { background: #fff; }
+.brand-mark i.ac { background: var(--ld-accent); box-shadow: 0 0 0 1px color-mix(in srgb,var(--ld-accent) 50%, #fff); }
+.brand-word { font-size: 18px; font-weight: 800; letter-spacing: -.02em; color: var(--ink); line-height: 1; }
+.brand-word .dot { color: var(--ld-accent); }
+.brand-tag { font-size: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--fg-muted); margin-top: 3px; }
+.navlist { display: flex; flex-direction: column; gap: 2px; margin-top: 24px; }
+.nav-eyebrow { font-size: 10px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: var(--fg-muted); padding: 0 10px 8px; }
+.navitem { display: flex; align-items: center; gap: 11px; width: 100%; text-align: left; border: 0; background: transparent; color: var(--fg-secondary); padding: 9px 10px; border-radius: var(--radius-sm); font-size: 14.5px; font-weight: 600; font-family: var(--font-sans); cursor: pointer; position: relative; }
+.navitem:hover { background: var(--bg-chip); color: var(--fg-primary); }
+.navitem.on { background: var(--ld-accent-soft); color: var(--ld-accent-ink); font-weight: 700; }
+.navitem.on .material-symbols-outlined { color: var(--ld-accent); }
+.navitem .material-symbols-outlined { font-size: 21px; color: var(--fg-muted); flex: none; }
+.navitem .count { margin-left: auto; font-size: 12px; font-weight: 700; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.navitem.on .count { color: var(--ld-accent); }
+.navitem .needsdot { margin-left: auto; width: 7px; height: 7px; border-radius: 999px; background: var(--st-blocked); }
+.live-i { position: relative; }
+.live-i::after { content: ''; position: absolute; right: 1px; top: 2px; width: 6px; height: 6px; border-radius: 999px; background: var(--st-merged); box-shadow: 0 0 0 2px var(--bg-app); }
+.user-card { display: flex; align-items: center; gap: 10px; padding: 9px 11px; cursor: pointer; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-app); }
+.user-card:hover { background: var(--bg-subtle); }
+.user-card .nm { font-size: 13px; font-weight: 700; color: var(--ink); line-height: 1.15; }
+.user-card .st { font-size: 11px; color: var(--fg-muted); display: flex; align-items: center; gap: 5px; }
+.user-card .st .d { width: 6px; height: 6px; border-radius: 999px; background: var(--st-merged); }
+.settings-pop { min-width: 216px; background: var(--bg-app); border: 1px solid var(--border-default); border-radius: var(--radius-sm); box-shadow: var(--shadow-pop); padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.pop-cap { font-size: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--fg-muted); padding: 8px 10px 4px; }
+.pop-item { display: flex; align-items: center; gap: 11px; width: 100%; text-align: left; border: 0; background: transparent; color: var(--fg-secondary); font-family: var(--font-sans); padding: 9px 10px; border-radius: var(--radius-xs); font-size: 13.5px; font-weight: 600; cursor: pointer; }
+.pop-item:hover { background: var(--bg-chip); color: var(--fg-primary); }
+.pop-item.on { background: var(--ld-accent-soft); color: var(--ld-accent-ink); }
+.pop-item .material-symbols-outlined { font-size: 19px; color: var(--fg-muted); flex: none; }
+.pop-item .count { margin-left: auto; font-size: 12px; font-weight: 700; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+
+/* ---------- 4. controls ---------- */
+.seg { display: inline-flex; background: var(--bg-chip); border-radius: var(--radius-sm); padding: 3px; gap: 2px; }
+.seg button { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; font-family: var(--font-sans); font-weight: 600; font-size: 13.5px; color: var(--fg-secondary); padding: 6px 14px; border-radius: var(--radius-xs); cursor: pointer; }
+.seg button.on { background: var(--bg-app); color: var(--ink); box-shadow: var(--shadow-card); }
+.subtab { border: 1px solid transparent; background: transparent; padding: 6px 12px; border-radius: var(--radius-sm); font-weight: 600; font-size: 13.5px; color: var(--fg-secondary); cursor: pointer; font-family: var(--font-sans); }
+.subtab:hover { background: var(--bg-subtle); }
+.subtab.on { background: var(--ld-accent-soft); color: var(--ld-accent-ink); }
+
+/* ---------- 5. data display ---------- */
+/* Scroll-wrap: a wide table SCROLLS horizontally (never clipped away), and the
+   overflow context also rounds the table's corners to the surface radius. */
+.table-wrap { overflow-x: auto; }
+table.board { border-collapse: collapse; width: 100%; }
+table.board th { text-align: left; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--fg-muted); font-weight: 700; padding: 12px 14px; border-bottom: 1px solid var(--border-default); }
+table.board td { padding: 12px 14px; border-bottom: 1px solid var(--border-hairline); vertical-align: middle; font-size: 13.5px; }
+table.board tbody tr { cursor: pointer; }
+table.board tbody tr:hover td { background: var(--bg-subtle); }
+table.board tbody tr:last-child td { border-bottom: 0; }
+/* Container-query responsive board: when the .board-wrap CONTAINER is narrow,
+   the table reflows to stacked cards (label via data-label) instead of
+   overflowing — native CSS, no JS, no page-level media-query breakpoints. */
+.board-wrap { container-type: inline-size; overflow-x: auto; }
+@container (max-width: 600px) {
+  .board-wrap table.board thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .board-wrap table.board tbody tr { display: block; padding: 10px 14px; border-bottom: 1px solid var(--border-default); }
+  .board-wrap table.board tbody tr:last-child { border-bottom: 0; }
+  .board-wrap table.board td { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 3px 0; border: 0; }
+  .board-wrap table.board td::before { content: attr(data-label); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--fg-muted); }
+}
+.scrollx { overflow-x: auto; }
+.dotgrid { background-image: radial-gradient(var(--border-default) 1px, transparent 1.4px); background-size: 18px 18px; background-position: -1px -1px; }
+.clickrow { cursor: pointer; border-radius: var(--radius-xs); }
+.clickrow:hover { background: var(--bg-subtle); }
+
+/* DAG */
+.dag { position: relative; }
+.dag > svg { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.node { position: absolute; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-app); box-shadow: var(--shadow-card); cursor: pointer; padding: 7px 11px; display: flex; flex-direction: column; justify-content: center; transition: border-color var(--dur-fast), box-shadow var(--dur-fast); }
+.node:hover { border-color: var(--border-strong); box-shadow: var(--shadow-pop); }
+.node .nk { font-size: 11px; font-weight: 700; color: var(--fg-muted); font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+.node .nt { font-size: 13px; font-weight: 600; color: var(--ink); line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.node.dashed { border-style: dashed; background: var(--st-gated-soft); }   /* the 'gated' look (visual) */
+.node.dashed .nt { color: var(--fg-muted); }
+.node.danger { border-color: color-mix(in srgb, var(--st-blocked) 40%, var(--border-default)); }   /* the 'blocked' look (visual) */
+.node .wk { position: absolute; top: -9px; right: -9px; width: 22px; height: 22px; border-radius: 999px; background: var(--ld-accent); color: #fff; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; border: 2px solid var(--bg-app); z-index: 2; font-variant-numeric: tabular-nums; }
+.node .nrow { display: flex; align-items: center; gap: 7px; }
+
+/* timeline */
+.tl-line { width: 1.5px; background: var(--border-default); flex: 1; margin-top: 3px; }
+
+/* phone */
+.phone { width: 326px; border: 8px solid #14141f; border-radius: 42px; background: #14141f; box-shadow: var(--shadow-pop); flex: none; }
+.phone-screen { border-radius: 34px; overflow: hidden; background: var(--bg-app); position: relative; }
+
+/* ============================================================================
+   6. COMPOSITES — promoted from screen inline styles into reusable classes.
+   Each block notes its origin screen. Positional/data-driven values (DAG
+   coords, swatch counts) stay as caller-injected inline styles; only the
+   STATIC visual recipe is captured here.
+   ============================================================================ */
+
+/* Fleet — worker-pool dot matrix gauge (ld-fleet WorkerPoolMatrix) */
+.pool-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; justify-items: center; }
+.pool-dot { width: 13px; height: 13px; }            /* an .sdot sized for the gauge */
+.pool-dot.free { background: var(--bg-app); border-color: var(--border-strong); }
+.pool-dot.busy { background: var(--ld-accent); border-color: var(--ld-accent); }
+
+/* Fleet — KPI metric tile (ld-fleet MetricStat) */
+.metric { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+.metric .metric-n { font-size: 28px; font-weight: 800; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.metric .metric-l { font-size: 12.5px; margin-top: 4px; color: var(--fg-secondary); }
+.metric.on { border-color: var(--ld-accent); background: var(--ld-accent-soft); box-shadow: 0 0 0 1px var(--ld-accent); }
+.metric.on .metric-l { color: var(--ld-accent-ink); font-weight: 700; }
+
+/* Fleet — kanban (ld-fleet FleetKanban / KanbanCard) */
+.kanban-col { width: 196px; flex: none; }
+.kanban-drop { min-height: 340px; background: var(--bg-app); border: 1px solid var(--border-hairline); border-radius: var(--radius-sm); padding: 10px; }
+.kanban-card { margin-bottom: 10px; cursor: pointer; }
+.kanban-card.needs { border-color: color-mix(in srgb, var(--st-blocked) 35%, var(--border-default)); }
+.kanban-card .kc-title { font-size: 13.5px; font-weight: 600; margin: 5px 0 9px; line-height: 1.25; color: var(--ink); }
+
+/* Cockpit — compact dot-DAG node (ld-cockpit DagField) + epic zone card */
+.dagfield { position: relative; margin: 14px auto 4px; }
+.dagfield .df-node { position: absolute; width: 52px; display: flex; flex-direction: column; align-items: center; }
+.dagfield .df-node .df-dot { width: 20px; height: 20px; border-width: 2px; }
+.dagfield .df-node .df-k { font-size: 10px; margin-top: 4px; font-weight: 700; }
+.dagfield .df-wk { position: absolute; top: -5px; right: -5px; width: 14px; height: 14px; border-radius: 999px; background: var(--ld-accent); color: #fff; font-size: 8px; font-weight: 700; display: flex; align-items: center; justify-content: center; border: 1.5px solid var(--bg-app); }
+
+/* Sessions — chat bubbles (ld-sessions / ld-mobile ChatBubble) */
+/* Chat — a message ROW (.msg: alignment + optional avatar slot) holding a BUBBLE
+   box (.bubble + direction). Both directions share the SAME structure; only the
+   composable .sent/.received class and whether an avatar is present differ — so
+   the two are strictly parallel and the .bubble is reusable on its own. The
+   asymmetric radius (corner squared toward the speaker) reads as a chat bubble,
+   never an accent button. */
+.msg { display: flex; align-items: flex-end; gap: 10px; }
+.msg.sent { justify-content: flex-end; }
+.bubble { max-width: 78%; width: fit-content; padding: 9px 14px; font-size: 13.5px; line-height: 1.45; }
+.bubble.received { background: var(--bg-subtle); border: 1px solid var(--border-default); color: var(--gray-800); border-radius: 16px 16px 16px 4px; }
+.bubble.sent { background: var(--ld-accent); color: #fff; border-radius: 16px 16px 4px 16px; }
+.code-chip { font-family: ui-monospace, monospace; font-size: 12.5px; background: var(--bg-chip); padding: 0 5px; border-radius: 4px; font-weight: 600; }
+.ref-chip { background: var(--st-review-soft); color: var(--st-review-ink); padding: 0 5px; border-radius: 4px; font-weight: 700; }
+
+/* Sessions — activity timeline dot (ld-sessions TimelineRow); VISUAL colour tones */
+.tl-dot { width: 11px; height: 11px; border-radius: 999px; flex: none; box-sizing: border-box; border: 2px solid var(--border-strong); background: var(--bg-app); }
+.tl-dot.accent { background: var(--ld-accent);  border-color: var(--ld-accent); }
+.tl-dot.amber  { background: var(--st-review);  border-color: var(--st-review); }
+.tl-dot.red    { background: var(--st-blocked); border-color: var(--st-blocked); }
+
+/* Sessions — skill card icon tile + owner (ld-sessions SkillCard) */
+.skill-icon { width: 36px; height: 36px; border-radius: var(--radius-sm); background: var(--ld-accent-soft); display: flex; align-items: center; justify-content: center; flex: none; }
+.skill-icon .material-symbols-outlined { font-size: 20px; color: var(--ld-accent); }
+
+/* Sessions — linked issue/PR mini-cards diff stats (ld-sessions LinkedCard) */
+.diffstat { display: flex; gap: 12px; font-variant-numeric: tabular-nums; font-size: 12px; margin-top: 8px; color: var(--fg-muted); }
+.diffstat .add { color: var(--st-merged-ink); }
+.diffstat .del { color: var(--st-blocked-ink); }
+
+/* Mobile — status bar + tab bar (ld-mobile PhoneStatus / PhoneNav) */
+.phone-status { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px 4px; font-size: 13px; font-weight: 700; color: var(--ink); }
+.phone-nav { display: flex; align-items: center; justify-content: space-between; padding: 10px 22px 16px; border-top: 1px solid var(--border-hairline); background: var(--bg-app); }
+.phone-nav .nav-tab { display: flex; flex-direction: column; align-items: center; gap: 4px; color: var(--fg-muted); }
+.phone-nav .nav-tab .nt-label { font-size: 10.5px; font-weight: 600; }
+.phone-nav .nav-tab.on { color: var(--ld-accent); }
+.phone-nav .nav-tab.on .nt-label { font-weight: 700; }
+
+/* generic soft-accent icon tile (skill/principle rows) */
+.icon-tile { width: 30px; height: 30px; border-radius: var(--radius-sm); background: var(--ld-accent-soft); display: flex; align-items: center; justify-content: center; flex: none; }
+.icon-tile .material-symbols-outlined { color: var(--ld-accent); }
+
+/* ---------- 7. flex / util helpers (the design's atomic utilities) ---------- */
+.row { display: flex; } .col { display: flex; flex-direction: column; }
+.ac { align-items: center; } .ae { align-items: flex-end; } .as { align-items: flex-start; }
+.jb { justify-content: space-between; } .jc { justify-content: center; } .je { justify-content: flex-end; }
+.wrap { flex-wrap: wrap; } .grow { flex: 1; min-width: 0; }
+.g4{gap:4px}.g5{gap:5px}.g6{gap:6px}.g8{gap:8px}.g10{gap:10px}.g12{gap:12px}.g14{gap:14px}.g16{gap:16px}.g20{gap:20px}.g24{gap:24px}
+.side { width: var(--side-w); flex: none; }

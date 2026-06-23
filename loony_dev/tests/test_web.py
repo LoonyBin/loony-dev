@@ -415,10 +415,10 @@ class WebAppTestCase(unittest.TestCase):
         # session body, and the worktrees/stuck/log blocks collapsed into a
         # <details> Diagnostics section (their IDs preserved for the JS).
         body = self.client.get("/").text
-        # Greyed steer bar: a disabled input + a disabled Send button.
-        self.assertIn('class="live-steer-bar"', body)
-        self.assertIn('class="live-steer-input"', body)
-        self.assertIn('placeholder=\'Ask about the repo, or "open an issue to…"\'', body)
+        # Greyed steer bar (#258 / Phase 4): now built by the shared ChatComposer
+        # factory (disabled) in repoDetail.renderSteer(), so the static shell only
+        # carries the host element it renders into.
+        self.assertIn('id="repo-steer"', body)
         # Diagnostics <details> wraps the preserved worktrees / stuck / log IDs.
         self.assertIn('class="diagnostics-section"', body)
         self.assertIn("<summary>Diagnostics</summary>", body)
@@ -581,9 +581,12 @@ class WebAppTestCase(unittest.TestCase):
         # The old Material Symbols logo + "dashboard" tagline are gone from the rail.
         self.assertNotIn(">deployed_code<", body)
         self.assertNotIn('class="brand-sub">dashboard<', body)
-        # The collapse chevron is bound to the collapsed state.
+        # The collapse chevron is bound to the collapsed state (the design's
+        # left_panel_close / left_panel_open icon, #258).
         self.assertIn('class="rail-collapse-chevron', body)
-        self.assertIn("$store.app.collapsed ? 'chevron_right' : 'chevron_left'", body)
+        self.assertIn("$store.app.collapsed ? 'left_panel_open' : 'left_panel_close'", body)
+        # The wordmark is "loony·dev" with the middot in the accent colour.
+        self.assertIn('class="brand-dot">·<', body)
 
     def test_index_density_defaults_to_compact(self) -> None:
         # Tweaks (#222): the document defaults to compact density (a stored
@@ -609,7 +612,9 @@ class WebAppTestCase(unittest.TestCase):
         # Anchor the property to its selector: --fs-display is shared with
         # other rules (e.g. .fleet-pool-count), so a bare substring would
         # still pass if .screen-head-text h2 regressed.
-        self.assertIn(".screen-head-text h2 { margin: 0; font-size: var(--fs-display);", css)
+        # The design's .screen-title is an unreset <h1> carrying the 0.67em block
+        # margin (the title's top offset + title→subtitle gap); the app matches it.
+        self.assertIn(".screen-head-text h2 { margin: 0.67em 0; font-size: var(--fs-display);", css)
         self.assertIn(".screen-head-sub", css)
         self.assertIn(".rail-mark", css)
         self.assertIn(".rail-collapse-chevron", css)
@@ -766,14 +771,15 @@ class WebAppTestCase(unittest.TestCase):
         self.assertNotIn("284px", css)
 
     def test_app_css_stat_numbers_and_labels_match_design_px(self) -> None:
-        # Design `.stat-n`: 34px / line-height 1 (literal — no --fs-* token).
-        # Design `.stat-l`: 13px (--fs-xs) / 6px top margin. Applied to both the
-        # fleet metric pair and the generic .stat pair.
+        # The design's `.stat-n` base is 34px, but the Fleet metric cards override
+        # it to 28px / 800 (FleetStatStrip), so .fleet-metric-n is 28px while the
+        # generic .stat keeps the 34px base. Both line-height 1. Labels: design
+        # `.stat-l` 13px (--fs-xs) / 6px top margin.
         css = self.client.get("/static/app.css").text
-        for number in (".fleet-metric-n {", ".stat .stat-value {"):
+        for number, px in ((".fleet-metric-n {", "28px"), (".stat .stat-value {", "34px")):
             self.assertIn(number, css)
             block = css.split(number, 1)[1].split("}", 1)[0]
-            self.assertIn("font-size: 34px;", block)
+            self.assertIn(f"font-size: {px};", block)
             self.assertIn("line-height: 1;", block)
         for label in (".fleet-metric-label {", ".stat .stat-label {"):
             self.assertIn(label, css)
@@ -783,16 +789,21 @@ class WebAppTestCase(unittest.TestCase):
 
     def test_app_css_card_padding_uses_pad_card_token(self) -> None:
         # Card surfaces consume --pad-card (18px; 13px under .dense), not the
-        # approximate --space-4 (16px). The :root[data-density="compact"]
-        # override is a separate knob and is intentionally left in place.
+        # approximate --space-4 (16px). The shared `.card` must NOT carry a bare
+        # `padding` (it would out-specify the ds .pad-lg/.pad-sm helpers on every
+        # composite); its default rides a guarded `.card:not(.pad)…` rule instead.
         css = self.client.get("/static/app.css").text
-        # Anchor at line start so the `[data-density="compact"] .stat { … }`
-        # override (which ends in ".stat {") isn't matched instead.
-        for selector in ("\n.card {", "\n.session-card {", "\n.stat {"):
+        # App-specific card surfaces pad directly with --pad-card.
+        for selector in ("\n.session-card {", "\n.stat {"):
             self.assertIn(selector, css)
             block = css.split(selector, 1)[1].split("}", 1)[0]
             self.assertIn("padding: var(--pad-card);", block)
             self.assertNotIn("padding: var(--space-4);", block)
+        # The shared `.card` is flat + unpadded; the guarded default uses pad-card.
+        card_block = css.split("\n.card {", 1)[1].split("}", 1)[0]
+        self.assertNotIn("padding:", card_block)
+        guarded = css.split(".card:not(.pad):not(.pad-sm):not(.pad-lg) {", 1)[1].split("}", 1)[0]
+        self.assertIn("padding: var(--pad-card);", guarded)
 
     def test_index_declares_responsive_viewport(self) -> None:
         # The mobile companion pass (#192) needs the responsive viewport meta so
