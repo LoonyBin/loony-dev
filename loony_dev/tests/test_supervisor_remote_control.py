@@ -129,6 +129,79 @@ class LaunchRemoteControlTestCase(unittest.TestCase):
         self.assertEqual(second["started_at"], "2026-06-06T00:00:00+00:00")
 
 
+class LaunchWebTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.supervisor_log = self.base / ".logs" / "supervisor.log"
+        self.log_file = self.base / ".logs" / "web.log"
+        self.pid_file = self.base / ".logs" / "web.pid"
+
+    def _launch(self) -> tuple[supervisor.WebProcess, _FakeContext]:
+        ctx = _FakeContext(_FakeProcess)
+        with mock.patch.object(supervisor.multiprocessing, "get_context", return_value=ctx), \
+                mock.patch.object(supervisor.config, "_load_config", return_value={}):
+            wp = supervisor.launch_web(
+                base_dir=self.base,
+                supervisor_log=self.supervisor_log,
+                log_file=self.log_file,
+                pid_file=self.pid_file,
+            )
+        return wp, ctx
+
+    def test_forwards_base_dir_and_supervisor_log(self) -> None:
+        wp, ctx = self._launch()
+        proc = ctx.created[0]
+        # Reuses the generic CLI child entrypoint with the `web` sub-command.
+        self.assertIs(proc.target, supervisor._run_worker_process)
+        _log_file, cmd_args = proc.args
+        self.assertEqual(
+            cmd_args,
+            [
+                "web",
+                "--base-dir", str(self.base),
+                "--supervisor-log", str(self.supervisor_log),
+            ],
+        )
+        # No host/port flags — the dashboard keeps its own [web] config defaults.
+        self.assertNotIn("--host", cmd_args)
+        self.assertNotIn("--port", cmd_args)
+        self.assertEqual(proc.name, "web-dashboard")
+        self.assertTrue(proc.started)
+        self.assertEqual(wp.base_dir, self.base)
+        self.assertEqual(wp.restart_count, 0)
+
+    def test_writes_pid_file(self) -> None:
+        self._launch()
+        self.assertEqual(self.pid_file.read_text(), "4321")
+
+
+class SupervisorWebFlagTestCase(unittest.TestCase):
+    """The --web flag defaults off, so the supervisor is unchanged without it."""
+
+    def test_web_flag_defaults_off(self) -> None:
+        from click.testing import CliRunner
+
+        from loony_dev.cli import cli
+
+        captured: dict[str, object] = {}
+
+        def fake_run_supervisor() -> None:
+            captured["web"] = config.settings.get("web")
+
+        # Ignore any config file installed on the host so the assertion reflects
+        # the flag's own default, not a local `[supervisor] web = true`.
+        with mock.patch("loony_dev.config._loader._load_config", return_value={}), \
+                mock.patch.object(supervisor, "run_supervisor", fake_run_supervisor), \
+                tempfile.TemporaryDirectory() as tmp:
+            result = CliRunner().invoke(
+                cli, ["supervisor", "--base-dir", tmp], catch_exceptions=False
+            )
+        self.assertEqual(result.exit_code, 0)
+        self.assertFalse(captured["web"])
+
+
 class SessionIdSanitizationTestCase(unittest.TestCase):
     def test_sanitizes_special_characters(self) -> None:
         # The id keeps a readable ``loony-<sanitized>`` prefix and appends a

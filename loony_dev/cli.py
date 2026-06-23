@@ -174,6 +174,10 @@ def worker(**_) -> None:
 @click.option("--no-remote-control", "no_remote_control", is_flag=True,
               help="Do not launch a 'claude --remote-control' session per repo "
                    "(use in environments without Anthropic relay access to avoid restart churn).")
+@click.option("--web", "web", is_flag=True,
+              help="Also run the read-only web dashboard as a managed child process "
+                   "(single instance for all repos; restarted with backoff like workers). "
+                   "Host/port and other tuning come from the [web] config section.")
 @click.option("--verbose", "-v", is_flag=True,
               help="Enable DEBUG logging in supervisor (workers log to their own files)")
 @click.option("--log-file", default=None,

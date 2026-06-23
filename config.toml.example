@@ -163,6 +163,12 @@
 # environments without Anthropic relay access to avoid restart churn.
 # no_remote_control = false
 
+# Also run the read-only web dashboard (loony-dev web) as a managed child
+# process. A single instance serves every repo and is restarted with the same
+# backoff as workers. Host/port and other tuning come from the [web] section.
+# Equivalent to passing --web on the command line.
+# web = false
+
 # GitHub usernames whose repository invitations are auto-accepted by the supervisor.
 # Repeatable list. Use ["*"] to accept from anyone (not recommended).
 # If unset or empty, no invitations are accepted.
