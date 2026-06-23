@@ -667,6 +667,79 @@ def launch_remote_control(
 
 
 # ---------------------------------------------------------------------------
+# Web dashboard process management
+# ---------------------------------------------------------------------------
+#
+# When ``--web`` is set the supervisor runs the read-only dashboard as a single
+# managed child (one instance serves every repo, unlike the per-repo workers and
+# remote-control sessions). Only ``--base-dir`` and ``--supervisor-log`` are
+# forwarded so the dashboard scans the same tree and tails the same supervisor
+# log this process writes; host/port and other tuning come from the ``[web]``
+# config section the ``web`` command reads itself. This is a convenience switch:
+# the supervisor adds no host/port flags, so the dashboard keeps its safe
+# loopback default unless the operator overrides it in config.
+
+@dataclass
+class WebProcess:
+    base_dir: Path
+    log_file: Path
+    pid_file: Path
+    process: multiprocessing.Process
+    started_at: float
+    restart_count: int = field(default=0)
+
+
+def _web_bind_address() -> tuple[str, int]:
+    """Resolve the dashboard's configured host/port for log/URL surfacing only.
+
+    The ``--web`` supervisor flag shadows the ``[web]`` section in
+    ``config.settings`` (same key), so read the section straight from the config
+    files here. Falls back to the ``web`` command's safe loopback defaults.
+    """
+    web_cfg = config._load_config().get("web", {})
+    host = web_cfg.get("host", "127.0.0.1") if isinstance(web_cfg, dict) else "127.0.0.1"
+    port = web_cfg.get("port", 5338) if isinstance(web_cfg, dict) else 5338
+    return host, int(port)
+
+
+def launch_web(
+    base_dir: Path, supervisor_log: Path, log_file: Path, pid_file: Path
+) -> WebProcess:
+    """Spawn the read-only web dashboard as a managed child process."""
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd_args = [
+        "web",
+        "--base-dir", str(base_dir),
+        "--supervisor-log", str(supervisor_log),
+    ]
+
+    host, port = _web_bind_address()
+    logger.info(
+        "Launching web dashboard at http://%s:%d (base_dir=%s, log=%s)",
+        host, port, base_dir, log_file,
+    )
+
+    ctx = multiprocessing.get_context("spawn")
+    process = ctx.Process(
+        target=_run_worker_process,
+        args=(log_file, cmd_args),
+        name="web-dashboard",
+    )
+    process.start()
+
+    _write_pid_file(pid_file, process.pid)
+
+    return WebProcess(
+        base_dir=base_dir,
+        log_file=log_file,
+        pid_file=pid_file,
+        process=process,
+        started_at=time.monotonic(),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Supervisor loop
 # ---------------------------------------------------------------------------
 
@@ -758,6 +831,9 @@ def run_supervisor() -> None:
 
     workers: dict[str, WorkerProcess] = {}
     remote_controls: dict[str, RemoteControlProcess] = {}
+    web_proc: WebProcess | None = None
+    web_log_file = config.settings.base_dir / ".logs" / "web.log"
+    web_pid_file = config.settings.base_dir / ".logs" / "web.pid"
     shutdown_requested = False
     graceful_shutdown = False
 
@@ -785,6 +861,17 @@ def run_supervisor() -> None:
         logger.info("Include patterns: %s", config.settings.include)
     if config.settings.exclude:
         logger.info("Exclude patterns: %s", config.settings.exclude)
+
+    if config.settings.get("web"):
+        try:
+            web_proc = launch_web(
+                config.settings.base_dir,
+                config.settings.supervisor_log,
+                web_log_file,
+                web_pid_file,
+            )
+        except Exception:
+            logger.exception("Failed to launch web dashboard")
 
     while not shutdown_requested:
         now = time.monotonic()
@@ -971,6 +1058,40 @@ def run_supervisor() -> None:
         if shutdown_requested:
             break
 
+        # The web dashboard is a single child (not per-repo); restart it with the
+        # same exponential backoff as workers when it crashes.
+        if web_proc is not None and web_proc.process.exitcode is not None:
+            rc = web_proc.process.exitcode
+            _remove_pid_file(web_proc.pid_file)
+            if graceful_shutdown:
+                logger.info("Web dashboard exited during graceful shutdown.")
+                web_proc = None
+            else:
+                logger.warning(
+                    "Web dashboard exited with code %d (restart #%d).",
+                    rc, web_proc.restart_count + 1,
+                )
+                delay = min(
+                    config.settings.min_restart_delay * (2 ** web_proc.restart_count),
+                    config.settings.max_restart_delay,
+                )
+                logger.info("Restarting web dashboard in %.1fs…", delay)
+                prev_count = web_proc.restart_count
+                web_proc = None
+                _interruptible_sleep(delay, should_stop)
+                if shutdown_requested:
+                    break
+                try:
+                    web_proc = launch_web(
+                        config.settings.base_dir,
+                        config.settings.supervisor_log,
+                        web_log_file,
+                        web_pid_file,
+                    )
+                    web_proc.restart_count = prev_count + 1
+                except Exception:
+                    logger.exception("Failed to restart web dashboard")
+
         # Interruptible sleep for the health-check interval
         sleep_deadline = time.monotonic() + config.settings.interval
         while not shutdown_requested and time.monotonic() < sleep_deadline:
@@ -979,6 +1100,12 @@ def run_supervisor() -> None:
     # ---------------------------------------------------------------------- #
     # Shutdown
     # ---------------------------------------------------------------------- #
+    # The web dashboard is read-only with nothing to drain, so it is terminated
+    # on both graceful (SIGQUIT) and immediate shutdown.
+    if web_proc is not None:
+        logger.info("Stopping web dashboard")
+        _terminate_process(web_proc.process, web_proc.pid_file, "Web dashboard")
+
     # Remote-control sessions are interactive/idle with nothing to drain, so they
     # are terminated on both graceful (SIGQUIT) and immediate shutdown.
     for repo, rcp in remote_controls.items():
