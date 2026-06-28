@@ -301,12 +301,25 @@ class CurrentSkillMapTestCase(_Base):
         state = self._state(current_skill=es.skill_for_task_type("implement_issue"))
         self.assertIsNotNone(state.current_skill)
 
-    def test_all_known_task_types_map_to_a_skill(self) -> None:
+    def test_all_instrumented_task_types_map_to_a_skill(self) -> None:
         for task_type in (
             "plan_issue", "implement_issue", "address_review",
-            "resolve_conflicts", "fix_ci", "cleanup_stuck",
+            "resolve_conflicts", "fix_ci",
         ):
             self.assertIsNotNone(es.skill_for_task_type(task_type), task_type)
+
+    def test_skill_and_stage_maps_cover_the_same_task_types(self) -> None:
+        # The two maps must stay in sync: a skill with no matching stage reads as
+        # schema drift on the orchestrator path and drops the running snapshot.
+        self.assertEqual(
+            set(es.SKILL_BY_TASK_TYPE), set(es.STAGE_BY_TASK_TYPE),
+        )
+
+    def test_cleanup_stuck_is_uninstrumented(self) -> None:
+        # ``cleanup_stuck`` has no worktree/pipeline; it is intentionally in
+        # neither map so it is never (half-)instrumented.
+        self.assertIsNone(es.skill_for_task_type("cleanup_stuck"))
+        self.assertIsNone(es.stage_for_task_type("cleanup_stuck"))
 
 
 class NeedsYouTestCase(_Base):
@@ -324,22 +337,36 @@ class NeedsYouTestCase(_Base):
 
 
 class ActorResolutionTestCase(_Base):
-    def test_bot_from_config_without_repo_instance(self) -> None:
-        # Blocker #2: actor resolution must work with NO Repo instance.
+    def test_bot_from_worker_section_without_repo_instance(self) -> None:
+        # Blocker #2: actor resolution must work with NO Repo instance, and read
+        # the nested ``[worker]`` section — the shape a worker config file uses.
         from loony_dev import config
 
         original = config.settings
-        config.settings = config.Settings({"bot_name": "trixy-07"})
+        config.settings = config.Settings({"worker": {"bot_name": "trixy-07"}})
         try:
             self.assertEqual(es.resolve_actor(es.ACTOR_BOT), "trixy-07")
         finally:
             config.settings = original
 
-    def test_capo_from_config(self) -> None:
+    def test_bot_from_flat_cli_override(self) -> None:
+        # ``--bot-name`` is a registered CLI option, so it lands as a flattened
+        # top-level key (no ``[worker]`` section). The nested+flat lookup must
+        # still honour it — matching how ``Repo`` resolves ``bot_name``.
         from loony_dev import config
 
         original = config.settings
-        config.settings = config.Settings({"capo_name": "el-capo"})
+        config.settings = config.Settings({"bot_name": "trixy-cli"})
+        try:
+            self.assertEqual(es.resolve_actor(es.ACTOR_BOT), "trixy-cli")
+        finally:
+            config.settings = original
+
+    def test_capo_from_worker_section(self) -> None:
+        from loony_dev import config
+
+        original = config.settings
+        config.settings = config.Settings({"worker": {"capo_name": "el-capo"}})
         try:
             self.assertEqual(es.resolve_actor(es.ACTOR_CAPO), "el-capo")
         finally:

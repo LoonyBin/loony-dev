@@ -534,9 +534,17 @@ class Orchestrator:
                 task.on_complete(self.repo, result)
                 outcome = "idle"
             elif result.rate_limited:
+                self._emit_execution_event(
+                    task, "error",
+                    f"{task.task_type} rate-limited: {result.summary}", "blocked", "system",
+                )
                 failure_reported = True
                 task.on_failure(self.repo, RateLimitedError(result.summary))
             else:
+                self._emit_execution_event(
+                    task, "error",
+                    f"{task.task_type} failed: {result.summary}", "blocked", "system",
+                )
                 failure_reported = True
                 task.on_failure(self.repo, RuntimeError(result.summary))
         except Exception as e:

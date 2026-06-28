@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 import threading
 import time
 from collections.abc import Iterator
@@ -84,13 +85,17 @@ SNAPSHOT_SUFFIX = ".state.json"
 # is multi-phase and leaves ``command_name = None`` (tasks/base.py), so the
 # headline implement phase would record ``current_skill=None`` and violate
 # "all fields populated".
+# ``cleanup_stuck`` is intentionally absent: it has no worktree/pipeline, is never
+# instrumented, and listing it here (with no matching ``STAGE_BY_TASK_TYPE`` entry)
+# would let ``stage_for_task_type`` return ``None`` — read as schema drift on the
+# orchestrator path — while ``skill_for_task_type`` returned a value, desyncing the
+# two maps. The two dicts must stay in sync over the same key set.
 SKILL_BY_TASK_TYPE: dict[str, str] = {
     "plan_issue": "plan-issue",
     "implement_issue": "implement-issue",
     "address_review": "address-reviews",
     "resolve_conflicts": "resolve-conflicts",
     "fix_ci": "fix-ci",
-    "cleanup_stuck": "cleanup-stuck",
 }
 
 STAGE_BY_TASK_TYPE: dict[str, str] = {
@@ -122,6 +127,22 @@ ACTOR_HUMAN = "human"
 ACTOR_SYSTEM = "system"
 
 
+def _worker_setting(key: str, default: object) -> object:
+    """Read *key* from the ``[worker]`` config section, falling back to top-level.
+
+    Mirrors ``loony_dev.agents.coding._worker_setting``: the worker exposes its
+    settings both as a nested ``[worker]`` dict and (for registered CLI options
+    like ``--bot-name``) as a flattened top-level key, so a robust read checks the
+    section first and falls back to the flat key.
+    """
+    from loony_dev import config
+
+    worker_cfg = config.settings.get("worker")
+    if isinstance(worker_cfg, dict) and key in worker_cfg:
+        return worker_cfg[key]
+    return config.settings.get(key, default)
+
+
 def resolve_actor(kind: str) -> str:
     """Resolve the *config-resolved* actor name for an event-emitting *kind*.
 
@@ -130,10 +151,18 @@ def resolve_actor(kind: str) -> str:
     ``repo.bot_name`` at the turn-boundary site would raise and (best-effort) drop
     every agent heartbeat. The bot name is resolved independently of any ``Repo``:
 
-    * ``bot`` — ``config.settings["bot_name"]`` falling back to the **static**
-      :meth:`Repo.detect_bot_name` (the GitHub bot, e.g. ``trixy``).
-    * ``capo`` — ``config.settings["capo_name"]`` (default ``"capo"``), the
-      orchestrator/supervisor identity; even that is not a literal.
+    Names are read with :func:`_worker_setting` — the ``[worker]`` section first,
+    then a flat top-level fallback — because the worker exposes its config both
+    ways: a ``[worker]`` TOML section *and*, for registered CLI options, a
+    flattened top-level key (``--bot-name`` → ``config.settings["bot_name"]``).
+    The nested+flat lookup therefore honours both a ``[worker] bot_name`` config
+    value and a ``--bot-name`` command-line override, and stays consistent with
+    how :class:`Repo` itself resolves ``bot_name`` (``github/repo.py``).
+
+    * ``bot`` — ``[worker] bot_name`` / top-level ``bot_name`` falling back to the
+      **static** :meth:`Repo.detect_bot_name` (the GitHub bot, e.g. ``trixy``).
+    * ``capo`` — ``[worker] capo_name`` / top-level ``capo_name`` (default
+      ``"capo"``), the orchestrator/supervisor identity; even that is not a literal.
     * ``human`` — operator-injected turns (``session_registry.SOURCE_OPERATOR``).
     * ``system`` — infra/lifecycle events with no human/bot agency.
 
@@ -141,15 +170,13 @@ def resolve_actor(kind: str) -> str:
     programmer error and must surface (before any event is written) rather than
     silently mis-attributing the event to a default actor.
     """
-    from loony_dev import config
-
     if kind == ACTOR_BOT:
-        name = config.settings.get("bot_name")
+        name = _worker_setting("bot_name", None)
         if name:
             return str(name)
         return _detect_bot_cached()
     if kind == ACTOR_CAPO:
-        return str(config.settings.get("capo_name", "capo"))
+        return str(_worker_setting("capo_name", "capo"))
     if kind == ACTOR_HUMAN:
         return "human"
     if kind == ACTOR_SYSTEM:
@@ -421,11 +448,8 @@ def write_snapshot(base_dir: Path, repo: str, pipeline_key: str, state: LiveStat
     path = snapshot_path(base_dir, repo, pipeline_key)
     payload = json.dumps(state.to_dict(), indent=2, ensure_ascii=False)
     with _path_lock(path):
-        path.parent.mkdir(parents=True, exist_ok=True)
         _write_sidecar(base_dir, repo, pipeline_key)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(payload, encoding="utf-8")
-        os.replace(tmp, path)
+        _atomic_write_text(path, payload)
 
 
 def read_snapshot(base_dir: Path, repo: str, pipeline_key: str) -> LiveState | None:
@@ -546,10 +570,7 @@ def _bump_snapshot(base_dir: Path, repo: str, pipeline_key: str, **fields: objec
         now = _utc_now_iso()
         updated = replace(current, last_heartbeat=now, updated_at=now, **fields)  # type: ignore[arg-type]
         payload = json.dumps(updated.to_dict(), indent=2, ensure_ascii=False)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(payload, encoding="utf-8")
-        os.replace(tmp, path)
+        _atomic_write_text(path, payload)
 
 
 # ---------------------------------------------------------------------------
@@ -581,6 +602,32 @@ def _write_sidecar(base_dir: Path, repo: str, pipeline_key: str) -> None:
     if not sidecar.exists():
         sidecar.parent.mkdir(parents=True, exist_ok=True)
         sidecar.write_text(pipeline_key, encoding="utf-8")
+
+
+def _atomic_write_text(path: Path, payload: str) -> None:
+    """Atomically (re)write *path* with *payload* via a **unique** temp file.
+
+    A fixed ``<path>.tmp`` would collide across processes writing the same
+    snapshot, corrupting the temp before :func:`os.replace` and undermining the
+    atomic-rewrite guarantee (the in-process :func:`_path_lock` only serialises
+    *this* process). A per-write :func:`tempfile.mkstemp` in the same directory
+    avoids the collision; ``os.replace`` then swaps it in atomically. On any
+    failure the temp file is removed so a crash can't leave litter behind.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _read_snapshot_file(path: Path) -> LiveState | None:
