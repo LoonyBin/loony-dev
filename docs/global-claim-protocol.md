@@ -118,7 +118,7 @@ to "whose work is this," readable by every actor — bot or human — without an
 comment to make its progress legible to humans and supervisory actors — the bot equivalent of
 a standup update. It is an **activity log, not a lease**, and carries **no enforced expiry**:
 
-```
+~~~text
 <!-- gcp:claim v=0.1 -->
 ```json
 {
@@ -131,7 +131,7 @@ a standup update. It is an **activity log, not a lease**, and carries **no enfor
 }
 ```
 <!-- /gcp:claim -->
-```
+~~~
 
 - There MUST be at most **one** marker per work item; updates edit it in place.
 - Timestamps MUST be UTC, RFC 3339. `last_active` is advisory — it informs a human or
