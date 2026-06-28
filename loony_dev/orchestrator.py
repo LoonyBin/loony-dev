@@ -93,6 +93,16 @@ class Orchestrator:
         else:
             configured = config.settings.get("base_dir")
             self.base_dir = Path(configured).resolve() if configured else Path(git.work_dir)
+        # Thread the already-resolved base_dir down to the agents so the #267
+        # turn-boundary heartbeat writes the execution-state substrate under the
+        # *same* tree as the orchestrator's own events. The agents must not
+        # re-derive it from ``config.settings.base_dir`` (that property raises
+        # when base_dir is unset, e.g. a bare worker/test), which would silently
+        # drop heartbeats and diverge a pipeline's events from its snapshot. Set
+        # it loudly: every Agent is a plain instance that accepts the attribute,
+        # so a failure here is a real contract break, not something to swallow.
+        for agent in self.agents:
+            agent.base_dir = self.base_dir
         self.interval = interval if interval is not None else config.settings.get("interval", 60)
         resolved_max = (
             max_concurrent_tasks
@@ -464,6 +474,20 @@ class Orchestrator:
         # tasks with no worktree (e.g. cleanup), which run against the base
         # checkout exactly as before.
         ps = self._pipeline_session_for(task)
+        # Open the #267 execution-state record for this dispatch: a ``running``
+        # snapshot + a ``dispatched`` event. ``outcome`` is the terminal snapshot
+        # state, defaulting to ``failed`` so an early/unexpected exit is recorded
+        # as a failure rather than a clean idle. All substrate writes are
+        # best-effort (see ``_emit_execution_event`` / ``_write_running_snapshot``).
+        outcome = "failed"
+        # Tracks whether the result-handling branch already ran ``on_failure`` so
+        # the ``except`` below does not call it a second time when the failure
+        # callback (or a later step) raises after on_failure has been attempted.
+        failure_reported = False
+        self._write_running_snapshot(task, ps)
+        self._emit_execution_event(
+            task, "dispatched", f"Dispatched {task.task_type}", "active", "capo",
+        )
         try:
             # ── Prepare worktree (mutates the shared base checkout) ──────────
             # All of this touches the base checkout's index/refs/worktree list
@@ -494,6 +518,10 @@ class Orchestrator:
             # Phase-boundary milestones (issue #220) so the per-pipeline log
             # reads as a stream of lifecycle events, not just incidental records.
             logger.info("Agent %s starting %s phase.", agent.name, task.task_type)
+            self._emit_execution_event(
+                task, "phase_enter",
+                f"Agent {agent.name} starting {task.task_type}", "active", "bot",
+            )
             if isinstance(task, IssueTask) and isinstance(agent, CodingAgent):
                 result = agent.execute_issue(task, work_dir=work_dir)
             else:
@@ -504,13 +532,34 @@ class Orchestrator:
             )
             if result.success:
                 task.on_complete(self.repo, result)
+                outcome = "idle"
             elif result.rate_limited:
+                failure_reported = True
                 task.on_failure(self.repo, RateLimitedError(result.summary))
             else:
+                failure_reported = True
                 task.on_failure(self.repo, RuntimeError(result.summary))
         except Exception as e:
-            task.on_failure(self.repo, e)
+            # Wire the ``error`` vocab on the orchestrator path too (the turn path
+            # wires it independently in ``_run_claude_cli``).
+            self._emit_execution_event(
+                task, "error", f"{task.task_type} failed: {e}", "blocked", "system",
+            )
+            if failure_reported:
+                # ``on_failure`` already ran for this dispatch (and itself raised,
+                # or a later step did) — do not double-invoke it; just record it.
+                logger.exception("Task callback failed after on_failure already ran")
+            else:
+                task.on_failure(self.repo, e)
         finally:
+            # Close the #267 record: a ``terminal`` event + flip the snapshot to
+            # the terminal state (``idle`` on success, ``failed`` otherwise) with
+            # ``live=False``. ``crashed`` is reserved for the reliability layer
+            # (#268) to set on a stale heartbeat — the writer only sets idle/failed.
+            self._emit_execution_event(
+                task, "terminal", f"{task.task_type} finished ({outcome})", "none", "capo",
+            )
+            self._finalize_snapshot(task, outcome)
             # Release the pipeline lease taken at dispatch (issue #199) so the
             # next gather — and any human drive — can claim the pipeline again.
             pkey = task.worktree_key
@@ -522,6 +571,103 @@ class Orchestrator:
             # retained for the pipeline's next phase and reclaimed only once the
             # pipeline reaches a terminal GitHub state (see
             # ``_reclaim_completed_pipelines``).
+
+    # ------------------------------------------------------------------
+    # Execution-state substrate writes (#267) — best-effort instrumentation
+    # ------------------------------------------------------------------
+    # The orchestrator owns the snapshot lifecycle (open on dispatch, flip on
+    # terminal) and the lifecycle events (``dispatched`` / ``phase_enter`` /
+    # ``error`` / ``terminal``); the agent owns the turn-boundary heartbeat (see
+    # ``ClaudeQuotaMixin``). Every write here is wrapped so a substrate failure
+    # never breaks a task — the same discipline as the observe-session registry.
+    # Tasks with no pipeline (no ``worktree_key``, e.g. cleanup) are not
+    # instrumented: there is no pipeline to key a snapshot on.
+
+    def _write_running_snapshot(self, task: Task, ps: PipelineSession | None) -> None:
+        """Write the initial ``running`` live-state snapshot for *task*'s pipeline."""
+        pkey = task.worktree_key
+        if pkey is None:
+            return
+        try:
+            from loony_dev import execution_state
+
+            # Fail fast on an unmapped task type rather than silently defaulting
+            # to a stage — a missing mapping is schema drift, not an "Inbox" item.
+            # Caught by this method's best-effort wrapper, so it never breaks the
+            # task, but it stops a misleading snapshot from being written.
+            stage = execution_state.stage_for_task_type(task.task_type)
+            if stage is None:
+                raise ValueError(
+                    f"no execution-state stage mapping for task type {task.task_type!r}"
+                )
+            worktree = str(ps.worktree_path) if ps is not None and ps.worktree_path else None
+            execution_state.write_snapshot(
+                self.base_dir, self.repo.name, pkey,
+                execution_state.LiveState(
+                    pipeline_key=pkey,
+                    repo=self.repo.name,
+                    stage=stage,
+                    current_skill=execution_state.skill_for_task_type(task.task_type),
+                    state="running",
+                    live=True,
+                    worktree_path=worktree,
+                    linked_pr=self._linked_pr(task),
+                    # No in-memory attempt counter exists yet (retries are
+                    # GitHub-marker-driven); a real counter is deferred to the
+                    # reliability layer (#268). Default to 1 per dispatch.
+                    attempt=1,
+                ),
+            )
+        except Exception:  # pragma: no cover - substrate is best-effort
+            logger.debug("Could not write running snapshot for %s", pkey, exc_info=True)
+
+    def _finalize_snapshot(self, task: Task, outcome: str) -> None:
+        """Flip *task*'s snapshot to its terminal ``outcome`` with ``live=False``."""
+        pkey = task.worktree_key
+        if pkey is None:
+            return
+        try:
+            from loony_dev import execution_state
+
+            execution_state._bump_snapshot(
+                self.base_dir, self.repo.name, pkey, state=outcome, live=False,
+            )
+        except Exception:  # pragma: no cover - substrate is best-effort
+            logger.debug("Could not finalize snapshot for %s", pkey, exc_info=True)
+
+    def _emit_execution_event(
+        self, task: Task, event_type: str, what: str, state_tone: str, actor_kind: str,
+    ) -> None:
+        """Append one lifecycle event to *task*'s pipeline event log (best-effort)."""
+        pkey = task.worktree_key
+        if pkey is None:
+            return
+        try:
+            from loony_dev import execution_state
+
+            execution_state.append_event(
+                self.base_dir, self.repo.name, pkey,
+                execution_state.ExecutionEvent(
+                    type=event_type,
+                    what=what,
+                    actor=execution_state.resolve_actor(actor_kind),
+                    target=execution_state.target_for(self.repo.name, pkey),
+                    state_tone=state_tone,
+                ),
+            )
+        except Exception:  # pragma: no cover - substrate is best-effort
+            logger.debug("Could not emit %s event for %s", event_type, pkey, exc_info=True)
+
+    @staticmethod
+    def _linked_pr(task: Task) -> int | None:
+        """Best-effort PR number for *task*, if its facet carries one (else ``None``).
+
+        PR-side tasks (review / CI fix / conflict) expose ``task.pr.number``;
+        ``IssueTask`` has no PR until one is created mid-phase, so it stays ``None``.
+        """
+        pr = getattr(task, "pr", None)
+        number = getattr(pr, "number", None)
+        return int(number) if isinstance(number, int) else None
 
     def _pipeline_session_for(self, task: Task) -> PipelineSession | None:
         """Get-or-create the :class:`PipelineSession` owning *task*'s worktree.
