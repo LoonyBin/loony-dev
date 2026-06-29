@@ -408,6 +408,32 @@ class JoinUrlScanTestCase(unittest.TestCase):
     def test_ignores_unrelated_url(self) -> None:
         self.assertIsNone(supervisor._scan_for_join_url(b"see https://example.com/docs"))
 
+    def test_strips_embedded_ansi_escape(self) -> None:
+        # ``ESC[28G`` ("cursor to column 28") spliced mid-URL by a TUI redraw.
+        data = b"Join: https://claude.ai/code/session\x1b[28G_01ABC now\r\n"
+        self.assertEqual(
+            supervisor._scan_for_join_url(data),
+            "https://claude.ai/code/session_01ABC",
+        )
+
+    def test_strips_multiple_and_reset_escapes(self) -> None:
+        # URL bracketed by ``ESC[1m`` … ``ESC[0m`` plus a mid-URL ``ESC[28G``.
+        data = (
+            b"\x1b[1mhttps://claude.ai/code/session\x1b[28G_01XYZ\x1b[0m\r\n"
+        )
+        self.assertEqual(
+            supervisor._scan_for_join_url(data),
+            "https://claude.ai/code/session_01XYZ",
+        )
+
+    def test_clean_url_preserved_byte_for_byte(self) -> None:
+        clean = b"Join here: https://claude.ai/remote-control/abc123 now\r\n"
+        self.assertEqual(supervisor._strip_ansi(clean), clean)
+        self.assertEqual(
+            supervisor._scan_for_join_url(clean),
+            "https://claude.ai/remote-control/abc123",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

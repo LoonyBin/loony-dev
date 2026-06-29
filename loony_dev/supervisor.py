@@ -448,15 +448,37 @@ def _remote_control_command(session_id: str) -> list[str]:
 
 _JOIN_URL_RE = re.compile(rb"https://\S*claude\.ai/\S+")
 
+# Terminal control sequences a TUI redraw can splice mid-URL. CSI (``ESC[``
+# followed by the full parameter range (0x30-0x3F) then intermediate bytes and a
+# final byte, e.g. ``ESC[28G`` "cursor to column 28", ``ESC[0m``, ``ESC[2K``),
+# OSC (``ESC]`` … terminated by BEL or ST), and
+# lone two-byte escapes (``ESC`` + a single byte in ``@-_``). These bytes are
+# non-whitespace, so ``_JOIN_URL_RE``'s ``\S+`` would otherwise swallow them.
+_ANSI_ESCAPE_RE = re.compile(
+    rb"\x1b\[[0-?]*[ -/]*[@-~]"  # CSI (params 0x30-0x3F, intermediates 0x20-0x2F, final)
+    rb"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC … BEL | ST
+    rb"|\x1b[@-_]"  # lone two-byte escape
+)
+
+
+def _strip_ansi(data: bytes) -> bytes:
+    """Remove ANSI/CSI/OSC terminal control sequences from ``data``.
+
+    A no-op on escape-free bytes (returns them byte-for-byte).
+    """
+    return _ANSI_ESCAPE_RE.sub(b"", data)
+
 
 def _scan_for_join_url(data: bytes) -> str | None:
     """Best-effort scan of PTY output for a claude.ai join/deep-link URL.
 
-    Returns the first match decoded as text, or ``None``. The scan is per-chunk
-    (no cross-chunk buffering) and intentionally narrow to avoid false positives;
-    ``join_url`` stays ``null`` unless a link is actually emitted.
+    Returns the first match decoded as text, or ``None``. ANSI/CSI escapes are
+    stripped first so a TUI redraw splicing e.g. ``ESC[28G`` mid-URL doesn't
+    corrupt the captured link. The scan is per-chunk (no cross-chunk buffering)
+    and intentionally narrow to avoid false positives; ``join_url`` stays
+    ``null`` unless a link is actually emitted.
     """
-    match = _JOIN_URL_RE.search(data)
+    match = _JOIN_URL_RE.search(_strip_ansi(data))
     if not match:
         return None
     return match.group(0).decode("utf-8", errors="replace").rstrip(".,)'\"")
