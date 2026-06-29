@@ -1452,6 +1452,32 @@ def tail_pipeline_log(
         ) from exc
 
 
+def tail_pipeline_log_page(
+    base_dir: Path,
+    owner: str,
+    repo: str,
+    pipeline_key: str,
+    lines: int,
+    before_offset: int | None = None,
+) -> dict:
+    """Offset-paginated pipeline-log tail: ``{lines, next_offset}`` (issue #270).
+
+    Like :func:`tail_pipeline_log` but returns a byte cursor so a client can page
+    *older* lines without re-reading the file — the pipeline-log parity of
+    :func:`tail_log_page`. Pass the previous response's ``next_offset`` back as
+    *before_offset*; it is ``None`` once the start of file is reached. Raises
+    :class:`LogNotFoundError` for invalid segments / a missing log.
+    """
+    log_path = _safe_pipeline_log_path(base_dir, owner, repo, pipeline_key)
+    try:
+        page, next_offset = _read_tail_page(log_path, lines, before_offset)
+    except FileNotFoundError as exc:
+        raise LogNotFoundError(
+            f"no pipeline log for {owner}/{repo}:{pipeline_key}"
+        ) from exc
+    return {"lines": page, "next_offset": next_offset}
+
+
 def list_pipeline_logs(base_dir: Path, owner: str, repo: str) -> list[str]:
     """Return the raw pipeline keys that have a log under ``owner/repo``.
 

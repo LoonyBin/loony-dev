@@ -506,16 +506,30 @@ def create_api_router(
         repo: str,
         pipeline_key: str,
         lines: int = Query(default_tail_lines, ge=1, le=MAX_TAIL_LINES),
+        before_offset: int | None = Query(
+            None, ge=0, description="Byte cursor: page lines older than this offset"
+        ),
     ) -> dict:
+        """Offset-paginated tail of a pipeline's log (issue #270).
+
+        The pipeline-log parity of ``/logs/{owner}/{repo}/tail``: reads backward
+        from EOF (or from *before_offset*) and returns an additive ``next_offset``
+        byte cursor so a client can page older lines (pass it back as
+        ``before_offset`` until it is ``null``). ``lines`` / ``count`` are
+        backward-compatible.
+        """
         try:
-            tail = services.tail_pipeline_log(base_dir, owner, repo, pipeline_key, lines)
+            page = services.tail_pipeline_log_page(
+                base_dir, owner, repo, pipeline_key, lines, before_offset
+            )
         except services.LogNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {
             "repo": f"{owner}/{repo}",
             "pipeline_key": pipeline_key,
-            "lines": tail,
-            "count": len(tail),
+            "lines": page["lines"],
+            "count": len(page["lines"]),
+            "next_offset": page["next_offset"],
         }
 
     _register_entry_routes(router, "skills", base_dir=base_dir, global_root=global_root)

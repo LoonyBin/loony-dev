@@ -2237,6 +2237,24 @@ class FastLogReadTestCase(unittest.TestCase):
         self.assertEqual(resp2.json()["lines"],
                          ["log 10", "log 11", "log 12", "log 13", "log 14"])
 
+    def test_api_pipeline_log_tail_carries_next_offset(self) -> None:
+        # Parity with the worker-log /tail: the pipeline-log tail pages back over
+        # older content via the same before_offset / next_offset byte cursor.
+        _make_pipeline_log(self.base, "acme", "widgets", "issue-5",
+                           [f"log {i}" for i in range(20)])
+        client = TestClient(create_app(base_dir=self.base, supervisor_log=None))
+        resp = client.get("/api/logs/acme/widgets/pipelines/issue-5/tail?lines=5")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["lines"], ["log 15", "log 16", "log 17", "log 18", "log 19"])
+        self.assertIn("next_offset", body)
+        resp2 = client.get(
+            "/api/logs/acme/widgets/pipelines/issue-5/tail"
+            f"?lines=5&before_offset={body['next_offset']}"
+        )
+        self.assertEqual(resp2.json()["lines"],
+                         ["log 10", "log 11", "log 12", "log 13", "log 14"])
+
 
 @unittest.skipUnless(_HAS_PROC, "requires a Linux /proc filesystem")
 class StuckRealProcessTestCase(unittest.TestCase):
