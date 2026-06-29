@@ -223,10 +223,16 @@ export function streamObserveAt(url, conv, onStatus) {
       applyEvent(stream, ev);
     };
     ws.onerror = () => status("connection error", "off");
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       stream.ws = null;
       if (closed) return;
-      status("reconnecting…", "off");
+      // 4404 is the backend's deliberate "no base/observable session" close
+      // (routes.py) — an expected, non-transient state (e.g. the base session
+      // hasn't started or written its transcript yet), not a network blip. Show
+      // it distinctly but keep retrying with backoff so the pane recovers on its
+      // own once the session comes up.
+      const unavailable = event && event.code === 4404;
+      status(unavailable ? "no session" : "reconnecting…", "off");
       retryTimer = setTimeout(connect, backoff);
       backoff = Math.min(backoff * 2, MAX_BACKOFF);
     };

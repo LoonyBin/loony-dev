@@ -582,10 +582,18 @@ function show(repo) {
   // activity feed moves to the sidebar "Activity timeline" card.
   const host = document.getElementById("repo-log");
   const title = document.getElementById("repo-log-title");
-  if (title) title.textContent = `— ${current} (live)`;
-  if (host) stopLog = streamObserveAt(liveObserveUrl(current), host);
+  // Surface the observe stream's connection state in the title (#282) so a
+  // reconnect / "no session" / error isn't masked by a permanent "(live)".
+  // Capture `repo` locally: `current` mutates on the next repo switch, but the
+  // stream is torn down then anyway, so the callback only ever reflects this one.
+  const repo = current;
+  const setLogStatus = (text) => {
+    if (title) title.textContent = `— ${repo} (${text || "live"})`;
+  };
+  setLogStatus("connecting…");
+  if (host) stopLog = streamObserveAt(liveObserveUrl(repo), host, setLogStatus);
   const timeline = document.getElementById("live-timeline");
-  if (timeline) stopActivity = streamActivity(current, timeline);
+  if (timeline) stopActivity = streamActivity(repo, timeline);
 }
 
 // Fed the consolidated snapshot by the orchestrator; re-render only while a
