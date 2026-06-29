@@ -143,13 +143,15 @@ function activityRow(ev) {
 }
 
 // Live transcript of `repo`'s structured agent activity into the `host` element.
-// Consumes the cross-fleet activity SSE (#270) and filters client-side to this
-// repo (each event carries its `repo`). Bounds retained rows, auto-scrolls when
-// pinned, and shows an honest empty state until the first matching event arrives.
-// Returns a stop function that closes the stream. (#259)
+// Consumes the cross-fleet activity SSE (#270), scoped server-side to this repo
+// (`?repo=`) so the `lines` backlog cap applies per-repo — a quiet repo isn't
+// starved out by busier repos sharing a fleet-wide tail. Bounds retained rows,
+// auto-scrolls when pinned, dedupes the backlog the SSE replays on every (re)connect
+// so transient reconnects don't double up turns, and shows an honest empty state
+// until the first event arrives. Returns a stop function that closes the stream. (#259)
 export function streamActivity(repo, host, lines = MAX_ACTIVITY_ROWS) {
-  // One bound for both the fetch backlog and the retained-row trim, so they can't
-  // drift if a caller passes a custom `lines`.
+  // One bound for the per-repo backlog, the retained-row trim, and the dedupe
+  // window, so they can't drift if a caller passes a custom `lines`.
   const maxRows = Math.max(1, Number(lines) || MAX_ACTIVITY_ROWS);
   host.innerHTML = "";
   const empty = document.createElement("p");
@@ -157,7 +159,23 @@ export function streamActivity(repo, host, lines = MAX_ACTIVITY_ROWS) {
   empty.textContent = "No agent activity for this repo yet.";
   host.appendChild(empty);
 
-  const es = new EventSource(`/api/activity/stream?lines=${encodeURIComponent(maxRows)}`);
+  // Bounded seen-key cache (#259): /api/activity/stream replays a recent backlog
+  // on every connection, so the browser's auto-reconnect would re-append events
+  // we already rendered. Key on the raw frame — the server emits a canonical
+  // sort_keys JSON serialisation, so identical payloads share a string. The
+  // window matches `maxRows`, so any key evicted here was already trimmed from
+  // the DOM and can't resurrect a still-visible row.
+  const seen = new Set();
+  const seenOrder = [];
+  const markSeen = (key) => {
+    seen.add(key);
+    seenOrder.push(key);
+    while (seenOrder.length > maxRows) seen.delete(seenOrder.shift());
+  };
+
+  const es = new EventSource(
+    `/api/activity/stream?repo=${encodeURIComponent(repo)}&lines=${encodeURIComponent(maxRows)}`,
+  );
   let closed = false;
 
   es.onmessage = (event) => {
@@ -168,12 +186,14 @@ export function streamActivity(repo, host, lines = MAX_ACTIVITY_ROWS) {
     } catch (e) {
       return; // ignore a malformed frame rather than tearing down the stream
     }
-    if (!ev || ev.repo !== repo) return; // not this repo's activity
+    if (!ev || ev.repo !== repo) return; // defensive: server already scopes to repo
+    if (seen.has(event.data)) return; // a replayed backlog frame from a reconnect
+    markSeen(event.data);
     if (empty.parentNode === host) host.removeChild(empty);
 
     const pinned = isPinnedToBottom(host);
     host.appendChild(activityRow(ev));
-    // Trim oldest rows to bound memory (same cap as the fetch backlog).
+    // Trim oldest rows to bound memory (same cap as the per-repo backlog).
     while (host.childElementCount > maxRows) {
       host.removeChild(host.firstElementChild);
     }

@@ -2107,6 +2107,26 @@ class FleetActivityTestCase(unittest.TestCase):
         self.assertEqual(len(events), 2)
         self.assertEqual([e["what"] for e in events], ["e3", "e4"])
 
+    def test_repo_filter_scopes_and_keeps_per_repo_backlog(self) -> None:
+        # A busy repo and a quiet one. With a fleet-wide cap the quiet repo's lone
+        # event would be starved out of the tail; a repo-scoped read (#259) keeps
+        # the cap per-repo so the quiet repo's backlog still arrives.
+        # Quiet repo's event is older than the busy repo's recent burst.
+        self._seed("acme/gadgets", "issue-9", ts="2026-01-01T00:00:01+00:00", what="g")
+        for i in range(4):
+            self._seed(
+                "acme/widgets", f"issue-{i}",
+                ts=f"2026-01-01T00:00:0{i + 2}+00:00", what=f"w{i}",
+            )
+
+        scoped = services.fleet_activity(self.base, 2, repo="acme/gadgets")
+        self.assertEqual([e["what"] for e in scoped], ["g"])
+        self.assertTrue(all(e["repo"] == "acme/gadgets" for e in scoped))
+
+        # The unscoped fleet tail (cap 2) would not include the quiet repo's event.
+        fleet = services.fleet_activity(self.base, 2)
+        self.assertNotIn("g", [e["what"] for e in fleet])
+
 
 class _ReadOffsetSpy:
     """Wrap a binary file handle, recording the smallest offset any read starts at."""

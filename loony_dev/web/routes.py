@@ -605,6 +605,7 @@ def create_api_router(
     @router.get("/activity")
     def get_activity(
         lines: int = Query(default_tail_lines, ge=1, le=MAX_TAIL_LINES),
+        repo: str | None = Query(None, description="restrict to one owner/repo"),
     ) -> dict:
         """Cross-fleet "Live activity" backlog: a bounded recent-tail merge (#270).
 
@@ -612,15 +613,17 @@ def create_api_router(
         (≤ pool size) — not a historical/aggregate scan. Each event carries its
         ``repo`` / ``pipeline_key`` so the UI can attribute the line. Mirror of
         :func:`get_pipeline_activity` but fleet-wide; see ``/activity/stream`` for
-        the live push.
+        the live push. ``repo`` (``owner/repo``) restricts the merge to one repo so
+        its ``lines`` cap is per-repo (the Live transcript seeds from this, #259).
         """
-        events = services.fleet_activity(base_dir, lines)
+        events = services.fleet_activity(base_dir, lines, repo=repo)
         return {"events": events, "count": len(events)}
 
     @router.get("/activity/stream")
     async def stream_activity(
         request: Request,
         lines: int = Query(default_tail_lines, ge=1, le=MAX_TAIL_LINES),
+        repo: str | None = Query(None, description="restrict to one owner/repo"),
     ) -> StreamingResponse:
         """SSE push of the cross-fleet activity feed (#270).
 
@@ -629,7 +632,8 @@ def create_api_router(
         (the last emitted ISO ``ts`` plus a small dedupe set for equal-``ts``
         ties), one JSON event per ``data:`` line. Same heartbeat / disconnect /
         teardown contract as ``stream_events`` — the watcher is closed in a
-        ``finally`` so nothing leaks across reconnects.
+        ``finally`` so nothing leaks across reconnects. ``repo`` (``owner/repo``)
+        restricts the feed to one repo so its ``lines`` cap is per-repo (#259).
         """
 
         def _key(event: dict) -> str:
@@ -649,7 +653,9 @@ def create_api_router(
                     if await request.is_disconnected():
                         break
                     watcher.arm()
-                    merged = await asyncio.to_thread(services.fleet_activity, base_dir, lines)
+                    merged = await asyncio.to_thread(
+                        services.fleet_activity, base_dir, lines, repo
+                    )
                     emitted_any = False
                     for event in merged:  # ascending by ts
                         ts = event.get("ts", "")
