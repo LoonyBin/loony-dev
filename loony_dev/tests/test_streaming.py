@@ -77,6 +77,22 @@ class FleetEventWatcherTestCase(unittest.IsolatedAsyncioTestCase):
         finally:
             watcher.close()
 
+    async def test_new_pipeline_dir_wakes_via_parent_watch(self) -> None:
+        # A pipeline whose dir is created *after* connect must wake the loop via an
+        # IN_CREATE edge on a watched ancestor (base / .logs / owner / repo) — not
+        # wait out the heartbeat. A single arm() then a first-ever append (which
+        # creates the whole .logs subtree) should make wait_for_change return
+        # promptly, with no second arm() needed.
+        if not inotify.INOTIFY_AVAILABLE:
+            self.skipTest("inotify unavailable; parent-watch edge not exercised")
+        watcher = streaming.FleetEventWatcher(self.base, poll_interval=10.0)
+        try:
+            watcher.arm()  # no .logs yet; the base dir is watched for its creation
+            execution_state.append_event(self.base, "acme/widgets", "issue-1", _event("a"))
+            self.assertTrue(await watcher.wait_for_change(timeout=2.0))
+        finally:
+            watcher.close()
+
     async def test_poll_fallback_returns_true(self) -> None:
         with mock.patch.object(inotify, "INOTIFY_AVAILABLE", False):
             watcher = streaming.FleetEventWatcher(self.base, poll_interval=0.01)

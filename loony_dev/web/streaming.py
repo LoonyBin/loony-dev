@@ -177,7 +177,12 @@ class FleetEventWatcher:
     New pipeline directories — which don't exist at startup, since they're created
     on a pipeline's first append — are reconciled **inline** on each
     :meth:`arm` (and once at start), so there is no background reconcile task to
-    leak. On a platform without inotify (:data:`inotify.INOTIFY_AVAILABLE` false)
+    leak. To make that reconcile *prompt* rather than heartbeat-delayed, the
+    ancestor dirs (base, ``.logs``, each ``<owner>``/``<repo>``) are also watched
+    with :data:`inotify.PARENT_WATCH_MASK`, so creating a brand-new
+    ``pipelines/`` subtree fires an ``IN_CREATE`` edge that wakes the loop and the
+    next :meth:`arm` arms the new dir (see :meth:`_watch_targets`).
+    On a platform without inotify (:data:`inotify.INOTIFY_AVAILABLE` false)
     it degrades to a poll: :meth:`wait_for_change` sleeps ``poll_interval`` and
     returns ``True`` (the SSE loop then recomputes + diffs, emitting only on a
     real change), mirroring :class:`AsyncLogWatcher`'s fallback.
@@ -194,28 +199,45 @@ class FleetEventWatcher:
         self._watched: set[Path] = set()
         self._data_ready = asyncio.Event()
 
-    def _pipeline_dirs(self) -> list[Path]:
-        """Every existing ``.logs/<owner>/<repo>/pipelines/`` directory."""
+    def _watch_targets(self) -> dict[Path, int]:
+        """Every directory to watch, mapped to its inotify mask.
+
+        Each existing ``.logs/<owner>/<repo>/pipelines/`` directory gets the full
+        :data:`inotify.DIR_WATCH_MASK` (file appends + atomic snapshot replaces).
+        Their *ancestors* — the base dir, ``.logs``, and each ``<owner>``/
+        ``<repo>`` — get the creation-only :data:`inotify.PARENT_WATCH_MASK` so a
+        pipeline whose ``pipelines/`` subtree is created *after* connect still
+        fires an edge (``IN_CREATE`` on the parent): the next :meth:`arm`
+        reconciles the new dir and the recomputed snapshot already reflects the
+        first append. Without this an SSE client that connects before any pipeline
+        exists would sleep until the heartbeat, missing the sub-second target.
+        """
+        targets: dict[Path, int] = {}
+        # Watch the base dir so the very first ``.logs`` creation is caught too.
+        if self._base.is_dir():
+            targets[self._base] = inotify.PARENT_WATCH_MASK
         logs_dir = self._base / ".logs"
-        out: list[Path] = []
         if not logs_dir.is_dir():
-            return out
+            return targets
+        targets[logs_dir] = inotify.PARENT_WATCH_MASK
         try:
             owner_dirs = sorted(p for p in logs_dir.iterdir() if p.is_dir())
         except OSError:
-            return out
+            return targets
         for owner_dir in owner_dirs:
             if owner_dir.name.startswith("."):
                 continue
+            targets[owner_dir] = inotify.PARENT_WATCH_MASK
             try:
                 repo_dirs = sorted(p for p in owner_dir.iterdir() if p.is_dir())
             except OSError:
                 continue
             for repo_dir in repo_dirs:
+                targets[repo_dir] = inotify.PARENT_WATCH_MASK
                 pipelines = repo_dir / pipeline_log.PIPELINES_DIR_NAME
                 if pipelines.is_dir():
-                    out.append(pipelines)
-        return out
+                    targets[pipelines] = inotify.DIR_WATCH_MASK
+        return targets
 
     def _start(self) -> None:
         """Lazily create the inotify fd + loop reader on first :meth:`arm`."""
@@ -243,10 +265,10 @@ class FleetEventWatcher:
         """
         if not self._use_inotify or self._inotify_fd < 0:
             return
-        for d in self._pipeline_dirs():
+        for d, mask in self._watch_targets().items():
             if d in self._watched:
                 continue
-            wd = inotify.add_watch(self._inotify_fd, str(d), inotify.DIR_WATCH_MASK)
+            wd = inotify.add_watch(self._inotify_fd, str(d), mask)
             if wd < 0:
                 logger.warning(
                     "inotify add_watch failed for %s; falling back to polling", d

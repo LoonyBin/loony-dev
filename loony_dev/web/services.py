@@ -1293,10 +1293,18 @@ def _safe_repo_log_path(base_dir: Path, owner: str, repo: str) -> Path:
 
 
 # Block size for the reverse tail reader. The reader walks the file backward in
-# fixed-size blocks from EOF, so memory + IO are bounded by ``lines × avg-line``
+# fixed-size blocks from EOF, so memory + IO are bounded by ``lines x avg-line``
 # rather than file size — a large ``loony-worker.log`` is no longer read from
 # byte 0 and discarded per request (issue #270).
 _TAIL_BLOCK_SIZE = 8192
+
+# Hard ceiling on how far the reverse reader scans backward in one page. Without
+# it a log with too few ``\n`` separators (or a single huge final line) would
+# walk all the way to byte 0 — reintroducing the whole-file read this reader
+# exists to avoid. When the budget is hit before enough newlines are seen the
+# page is bounded to (at most) the last ``_TAIL_MAX_BYTES`` bytes; an oversized
+# trailing line is therefore truncated rather than read in full (issue #270).
+_TAIL_MAX_BYTES = 8 * 1024 * 1024
 
 
 def _read_tail_page(
@@ -1324,8 +1332,10 @@ def _read_tail_page(
         chunks: list[bytes] = []
         newline_count = 0
         # Read backward until we have one more newline than requested lines (so the
-        # lines-th line from the end is bounded), or we hit the start of file.
-        while pos > 0 and newline_count <= lines:
+        # lines-th line from the end is bounded), we hit the start of file, or we
+        # exhaust the byte budget (the guard against a pathological few-newline log
+        # forcing a whole-file read).
+        while pos > 0 and newline_count <= lines and (end - pos) < _TAIL_MAX_BYTES:
             read_size = min(_TAIL_BLOCK_SIZE, pos)
             pos -= read_size
             fh.seek(pos)
@@ -1501,7 +1511,7 @@ def fleet_activity(base_dir: Path, lines: int) -> list[dict]:
     (:func:`execution_state.tail_events`, at most ``lines`` each) and merge-sorting
     by the event's ISO-8601 ``ts`` (lexicographic == chronological, an ADR-0002
     guarantee), then keeping the last ``lines`` overall. The active set is bounded
-    by the worker pool, so this is ``≤ active × lines`` small tail reads — **no DB,
+    by the worker pool, so this is ``<= active x lines`` small tail reads — **no DB,
     no cross-cutting scan**. Each event is annotated with its ``repo`` /
     ``pipeline_key`` so the UI can attribute the line. Never raises (the substrate
     read side skips missing/malformed logs); an empty active set yields ``[]``.

@@ -618,20 +618,17 @@ def create_api_router(
         ``finally`` so nothing leaks across reconnects.
         """
 
-        def _key(event: dict) -> tuple:
-            return (
-                event.get("ts", ""),
-                event.get("repo", ""),
-                event.get("pipeline_key", ""),
-                event.get("type", ""),
-                event.get("what", ""),
-            )
+        def _key(event: dict) -> str:
+            # Canonical full-payload key: keying on only a few fields would let two
+            # distinct same-``ts`` events collide and silently drop one from the
+            # live feed, so serialise every field.
+            return json.dumps(event, sort_keys=True, separators=(",", ":"))
 
         async def event_stream():
             loop = asyncio.get_running_loop()
             watcher = streaming.FleetEventWatcher(base_dir)
             cursor_ts = ""
-            ties: set[tuple] = set()
+            ties: set[str] = set()
             last_sent = loop.time()
             try:
                 while True:

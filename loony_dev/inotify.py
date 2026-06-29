@@ -33,6 +33,15 @@ IN_CREATE = 0x00000100  # File/dir created in the watched directory
 # replaced inode entirely.
 DIR_WATCH_MASK = IN_MODIFY | IN_CLOSE_WRITE | IN_CREATE | IN_MOVED_TO
 
+# Creation-only mask for the *ancestor* dirs of a pipelines directory (the base
+# dir, ``.logs``, and each ``<owner>``/``<repo>``). A brand-new pipeline creates
+# its ``pipelines/`` subtree after the dashboard has already connected; watching
+# the ancestors for child *creation* lets that first append wake the SSE loop
+# immediately instead of waiting out the heartbeat. We deliberately omit
+# ``IN_MODIFY`` here so the worker log appended in the repo dir
+# (``loony-worker.log``, a direct child) does not fire an edge on every line.
+PARENT_WATCH_MASK = IN_CREATE | IN_MOVED_TO
+
 try:
     _libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
     INOTIFY_AVAILABLE = (

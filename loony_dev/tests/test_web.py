@@ -2176,6 +2176,33 @@ class FastLogReadTestCase(unittest.TestCase):
         # The invariant: no read ever begins at byte 0 of the large file.
         self.assertGreater(spies[0].min_read_offset, 0)
 
+    def test_read_tail_budget_bounds_oversized_line(self) -> None:
+        # A pathological log — one big line with no newline separators — would let
+        # the reverse reader walk back to byte 0 (a whole-file read). The byte
+        # budget must stop it early; patch the budget small so the test is cheap.
+        import builtins
+
+        p = self._write("x" * 50_000)  # no '\n' at all
+        spies: list[_ReadOffsetSpy] = []
+        real_open = builtins.open
+
+        def spy_open(file, *args, **kwargs):
+            fh = real_open(file, *args, **kwargs)
+            if Path(file) == p:
+                spy = _ReadOffsetSpy(fh)
+                spies.append(spy)
+                return spy
+            return fh
+
+        with mock.patch.object(services, "_TAIL_MAX_BYTES", services._TAIL_BLOCK_SIZE), \
+                mock.patch("builtins.open", side_effect=spy_open):
+            services._read_tail(p, 3)
+
+        self.assertTrue(spies, "the reverse reader should have opened the file")
+        self.assertIsNotNone(spies[0].min_read_offset)
+        # The budget stopped the backward scan before it reached byte 0.
+        self.assertGreater(spies[0].min_read_offset, 0)
+
     def test_offset_pagination_round_trips(self) -> None:
         p = self._write("".join(f"line-{i}\n" for i in range(10)))
         page1, next1 = services._read_tail_page(p, 3, None)
