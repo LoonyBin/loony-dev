@@ -146,9 +146,13 @@ def heartbeat_stale_after_seconds() -> float:
     """The configured middle-tier (#268) heartbeat-staleness window, in seconds.
 
     Fails loudly on bad config rather than silently falling back to the default:
-    a non-numeric value, or one that is zero/negative (which would make *every*
-    bot lease instantly reclaimable), is operator error and must surface — not be
-    masked into a default that hides the misconfiguration.
+    a non-numeric value, one that is zero/negative (which would make *every* bot
+    lease instantly reclaimable), or one at/below the ``claude -p`` turn cap
+    (``claude_turn_timeout_seconds``) — which would let the middle tier reclaim a
+    healthy long-running turn before it reaches its next heartbeat boundary — is
+    operator error and must surface, not be masked into a default that hides the
+    misconfiguration. The strict ``> turn cap`` lower bound is the correctness
+    invariant documented on :data:`DEFAULT_HEARTBEAT_STALE_AFTER_SECONDS`.
     """
     raw = _worker_setting("heartbeat_stale_after", DEFAULT_HEARTBEAT_STALE_AFTER_SECONDS)
     try:
@@ -160,6 +164,16 @@ def heartbeat_stale_after_seconds() -> float:
     if value <= 0:
         raise ValueError(
             f"worker.heartbeat_stale_after must be positive, got {value!r}"
+        )
+    turn_cap_raw = _worker_setting("claude_turn_timeout_seconds", 30 * 60)
+    try:
+        turn_cap = float(turn_cap_raw)
+    except (TypeError, ValueError):
+        turn_cap = float(30 * 60)
+    if value <= turn_cap:
+        raise ValueError(
+            "worker.heartbeat_stale_after must be greater than "
+            f"worker.claude_turn_timeout_seconds ({turn_cap!r}), got {value!r}"
         )
     return value
 
@@ -366,18 +380,34 @@ def acquire_pipeline_lease(
 
 
 def release_pipeline_lease(
-    base_dir: Path, repo: str, pipeline_key: str, *, holder: str | None = None
+    base_dir: Path,
+    repo: str,
+    pipeline_key: str,
+    *,
+    holder: str | None = None,
+    expected_started_at: float | None = None,
 ) -> bool:
     """Release the pipeline lease; ``True`` iff a lease was removed.
 
     When *holder* is given, only a lease held by that holder is removed, so a
     late release cannot stomp a lease a different holder has since acquired.
+
+    When *expected_started_at* is given, only the lease from *that* acquisition
+    (matched on its ``started_at`` fence token) is removed. The holder check
+    alone is insufficient on the bot terminal-finish path: a reclaim that lands
+    after the last :func:`check_fence` but before the release would install a new
+    *bot* lease, which the ``holder == HOLDER_BOT`` check still matches — so a
+    holder-only release would unlink the new holder's lease (#268). Pairing the
+    token (unique per acquisition) closes that window.
     """
     path = lease_path(base_dir, repo, pipeline_key)
-    if holder is not None:
+    if holder is not None or expected_started_at is not None:
         existing = _parse_lease(path)
-        if existing is not None and existing.holder != holder:
-            return False
+        if existing is not None:
+            if holder is not None and existing.holder != holder:
+                return False
+            if expected_started_at is not None and existing.started_at != expected_started_at:
+                return False
     try:
         path.unlink()
         return True

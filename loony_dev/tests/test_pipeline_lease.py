@@ -47,6 +47,33 @@ class PipelineLeaseTestCase(unittest.TestCase):
             pl.acquire_pipeline_lease(self.base, REPO, "issue-7", holder=pl.HOLDER_BOT)
         )
 
+    def test_release_with_wrong_token_is_a_noop(self) -> None:
+        # A late bot release whose acquisition token no longer matches the lease
+        # (another bot reclaimed in between) must not unlink the new lease (#268).
+        pl.acquire_pipeline_lease(self.base, REPO, "issue-7", holder=pl.HOLDER_BOT)
+        current = pl.read_pipeline_lease(self.base, REPO, "issue-7")
+        self.assertFalse(
+            pl.release_pipeline_lease(
+                self.base, REPO, "issue-7",
+                holder=pl.HOLDER_BOT,
+                expected_started_at=(current.started_at or 0.0) - 1.0,
+            )
+        )
+        # The lease is untouched — still held by the current acquisition.
+        self.assertIsNotNone(pl.read_pipeline_lease(self.base, REPO, "issue-7"))
+
+    def test_release_with_matching_token_frees_the_lease(self) -> None:
+        pl.acquire_pipeline_lease(self.base, REPO, "issue-7", holder=pl.HOLDER_BOT)
+        current = pl.read_pipeline_lease(self.base, REPO, "issue-7")
+        self.assertTrue(
+            pl.release_pipeline_lease(
+                self.base, REPO, "issue-7",
+                holder=pl.HOLDER_BOT,
+                expected_started_at=current.started_at,
+            )
+        )
+        self.assertIsNone(pl.read_pipeline_lease(self.base, REPO, "issue-7"))
+
     def test_dead_pid_lease_is_reclaimed(self) -> None:
         # Hand-write a lease owned by a pid that cannot exist.
         path = pl.lease_path(self.base, REPO, "issue-7")
@@ -240,8 +267,17 @@ class HeartbeatConfigTestCase(unittest.TestCase):
         )
 
     def test_valid_value_is_used(self) -> None:
-        self._set(900)
-        self.assertEqual(pl.heartbeat_stale_after_seconds(), 900.0)
+        # Must stay strictly above the default turn cap (1800s) to be accepted.
+        self._set(2700)
+        self.assertEqual(pl.heartbeat_stale_after_seconds(), 2700.0)
+
+    def test_at_or_below_turn_cap_raises(self) -> None:
+        # The documented correctness invariant: a window <= the turn cap could
+        # reclaim a healthy long-running turn before its next heartbeat (#268).
+        for value in (1800, 900):
+            self._set(value)
+            with self.assertRaises(ValueError):
+                pl.heartbeat_stale_after_seconds()
 
     def test_non_numeric_raises(self) -> None:
         self._set("soon")

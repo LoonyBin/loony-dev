@@ -630,8 +630,15 @@ class Orchestrator:
                 # next gather — and any human drive — can claim the pipeline again.
                 pkey = task.worktree_key
                 if pkey is not None:
+                    # Fence the release with this dispatch's acquisition token
+                    # (its ``started_at``), not just the holder: between the
+                    # last ``_check_fence`` above and here, another bot could
+                    # reclaim the pipeline, and a holder-only release would
+                    # unlink *its* lease (both holders are ``bot``) (#268).
                     pipeline_lease.release_pipeline_lease(
-                        self.base_dir, self.repo.name, pkey, holder=pipeline_lease.HOLDER_BOT,
+                        self.base_dir, self.repo.name, pkey,
+                        holder=pipeline_lease.HOLDER_BOT,
+                        expected_started_at=pipeline_lease.current_lease_token.get(),
                     )
             # The worktree is NOT torn down here anymore (issue #198): it is
             # retained for the pipeline's next phase and reclaimed only once the
