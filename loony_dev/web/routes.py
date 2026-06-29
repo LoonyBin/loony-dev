@@ -365,6 +365,24 @@ def create_api_router(
         """
         await _observe_session(base_dir, websocket, task_key)
 
+    @router.websocket("/repos/{owner}/{repo}/live/observe")
+    async def live_observe(websocket: WebSocket, owner: str, repo: str) -> None:
+        """Stream the always-on base (remote-control) session's conversation (#282).
+
+        The Live screen's ``#repo-log`` source: the per-repo base session has no
+        task/pipeline key, so it is addressed directly by ``owner``/``repo`` rather
+        than through the session registry. Resolves its JSONL from the
+        ``remote-control.json`` connection file and reuses the same
+        backlog-then-live pump as ``/sessions/{task_key}/observe``. Closes ``4404``
+        (the same code as observe/attach) when no base session exists yet, so the
+        client can tell "not started" apart from a network failure.
+        """
+        jsonl_path = services.live_observe_jsonl_path(base_dir, owner, repo)
+        if jsonl_path is None:
+            await websocket.close(code=4404, reason="no base session")
+            return
+        await _pump_transcript(websocket, jsonl_path)
+
     def _state_snapshot() -> dict:
         """Gather the consolidated dashboard state in one shot.
 
@@ -836,7 +854,19 @@ async def _observe_session(base_dir: Path, websocket: WebSocket, task_key: str) 
         # client can tell "no such observable session" apart from a net failure.
         await websocket.close(code=4404, reason="no such session")
         return
+    await _pump_transcript(websocket, jsonl_path)
 
+
+async def _pump_transcript(websocket: WebSocket, jsonl_path: Path) -> None:
+    """Accept *websocket* and pump *jsonl_path*'s transcript events until detach.
+
+    The shared streaming core behind both ``/sessions/{task_key}/observe`` (#202)
+    and ``/repos/{owner}/{repo}/live/observe`` (#282): accept the socket, pump
+    :func:`transcript_stream.tail_events` (full backlog then live tail) as JSON,
+    and close the generator in a ``finally`` so its inotify/file descriptors are
+    released on every detach — leaking nothing across reconnects. Resolving the
+    JSONL path (registry-keyed vs. connection-file-keyed) is the caller's job.
+    """
     await websocket.accept()
     gen = transcript_stream.tail_events(jsonl_path)
 

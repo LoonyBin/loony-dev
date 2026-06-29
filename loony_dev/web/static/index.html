@@ -582,12 +582,14 @@
             <div id="repo-session-meta" class="live-session-meta"></div>
             <div id="repo-session-body"></div>
 
-            <!-- Worker transcript (#259): the repo's structured agent activity,
-                 rendered as conversation-style turns (TimelineRow) by
-                 streamActivity(). Moved up here out of the bottom Diagnostics
-                 block; the #repo-log / #repo-log-title IDs are preserved so
-                 repoDetail.js keeps wiring it. -->
-            <div class="eyebrow">Transcript <span id="repo-log-title" class="muted"></span></div>
+            <!-- Base-session conversation (#282): the always-on remote-control
+                 session's actual claude conversation (turns + tool calls),
+                 streamed live from its JSONL via the #202 observe machinery
+                 (streamObserveAt → /api/repos/{owner}/{repo}/live/observe). The
+                 #259 structured activity feed moved to the sidebar "Activity
+                 timeline" card; the #repo-log / #repo-log-title IDs are preserved
+                 so repoDetail.js keeps wiring this panel. -->
+            <div class="eyebrow">Conversation <span id="repo-log-title" class="muted"></span></div>
             <div id="repo-log" class="live-transcript" aria-live="polite"></div>
 
             <!-- The design's chat + Send bar, present but disabled until an
@@ -604,6 +606,15 @@
                workers in this repo. All rendered from the live snapshot with
                honest placeholders where the snapshot has no backing data. -->
           <aside class="live-sidebar" aria-label="Repo sidebar">
+            <!-- Activity timeline (#282): the #259 structured activity feed
+                 (streamActivity), relocated here from #repo-log so the repo's
+                 lifecycle events stay available alongside the base-session
+                 conversation. Mirrors the Issue ▸ PR page's #pipeline-timeline. -->
+            <div class="card subtle live-panel">
+              <h3>Activity timeline</h3>
+              <div id="live-timeline" class="timeline" aria-live="polite"></div>
+            </div>
+
             <div class="card subtle live-panel">
               <div class="live-panel-head">
                 <h3>Repos</h3>

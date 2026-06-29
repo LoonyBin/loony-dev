@@ -1132,6 +1132,59 @@ def observe_jsonl_path(base_dir: Path, task_key: str) -> Path | None:
     return jsonl_path_for(Path(session.cwd), session.session_id)
 
 
+def live_observe_jsonl_path(base_dir: Path, owner: str, repo: str) -> Path | None:
+    """Locate the always-on base (remote-control) session's JSONL for a repo (#282).
+
+    Reads ``<base>/.logs/<owner>/<repo>/remote-control.json`` (the connection file
+    written by the supervisor; canonical schema in :mod:`loony_dev.supervisor`) and
+    maps its ``cwd`` + ``session_id`` to the claude transcript path via
+    :func:`loony_dev.session.jsonl_path_for`. Unlike a per-task session, the base
+    session carries no task/pipeline key, so it is addressed directly by ``owner``
+    /``repo`` rather than through the session registry.
+
+    Returns ``None`` — never raises — when the connection file is missing,
+    malformed, or predates the ``cwd``/``session_id`` contract, so a not-yet-started
+    base session degrades to an honest empty state (the route closes ``4404``)
+    rather than a dashboard 500. Path segments containing a separator/``..``/NUL are
+    rejected the same way (→ ``None``). The returned path may not exist yet (the
+    base session's first turn has not written the transcript); the tailer waits for
+    it to appear.
+    """
+    import json
+
+    from loony_dev.session import jsonl_path_for
+
+    for segment in (owner, repo):
+        if (
+            not segment
+            or segment in (".", "..")
+            or "/" in segment
+            or "\\" in segment
+            or "\x00" in segment
+        ):
+            return None
+
+    conn_path = base_dir / ".logs" / owner / repo / REMOTE_CONTROL_CONN_NAME
+    try:
+        data = json.loads(conn_path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    cwd = data.get("cwd")
+    session_id = data.get("session_id")
+    # Accept only real, non-empty string values, and require an absolute cwd —
+    # the supervisor always writes the repo's absolute base checkout. A numeric,
+    # relative, or empty value is malformed input, so return None (→ honest 4404)
+    # rather than fabricating a transcript path from it.
+    if not isinstance(cwd, str) or not isinstance(session_id, str) or not cwd or not session_id:
+        return None
+    cwd_path = Path(cwd)
+    if not cwd_path.is_absolute():
+        return None
+    return jsonl_path_for(cwd_path, session_id)
+
+
 def inject_turn(base_dir: Path, task_key: str, prompt: str) -> dict:
     """Enqueue an operator-injected turn for *task_key*'s session.
 

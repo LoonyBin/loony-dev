@@ -36,11 +36,13 @@ import { StatePill, Tag, Avatar, Btn } from "/static/ds/components/primitives.js
 import { ChatComposer } from "/static/ds/components/sessions.js";
 import { interruptSession } from "./overview.js";
 import { streamActivity } from "./logs.js";
+import { streamObserveAt, liveObserveUrl } from "./observe.js";
 import { renderSessionCard } from "./sessions.js";
 
 let current = null; // repo currently displayed ("owner/name"), or null
 let lastState = null; // latest consolidated snapshot {workers, worktrees, sessions, stuck}
-let stopLog = null; // stop fn for the active log stream
+let stopLog = null; // { close } for the #repo-log base-session conversation stream (#282)
+let stopActivity = null; // stop fn for the sidebar Activity-timeline stream (#282)
 
 // Persisted last-viewed repo, so re-opening bare #live lands where you left off.
 const LAST_REPO_KEY = "loony-live-repo";
@@ -538,11 +540,22 @@ function show(repo) {
   if (!repo && isLiveView()) {
     const def = resolveDefaultRepo();
     if (def && def !== current) { goRepo(def); return; }
+    // Already on the default repo: adopt it so the `repo === current` early-out
+    // below keeps the active streams alive instead of tearing them down for a
+    // re-fire that didn't actually change repo.
+    if (def) repo = def;
   }
   if (repo === current) return;
+  // Two live streams per Live view (#282): the #repo-log base-session
+  // conversation ({ close }) and the sidebar Activity timeline (bare stop fn).
+  // Tear both down on every repo switch / navigate-away so neither socket leaks.
   if (stopLog) {
-    stopLog();
+    stopLog.close();
     stopLog = null;
+  }
+  if (stopActivity) {
+    stopActivity();
+    stopActivity = null;
   }
   current = repo || null;
   if (!current) {
@@ -555,10 +568,15 @@ function show(repo) {
   // Commits are a per-repo on-demand fetch (not snapshot-driven), so kick it off
   // once here on the repo switch rather than from renderAll's per-tick path.
   loadCommits(current);
+  // #repo-log now streams the always-on base session's live claude conversation
+  // (turns + tool calls) via the #202 observe machinery (#282); the structured
+  // activity feed moves to the sidebar "Activity timeline" card.
   const host = document.getElementById("repo-log");
   const title = document.getElementById("repo-log-title");
   if (title) title.textContent = `— ${current} (live)`;
-  if (host) stopLog = streamActivity(current, host);
+  if (host) stopLog = streamObserveAt(liveObserveUrl(current), host);
+  const timeline = document.getElementById("live-timeline");
+  if (timeline) stopActivity = streamActivity(current, timeline);
 }
 
 // Fed the consolidated snapshot by the orchestrator; re-render only while a

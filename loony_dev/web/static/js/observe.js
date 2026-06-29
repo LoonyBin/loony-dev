@@ -25,6 +25,17 @@ function wsUrl(taskKey) {
   return `${scheme}//${location.host}/api/sessions/${encodeURIComponent(taskKey)}/observe`;
 }
 
+// WS URL for the always-on base (remote-control) session of `repo` ("owner/name",
+// #282). The base session has no task key, so it is addressed by its repo path:
+// each segment is encoded independently (repo names carry no slash) and the same
+// scheme logic as wsUrl() is reused.
+export function liveObserveUrl(repo) {
+  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  const [owner, name] = String(repo).split("/");
+  const path = `${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+  return `${scheme}//${location.host}/api/repos/${path}/live/observe`;
+}
+
 function setStatus(text, kind) {
   const el = document.getElementById("observe-status");
   if (!el) return;
@@ -172,10 +183,18 @@ function applyEvent(stream, ev) {
 // controller `{ close }`; the caller is responsible for tearing the stream down
 // when its host goes away. The modal surface below is one such caller.
 export function streamObserve(taskKey, conv, onStatus) {
+  return streamObserveAt(wsUrl(taskKey), conv, onStatus);
+}
+
+// The streaming core, targeting an arbitrary observe WS URL (#282). Both the
+// per-task observe (`wsUrl(taskKey)`) and the per-repo base-session observe
+// (`liveObserveUrl(repo)`) feed the identical event pump and render path; only the
+// URL differs. Returns the same `{ close }` controller as streamObserve.
+export function streamObserveAt(url, conv, onStatus) {
   const status = onStatus || (() => {});
   const stream = { ws: null, conv, seen: new Set(), toolCards: new Map() };
   if (conv) conv.innerHTML = "";
-  const ws = new WebSocket(wsUrl(taskKey));
+  const ws = new WebSocket(url);
   stream.ws = ws;
   status("connecting…", null);
   ws.onopen = () => status("live", "live");
