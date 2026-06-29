@@ -3,9 +3,10 @@
 // Live screen (#158 → restyled by #189 → promoted to a primary nav destination
 // by #221): the always-on per-repo main-branch session surface. Three regions —
 // header quick-actions, a center session panel (embedding the #157 join-link/QR
-// card, the folded-in remote-control session surface), and a ~284px right
-// sidebar (Repos switcher, Repo context, Recent commits, Workers here) — over a
-// secondary block of worktrees, scoped stuck processes, and a live log tail.
+// card, the folded-in remote-control session surface, and a live worker
+// transcript), and a ~284px right sidebar (Repos switcher, Repo context, Recent
+// commits, Workers here) — over a secondary block of worktrees and scoped stuck
+// processes.
 //
 // As a primary destination Live is reachable at bare `#live` (no repo): show()
 // then resolves a default repo — last-viewed (localStorage) → first discovered
@@ -16,8 +17,9 @@
 // calls show(repo|null) whenever the active view/repo changes (issue #239 moved
 // this off a load-order-fragile inline x-effect). Consolidated state arrives via
 // update(state) from the app-shell orchestrator (the #155 /api/events stream);
-// we filter it to the current repo. The log tail uses the existing
-// /api/logs/{owner}/{repo}/stream endpoint via streamLog().
+// we filter it to the current repo. The worker transcript renders the repo's
+// structured agent activity (the #270 fleet feed, filtered to this repo) as
+// conversation-style turns via streamActivity() (#259).
 //
 // Graceful-degradation contract (#189): every element with no backing snapshot
 // data is visibly non-functional — a disabled .ld-btn with a tooltip, an
@@ -33,7 +35,7 @@ import { cell, setRows, formatAge, icon, goRepo, goPipeline, stageTone } from ".
 import { StatePill, Tag, Avatar, Btn } from "/static/ds/components/primitives.js";
 import { ChatComposer } from "/static/ds/components/sessions.js";
 import { interruptSession } from "./overview.js";
-import { streamLog } from "./logs.js";
+import { streamActivity } from "./logs.js";
 import { renderSessionCard } from "./sessions.js";
 
 let current = null; // repo currently displayed ("owner/name"), or null
@@ -553,10 +555,10 @@ function show(repo) {
   // Commits are a per-repo on-demand fetch (not snapshot-driven), so kick it off
   // once here on the repo switch rather than from renderAll's per-tick path.
   loadCommits(current);
-  const pre = document.getElementById("repo-log");
+  const host = document.getElementById("repo-log");
   const title = document.getElementById("repo-log-title");
   if (title) title.textContent = `— ${current} (live)`;
-  if (pre) stopLog = streamLog(current, pre);
+  if (host) stopLog = streamActivity(current, host);
 }
 
 // Fed the consolidated snapshot by the orchestrator; re-render only while a

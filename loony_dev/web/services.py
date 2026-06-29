@@ -1532,7 +1532,7 @@ def pipeline_activity(
     return [e.to_dict() for e in events]
 
 
-def fleet_activity(base_dir: Path, lines: int) -> list[dict]:
+def fleet_activity(base_dir: Path, lines: int, repo: str | None = None) -> list[dict]:
     """Cross-fleet "Live activity" feed: a bounded k-way merge of recent tails (#270).
 
     The Cockpit live-activity panel is a **time-ordered merge of recent events
@@ -1545,11 +1545,18 @@ def fleet_activity(base_dir: Path, lines: int) -> list[dict]:
     no cross-cutting scan**. Each event is annotated with its ``repo`` /
     ``pipeline_key`` so the UI can attribute the line. Never raises (the substrate
     read side skips missing/malformed logs); an empty active set yields ``[]``.
+
+    When ``repo`` (``owner/repo``) is given, the merge is restricted to that
+    repo's active pipelines, so the ``lines`` cap applies **per-repo** rather than
+    fleet-wide — the Live transcript (#259) seeds from this so a quiet repo's
+    backlog isn't starved out by busier repos sharing the fleet tail.
     """
     if lines <= 0:
         return []
     merged: list[dict] = []
     for state in execution_state.list_active(base_dir):
+        if repo is not None and state.repo != repo:
+            continue
         for event in execution_state.tail_events(
             base_dir, state.repo, state.pipeline_key, lines
         ):

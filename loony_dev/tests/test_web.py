@@ -501,22 +501,28 @@ class WebAppTestCase(unittest.TestCase):
 
     def test_index_live_has_greyed_steer_bar_and_diagnostics(self) -> None:
         # The Live screen (#224): a disabled chat + Send steer bar below the
-        # session body, and the worktrees/stuck/log blocks collapsed into a
-        # <details> Diagnostics section (their IDs preserved for the JS).
+        # session body, and the worktrees/stuck blocks collapsed into a
+        # <details> Diagnostics section (their IDs preserved for the JS). The
+        # worker log moved up into the session card as a transcript (#259).
         body = self.client.get("/").text
         # Greyed steer bar (#258 / Phase 4): now built by the shared ChatComposer
         # factory (disabled) in repoDetail.renderSteer(), so the static shell only
         # carries the host element it renders into.
         self.assertIn('id="repo-steer"', body)
-        # Diagnostics <details> wraps the preserved worktrees / stuck / log IDs.
+        # Diagnostics <details> wraps the preserved worktrees / stuck IDs.
         self.assertIn('class="diagnostics-section"', body)
         self.assertIn("<summary>Diagnostics</summary>", body)
         for preserved in ('id="repo-worktrees"', 'id="repo-stuck-section"',
                           'id="repo-stuck"', 'id="repo-log"', 'id="repo-log-title"'):
             self.assertIn(preserved, body)
-        # The Diagnostics wrapper precedes those blocks (it encloses them).
+        # The Diagnostics wrapper precedes (encloses) the worktrees / stuck blocks.
         self.assertLess(body.index('class="diagnostics-section"'), body.index('id="repo-worktrees"'))
-        self.assertLess(body.index('class="diagnostics-section"'), body.index('id="repo-log"'))
+        self.assertLess(body.index('class="diagnostics-section"'), body.index('id="repo-stuck-section"'))
+        # The transcript (#259) lives in the live-session card, ABOVE Diagnostics —
+        # both its title and its host moved up out of the Diagnostics block.
+        self.assertIn('class="live-transcript"', body)
+        self.assertLess(body.index('id="repo-log"'), body.index('class="diagnostics-section"'))
+        self.assertLess(body.index('id="repo-log-title"'), body.index('class="diagnostics-section"'))
 
     def test_index_wires_pipeline_view(self) -> None:
         # The Issue ▸ PR detail view (#190): the shell must expose the section,
@@ -2100,6 +2106,26 @@ class FleetActivityTestCase(unittest.TestCase):
         events = services.fleet_activity(self.base, 2)
         self.assertEqual(len(events), 2)
         self.assertEqual([e["what"] for e in events], ["e3", "e4"])
+
+    def test_repo_filter_scopes_and_keeps_per_repo_backlog(self) -> None:
+        # A busy repo and a quiet one. With a fleet-wide cap the quiet repo's lone
+        # event would be starved out of the tail; a repo-scoped read (#259) keeps
+        # the cap per-repo so the quiet repo's backlog still arrives.
+        # Quiet repo's event is older than the busy repo's recent burst.
+        self._seed("acme/gadgets", "issue-9", ts="2026-01-01T00:00:01+00:00", what="g")
+        for i in range(4):
+            self._seed(
+                "acme/widgets", f"issue-{i}",
+                ts=f"2026-01-01T00:00:0{i + 2}+00:00", what=f"w{i}",
+            )
+
+        scoped = services.fleet_activity(self.base, 2, repo="acme/gadgets")
+        self.assertEqual([e["what"] for e in scoped], ["g"])
+        self.assertTrue(all(e["repo"] == "acme/gadgets" for e in scoped))
+
+        # The unscoped fleet tail (cap 2) would not include the quiet repo's event.
+        fleet = services.fleet_activity(self.base, 2)
+        self.assertNotIn("g", [e["what"] for e in fleet])
 
 
 class _ReadOffsetSpy:

@@ -1496,6 +1496,22 @@ button.action:hover,
   padding: 0;
 }
 
+/* Worker transcript inside the live-session card (#259): a scrollable column of
+   TimelineRow turns. The rows themselves use the design-system .tl-row / .tl-flat
+   / .tl-dot / .ava classes from ds/css/sessions.css — only the scroll host needs
+   styling here. Modelled on .observe-conv's chip-bg scroll surface. */
+.live-transcript {
+  overflow-y: auto;
+  max-height: 32vh;
+  min-height: 96px;
+  background: var(--bg-chip);
+  border-radius: var(--radius-xs);
+  padding: var(--space-2) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
 /* Sidebar: a stack of panels. */
 .live-sidebar {
   display: flex;
