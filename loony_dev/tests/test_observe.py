@@ -213,6 +213,67 @@ class ObservableViewTestCase(unittest.TestCase):
         self.assertIsNone(services.observe_jsonl_path(self.base, "ghost"))
 
 
+class LiveObserveJsonlPathTestCase(unittest.TestCase):
+    """The base (remote-control) session JSONL resolver (#282)."""
+
+    def setUp(self) -> None:
+        self.base = Path(_tmpdir())
+        self.addCleanup(lambda: shutil.rmtree(self.base, ignore_errors=True))
+        self.conn_dir = self.base / ".logs" / "acme" / "widgets"
+        self.conn_dir.mkdir(parents=True, exist_ok=True)
+        self.conn_path = self.conn_dir / "remote-control.json"
+
+    def _write_conn(self, data: object) -> None:
+        self.conn_path.write_text(json.dumps(data) if not isinstance(data, str) else data)
+
+    def test_resolves_from_cwd_and_session_id(self) -> None:
+        self._write_conn({
+            "session_id": "loony-acme-widgets-abc", "cwd": "/base/acme/widgets",
+            "key": "base", "mode": "remote-control",
+        })
+        path = services.live_observe_jsonl_path(self.base, "acme", "widgets")
+        self.assertEqual(path, jsonl_path_for(Path("/base/acme/widgets"),
+                                              "loony-acme-widgets-abc"))
+
+    def test_none_when_missing(self) -> None:
+        self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "nope"))
+
+    def test_none_when_malformed(self) -> None:
+        self._write_conn("{not json")
+        self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "widgets"))
+
+    def test_none_when_missing_cwd_or_session_id(self) -> None:
+        self._write_conn({"session_id": "sid"})  # no cwd
+        self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "widgets"))
+        self._write_conn({"cwd": "/x"})  # no session_id
+        self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "widgets"))
+
+    def test_none_when_cwd_or_session_id_have_invalid_shape(self) -> None:
+        # Present-but-malformed values (non-string, or a relative cwd) are rejected
+        # rather than coerced into a fabricated transcript path.
+        self._write_conn({"cwd": 123, "session_id": "sid"})
+        self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "widgets"))
+        self._write_conn({"cwd": "/x", "session_id": 456})
+        self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "widgets"))
+        self._write_conn({"cwd": "relative/path", "session_id": "sid"})
+        self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "widgets"))
+
+    def test_none_for_traversal_segment(self) -> None:
+        self.assertIsNone(services.live_observe_jsonl_path(self.base, "..", "widgets"))
+        self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "a/b"))
+
+    def test_none_for_path_bearing_session_id(self) -> None:
+        # session_id becomes the transcript filename in jsonl_path_for(), so a
+        # path-bearing value from a malformed connection file must be rejected
+        # (→ honest None) rather than escaping projects/<slug>/.
+        for sid in ("..", ".", "../other", "/abs/x", "a/b", "a\\b", "a\x00b"):
+            self._write_conn({"cwd": "/base/acme/widgets", "session_id": sid})
+            self.assertIsNone(
+                services.live_observe_jsonl_path(self.base, "acme", "widgets"),
+                msg=f"session_id={sid!r} should be rejected",
+            )
+
+
 class ObserveWebSocketTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.base = Path(_tmpdir())
@@ -273,6 +334,63 @@ class ObserveWebSocketTestCase(unittest.TestCase):
 
         with self.assertRaises(WebSocketDisconnect) as ctx:
             with self.client.websocket_connect("/api/sessions/ghost/observe") as ws:
+                ws.receive_json()
+        self.assertEqual(ctx.exception.code, 4404)
+
+
+class LiveObserveWebSocketTestCase(unittest.TestCase):
+    """The base-session ``/repos/{owner}/{repo}/live/observe`` route (#282).
+
+    Seeds a ``remote-control.json`` connection file and a JSONL transcript at the
+    computed path, then drives the route through the same shared ``_pump_transcript``
+    backlog→live core the per-task observe uses.
+    """
+
+    def setUp(self) -> None:
+        self.base = Path(_tmpdir())
+        self.config_dir = Path(_tmpdir())
+        self.cwd = Path(_tmpdir())
+        for d in (self.base, self.config_dir, self.cwd):
+            self.addCleanup(lambda d=d: shutil.rmtree(d, ignore_errors=True))
+        self.enterContext(mock.patch.dict(
+            os.environ, {"CLAUDE_CONFIG_DIR": str(self.config_dir)},
+        ))
+        self.session_id = "loony-acme-widgets-base"
+        conn_dir = self.base / ".logs" / "acme" / "widgets"
+        conn_dir.mkdir(parents=True, exist_ok=True)
+        (conn_dir / "remote-control.json").write_text(json.dumps({
+            "session_id": self.session_id, "cwd": str(self.cwd),
+            "key": "base", "mode": "remote-control",
+        }))
+        self.jsonl = jsonl_path_for(self.cwd, self.session_id)
+        self.jsonl.parent.mkdir(parents=True, exist_ok=True)
+        self.client = TestClient(create_app(base_dir=self.base, supervisor_log=None))
+        self.addCleanup(self.client.close)
+
+    def _write(self, *lines: str) -> None:
+        with self.jsonl.open("a") as fh:
+            for line in lines:
+                fh.write(line + "\n")
+            fh.flush()
+
+    def test_backlog_then_live(self) -> None:
+        self._write(_user("u1", "Say Hi"), _assistant("a1", "Hi 👋"))
+        with self.client.websocket_connect(
+            "/api/repos/acme/widgets/live/observe"
+        ) as ws:
+            self.assertEqual(ws.receive_json()["text"], "Say Hi")
+            self.assertEqual(ws.receive_json()["text"], "Hi 👋")
+            self.assertEqual(ws.receive_json()["kind"], "stop")
+            self._write(_user("u2", "again"))
+            self.assertEqual(ws.receive_json()["text"], "again")
+
+    def test_no_base_session_closes_4404(self) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        with self.assertRaises(WebSocketDisconnect) as ctx:
+            with self.client.websocket_connect(
+                "/api/repos/acme/ghost/live/observe"
+            ) as ws:
                 ws.receive_json()
         self.assertEqual(ctx.exception.code, 4404)
 

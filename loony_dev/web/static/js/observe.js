@@ -25,6 +25,17 @@ function wsUrl(taskKey) {
   return `${scheme}//${location.host}/api/sessions/${encodeURIComponent(taskKey)}/observe`;
 }
 
+// WS URL for the always-on base (remote-control) session of `repo` ("owner/name",
+// #282). The base session has no task key, so it is addressed by its repo path:
+// each segment is encoded independently (repo names carry no slash) and the same
+// scheme logic as wsUrl() is reused.
+export function liveObserveUrl(repo) {
+  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  const [owner, name] = String(repo).split("/");
+  const path = `${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+  return `${scheme}//${location.host}/api/repos/${path}/live/observe`;
+}
+
 function setStatus(text, kind) {
   const el = document.getElementById("observe-status");
   if (!el) return;
@@ -172,22 +183,66 @@ function applyEvent(stream, ev) {
 // controller `{ close }`; the caller is responsible for tearing the stream down
 // when its host goes away. The modal surface below is one such caller.
 export function streamObserve(taskKey, conv, onStatus) {
+  return streamObserveAt(wsUrl(taskKey), conv, onStatus);
+}
+
+// The streaming core, targeting an arbitrary observe WS URL (#282). Both the
+// per-task observe (`wsUrl(taskKey)`) and the per-repo base-session observe
+// (`liveObserveUrl(repo)`) feed the identical event pump and render path; only the
+// URL differs. Returns the same `{ close }` controller as streamObserve.
+export function streamObserveAt(url, conv, onStatus) {
   const status = onStatus || (() => {});
+  // `seen`/`toolCards`/`conv` persist across reconnects: the backend replays the
+  // full backlog from zero on every (re)connect, and applyEvent dedupes by stable
+  // `id`, so a dropped socket recovers into the identical DOM without clearing it.
   const stream = { ws: null, conv, seen: new Set(), toolCards: new Map() };
   if (conv) conv.innerHTML = "";
-  const ws = new WebSocket(wsUrl(taskKey));
-  stream.ws = ws;
-  status("connecting…", null);
-  ws.onopen = () => status("live", "live");
-  ws.onmessage = (e) => {
-    let ev;
-    try { ev = JSON.parse(e.data); } catch (_) { return; }
-    applyEvent(stream, ev);
-  };
-  ws.onclose = () => status("disconnected", "off");
-  ws.onerror = () => status("connection error", "off");
+
+  // Reconnect with exponential backoff so the Live screen's primary conversation
+  // pane (#282) is as resilient to a transient drop / dashboard restart as the
+  // sidebar's auto-reconnecting EventSource feed — instead of going permanently
+  // dead on the first close. `closed` guards against a reconnect racing an
+  // explicit close(); `retryTimer` is cleared on teardown.
+  let closed = false;
+  let retryTimer = null;
+  let backoff = 1000;
+  const MAX_BACKOFF = 15000;
+
+  function connect() {
+    if (closed) return;
+    const ws = new WebSocket(url);
+    stream.ws = ws;
+    status("connecting…", null);
+    ws.onopen = () => {
+      backoff = 1000; // a successful connection resets the backoff
+      status("live", "live");
+    };
+    ws.onmessage = (e) => {
+      let ev;
+      try { ev = JSON.parse(e.data); } catch (_) { return; }
+      applyEvent(stream, ev);
+    };
+    ws.onerror = () => status("connection error", "off");
+    ws.onclose = (event) => {
+      stream.ws = null;
+      if (closed) return;
+      // 4404 is the backend's deliberate "no base/observable session" close
+      // (routes.py) — an expected, non-transient state (e.g. the base session
+      // hasn't started or written its transcript yet), not a network blip. Show
+      // it distinctly but keep retrying with backoff so the pane recovers on its
+      // own once the session comes up.
+      const unavailable = event && event.code === 4404;
+      status(unavailable ? "no session" : "reconnecting…", "off");
+      retryTimer = setTimeout(connect, backoff);
+      backoff = Math.min(backoff * 2, MAX_BACKOFF);
+    };
+  }
+
+  connect();
   return {
     close() {
+      closed = true;
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
       if (stream.ws) {
         try { stream.ws.close(); } catch (_) { /* already closing */ }
         stream.ws = null;
