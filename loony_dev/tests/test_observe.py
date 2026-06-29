@@ -262,6 +262,17 @@ class LiveObserveJsonlPathTestCase(unittest.TestCase):
         self.assertIsNone(services.live_observe_jsonl_path(self.base, "..", "widgets"))
         self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "a/b"))
 
+    def test_none_for_path_bearing_session_id(self) -> None:
+        # session_id becomes the transcript filename in jsonl_path_for(), so a
+        # path-bearing value from a malformed connection file must be rejected
+        # (→ honest None) rather than escaping projects/<slug>/.
+        for sid in ("..", ".", "../other", "/tmp/x", "a/b", "a\\b", "a\x00b"):
+            self._write_conn({"cwd": "/base/acme/widgets", "session_id": sid})
+            self.assertIsNone(
+                services.live_observe_jsonl_path(self.base, "acme", "widgets"),
+                msg=f"session_id={sid!r} should be rejected",
+            )
+
 
 class ObserveWebSocketTestCase(unittest.TestCase):
     def setUp(self) -> None:

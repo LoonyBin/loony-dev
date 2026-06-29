@@ -519,6 +519,15 @@ function renderEmptyLive() {
   if (contextEl) contextEl.innerHTML = "";
   const workersEl = document.getElementById("repo-workers");
   if (workersEl) workersEl.innerHTML = "";
+  // The streams are already torn down by show(); also wipe their panels (the
+  // base-session conversation and the sidebar Activity timeline, #282) so a
+  // prior repo's turns/timeline don't linger behind the "pick a repo" prompt.
+  const logTitle = document.getElementById("repo-log-title");
+  if (logTitle) logTitle.textContent = "";
+  const logHost = document.getElementById("repo-log");
+  if (logHost) logHost.innerHTML = "";
+  const timelineHost = document.getElementById("live-timeline");
+  if (timelineHost) timelineHost.innerHTML = "";
   const body = document.getElementById("repo-session-body");
   if (body) {
     body.innerHTML = "";

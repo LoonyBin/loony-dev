@@ -1176,8 +1176,20 @@ def live_observe_jsonl_path(base_dir: Path, owner: str, repo: str) -> Path | Non
     # Accept only real, non-empty string values, and require an absolute cwd —
     # the supervisor always writes the repo's absolute base checkout. A numeric,
     # relative, or empty value is malformed input, so return None (→ honest 4404)
-    # rather than fabricating a transcript path from it.
-    if not isinstance(cwd, str) or not isinstance(session_id, str) or not cwd or not session_id:
+    # rather than fabricating a transcript path from it. session_id becomes the
+    # transcript filename in jsonl_path_for(), so reject path-bearing values the
+    # same way owner/repo are guarded above — a malformed connection file must
+    # not let /live/observe tail a file outside projects/<slug>/.
+    if (
+        not isinstance(cwd, str)
+        or not isinstance(session_id, str)
+        or not cwd
+        or not session_id
+        or session_id in (".", "..")
+        or "/" in session_id
+        or "\\" in session_id
+        or "\x00" in session_id
+    ):
         return None
     cwd_path = Path(cwd)
     if not cwd_path.is_absolute():
