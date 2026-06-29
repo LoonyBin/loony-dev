@@ -315,5 +315,79 @@ class TestQuotaWorkerGracefulHandling(unittest.TestCase):
         self.assertFalse(agent.can_handle(mock_task))
 
 
+class TestTurnBoundaryFence(unittest.TestCase):
+    """A reclaimed lease raises LeaseFencedError out of the turn (#268)."""
+
+    def setUp(self) -> None:
+        import shutil
+        import tempfile
+
+        from loony_dev import pipeline_lease, pipeline_log
+
+        self.base = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.base, ignore_errors=True))
+        self.repo = "owner/repo"
+        # Bind the active pipeline + a fence token, as the orchestrator does.
+        self._pkey_token = pipeline_log.current_pipeline.set("issue-7")
+        self.addCleanup(pipeline_log.current_pipeline.reset, self._pkey_token)
+        self._fence_token = pipeline_lease.current_lease_token.set(1.0)
+        self.addCleanup(pipeline_lease.current_lease_token.reset, self._fence_token)
+
+    def _write_lease(self, started_at: float) -> None:
+        import os
+        from loony_dev import pipeline_lease
+        path = pipeline_lease.lease_path(self.base, self.repo, "issue-7")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Our pid so the fence keys purely on ``started_at`` — a started_at that
+        # differs from the held token marks a reclaim.
+        path.write_text(
+            f'{{"holder": "bot", "pid": {os.getpid()}, "pipeline_key": "issue-7", '
+            f'"started_at": {started_at}}}'
+        )
+
+    def _write_reclaimed_lease(self) -> None:
+        # started_at=2.0 ≠ our token 1.0 ⇒ reclaimed by another holder.
+        self._write_lease(2.0)
+
+    def test_fence_raises_before_inner_runs(self) -> None:
+        from loony_dev import pipeline_lease
+
+        agent = _DummyClaudeAgent()
+        agent.base_dir = self.base
+        agent.repo = self.repo
+        self._write_reclaimed_lease()
+
+        with patch.object(agent, "_run_claude_cli_inner") as inner:
+            with self.assertRaises(pipeline_lease.LeaseFencedError):
+                agent._run_claude_cli("do work", cwd=Path("/wt"))
+            # Stood down at the turn-start boundary — the turn never executed.
+            inner.assert_not_called()
+
+    def test_fence_at_completion_after_inner_returns(self) -> None:
+        from loony_dev import pipeline_lease
+
+        agent = _DummyClaudeAgent()
+        agent.base_dir = self.base
+        agent.repo = self.repo
+        # A lease matching our token (1.0) so the turn-START fence passes; the
+        # reclaim happens mid-turn inside _inner.
+        self._write_lease(1.0)
+
+        def _inner(*a, **kw):
+            # The lease is reclaimed *while the turn runs*; the completion-side
+            # fence must catch it before the turn is reported as progress.
+            self._write_reclaimed_lease()
+            return ("out", "", 0)
+
+        with patch.object(
+            agent, "_run_claude_cli_inner", side_effect=_inner,
+        ) as inner:
+            with self.assertRaises(pipeline_lease.LeaseFencedError):
+                agent._run_claude_cli("do work", cwd=Path("/wt"))
+            # The turn-start fence passed and the inner turn actually ran — so the
+            # raise came from the *completion-side* fence, not the start-side one.
+            inner.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

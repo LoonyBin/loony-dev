@@ -20,13 +20,36 @@ racing acquirers creates the file; the loser sees ``FileExistsError``. A holder
 that crashed without releasing is reclaimed when its ``pid`` is dead or the lease
 is older than a generous TTL (mirrors the >12h stuck-item reset philosophy), so a
 crash can never wedge a pipeline forever.
+
+**Reclaim liveness ladder (issue #268).** A reclaim decision is a pure function
+of three signals — never ``/proc`` CPU/IO sampling (that ``stuck``-forensics
+guessing belongs to the ``web/services.list_stuck`` *read* path, not here):
+
+===========  ============================================  ====================
+ tier         signal                                        reclaim
+===========  ============================================  ====================
+ local fast   dead ``pid`` (:func:`_pid_alive`)             instant (crash)
+ local new    stale ``last_heartbeat`` in the #267          ``heartbeat_stale_after``
+              live-state snapshot                            (~tens of min)
+ global       lease age ≥ ``stale_after_seconds``           12h backstop
+===========  ============================================  ====================
+
+The middle tier is the new one: a worker whose ``pid`` is alive but whose
+``claude -p`` turn is wedged (a hung turn, a deadlock, an agent loop) no longer
+sits for the full 12h. It is read from the snapshot the keystone (#267) writes
+and is gated to **bot** holders with a ``running`` snapshot (a drive lease and an
+``idle``/``failed`` snapshot never carry a progress heartbeat), so it can only
+fire on a genuinely wedged automated turn. A reclaimed worker learns it lost the
+lease at its next turn boundary via :func:`check_fence` and stands down.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from loony_dev.session_registry import repo_log_dir, task_slug
@@ -44,6 +67,37 @@ HOLDER_DRIVE = "drive"
 # on another host / a pid we cannot probe — one older than this. Mirrors the
 # 12h stuck-item reset so a crashed holder never wedges the pipeline forever.
 DEFAULT_STALE_AFTER_SECONDS = 12 * 60 * 60
+
+# The middle reclaim tier (#268): treat a *bot* holder as stale when its #267
+# snapshot heartbeat has not advanced for this long. Default 1h — comfortably
+# above a single ``claude -p`` turn cap (``claude_turn_timeout_seconds``, default
+# 1800s, *and* a long inter-turn CodeRabbit wait, since the heartbeat now also
+# bumps at turn *start*), so a slow-but-real worker is never falsely reclaimed,
+# yet far under the 12h global backstop. Correctness requires it stay strictly
+# greater than the turn cap; read via :func:`_worker_setting`
+# (``[worker] heartbeat_stale_after``, no CLI flag — a reliability tuning knob).
+DEFAULT_HEARTBEAT_STALE_AFTER_SECONDS = 60 * 60
+
+
+class LeaseFencedError(Exception):
+    """A worker found its pipeline lease was reclaimed out from under it (#268).
+
+    Raised by :func:`check_fence` at a turn boundary when the on-disk lease is
+    gone or now belongs to a different holder than the one recorded in
+    :data:`current_lease_token`. The worker must propagate it and **stand down**
+    mid-task so a turn that unwedges *after* its lease was reclaimed never
+    double-runs against the new holder.
+    """
+
+
+# The fence token of the lease the current task holds: the lease's ``started_at``
+# (unique per acquisition), set by the orchestrator in the pool thread before the
+# agent runs. ``None`` outside a fenced dispatch (tests / drive / no-worktree
+# tasks) — :func:`check_fence` is then a no-op. A ``ContextVar`` so it is
+# per-task even though the thread pool reuses worker threads.
+current_lease_token: ContextVar[float | None] = ContextVar(
+    "loony_current_lease_token", default=None
+)
 
 
 @dataclass(frozen=True)
@@ -70,6 +124,44 @@ def lease_path(base_dir: Path, repo: str, pipeline_key: str) -> Path:
     """
     owner, name = repo.split("/", 1)
     return leases_dir(base_dir, owner, name) / f"{task_slug(pipeline_key)}.json"
+
+
+def _worker_setting(key: str, default: object) -> object:
+    """Read *key* from the ``[worker]`` config section (flat fallback).
+
+    Mirrors ``loony_dev.execution_state._worker_setting`` /
+    ``loony_dev.agents.coding._worker_setting``: the worker exposes its settings
+    both as a nested ``[worker]`` dict and (for registered CLI options) as a
+    flattened top-level key, so a robust read checks the section first.
+    """
+    from loony_dev import config
+
+    worker_cfg = config.settings.get("worker")
+    if isinstance(worker_cfg, dict) and key in worker_cfg:
+        return worker_cfg[key]
+    return config.settings.get(key, default)
+
+
+def heartbeat_stale_after_seconds() -> float:
+    """The configured middle-tier (#268) heartbeat-staleness window, in seconds.
+
+    Fails loudly on bad config rather than silently falling back to the default:
+    a non-numeric value, or one that is zero/negative (which would make *every*
+    bot lease instantly reclaimable), is operator error and must surface — not be
+    masked into a default that hides the misconfiguration.
+    """
+    raw = _worker_setting("heartbeat_stale_after", DEFAULT_HEARTBEAT_STALE_AFTER_SECONDS)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"worker.heartbeat_stale_after must be a number, got {raw!r}"
+        ) from exc
+    if value <= 0:
+        raise ValueError(
+            f"worker.heartbeat_stale_after must be positive, got {value!r}"
+        )
+    return value
 
 
 def _pid_alive(pid: int | None) -> bool:
@@ -103,13 +195,104 @@ def _parse_lease(path: Path) -> PipelineLease | None:
     )
 
 
-def _is_stale(lease: PipelineLease, *, now: float, stale_after_seconds: float) -> bool:
-    """True if *lease* may be reclaimed (dead holder or aged past the backstop)."""
+def _heartbeat_stale(
+    lease: PipelineLease,
+    base_dir: Path,
+    repo: str,
+    now: float,
+    heartbeat_stale_after_seconds: float,
+) -> bool:
+    """True if *lease*'s #267 snapshot heartbeat has not advanced for too long.
+
+    The middle reclaim tier. Reads the live-state snapshot the keystone (#267)
+    writes; returns ``False`` (not stale) unless the snapshot exists, is
+    ``running``, and carries a parseable ``last_heartbeat`` older than
+    *heartbeat_stale_after_seconds*. A malformed/absent timestamp is treated as
+    *not* stale on purpose — the 12h backstop is the net for those, so a torn
+    snapshot read can never trigger a spurious reclaim. ``execution_state`` is
+    imported lazily (no import cycle: it never imports this module).
+
+    The staleness baseline is **clamped to the lease's own ``started_at``**: a
+    ``running`` snapshot left over from a *previous* holder can carry a heartbeat
+    older than this lease's acquisition, which would otherwise make a brand-new
+    lease look instantly stale. A heartbeat cannot logically precede the lease
+    meant to be producing it, so the later of (heartbeat, lease start) is used —
+    giving every fresh lease the full window before it can be reclaimed.
+    """
+    if not lease.pipeline_key:
+        return False
+    from loony_dev import execution_state
+
+    snapshot = execution_state.read_snapshot(base_dir, repo, lease.pipeline_key)
+    if snapshot is None or snapshot.state != "running" or not snapshot.last_heartbeat:
+        return False
+    try:
+        ts = datetime.fromisoformat(snapshot.last_heartbeat)
+    except (TypeError, ValueError):
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    heartbeat_at = ts.timestamp()
+    if lease.started_at is not None:
+        heartbeat_at = max(heartbeat_at, lease.started_at)
+    return (now - heartbeat_at) >= heartbeat_stale_after_seconds
+
+
+def _is_stale(
+    lease: PipelineLease,
+    *,
+    now: float,
+    stale_after_seconds: float,
+    base_dir: Path | None = None,
+    repo: str | None = None,
+    heartbeat_stale_after_seconds: float | None = None,
+) -> bool:
+    """True if *lease* may be reclaimed — the three-tier liveness ladder (#268).
+
+    Tiers, cheapest first: a **dead holder pid** (instant crash recovery), a
+    **stale snapshot heartbeat** (the wedged-but-alive middle tier, only when
+    *base_dir*/*repo*/*heartbeat_stale_after_seconds* are supplied and the holder
+    is a ``bot`` — a drive lease carries no progress heartbeat), and the lease
+    **aged past** *stale_after_seconds* (the 12h cross-host backstop). The
+    decision never CPU-samples ``/proc``; it reads pid-liveness, the #267
+    snapshot, and lease age only.
+    """
     if not _pid_alive(lease.pid):
         return True
     if lease.started_at is not None and (now - lease.started_at) >= stale_after_seconds:
         return True
+    if (
+        base_dir is not None
+        and repo
+        and heartbeat_stale_after_seconds is not None
+        and lease.holder == HOLDER_BOT
+        and lease.pipeline_key
+    ):
+        if _heartbeat_stale(lease, base_dir, repo, now, heartbeat_stale_after_seconds):
+            return True
     return False
+
+
+def check_fence(base_dir: Path, repo: str, pipeline_key: str) -> None:
+    """Raise :class:`LeaseFencedError` if our pipeline lease was reclaimed (#268).
+
+    The fence token is ``(pid, lease.started_at)``: ``pid`` alone is insufficient
+    (a restarted/other worker may reuse a pid), so it is paired with the lease's
+    ``started_at``, which is unique per acquisition. A no-op when no token is set
+    (:data:`current_lease_token` is ``None`` — untracked/test/drive path). The
+    lease read is defensive (:func:`read_pipeline_lease` never raises), so the
+    only exception this can raise is :class:`LeaseFencedError`.
+    """
+    token = current_lease_token.get()
+    if token is None:
+        return
+    lease = read_pipeline_lease(base_dir, repo, pipeline_key)
+    if lease is None or lease.pid != os.getpid() or lease.started_at != token:
+        raise LeaseFencedError(
+            f"pipeline lease for {pipeline_key!r} was reclaimed "
+            f"(ours: pid={os.getpid()} started_at={token}; "
+            f"now: {None if lease is None else (lease.pid, lease.started_at)})"
+        )
 
 
 def read_pipeline_lease(base_dir: Path, repo: str, pipeline_key: str) -> PipelineLease | None:
@@ -126,12 +309,16 @@ def acquire_pipeline_lease(
     pid: int | None = None,
     now: float | None = None,
     stale_after_seconds: float = DEFAULT_STALE_AFTER_SECONDS,
+    heartbeat_stale_after_seconds: float | None = None,
 ) -> bool:
     """Atomically take the pipeline lease for *holder*; ``True`` iff acquired.
 
     Returns ``False`` when another live holder already owns the pipeline. A stale
-    lease (dead holder pid, or aged past *stale_after_seconds*) is reclaimed and
-    acquisition retried once.
+    lease is reclaimed and acquisition retried once — stale meaning a dead holder
+    pid, a lease aged past *stale_after_seconds*, or (when
+    *heartbeat_stale_after_seconds* is given and the holder is a ``bot``) a #267
+    snapshot heartbeat that has not advanced for that long (the wedged-but-alive
+    middle tier, issue #268).
     """
     import time
 
@@ -149,7 +336,12 @@ def acquire_pipeline_lease(
         except FileExistsError:
             existing = _parse_lease(path)
             if existing is None or _is_stale(
-                existing, now=now, stale_after_seconds=stale_after_seconds
+                existing,
+                now=now,
+                stale_after_seconds=stale_after_seconds,
+                base_dir=base_dir,
+                repo=repo,
+                heartbeat_stale_after_seconds=heartbeat_stale_after_seconds,
             ):
                 # Reclaim a crashed/aged holder, then retry the exclusive create.
                 if attempt == 0:

@@ -383,6 +383,212 @@ class TestPipelineLeaseExclusion(unittest.TestCase):
         )
 
 
+class TestFencingStandDown(unittest.TestCase):
+    """A reclaimed worker stands down mid-task without mutating shared state (#268)."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.tmp = Path(self._tmpdir.name)
+        self.git = _make_git(self.tmp)
+        self.agent = MagicMock()
+        self.agent.name = "coding"
+        self.orch = Orchestrator(
+            repo=_make_repo(), git=self.git, agents=[self.agent],
+            interval=60, base_dir=self.tmp,
+        )
+        self.git.reset_mock()
+
+    def _make_task(self) -> MagicMock:
+        task = MagicMock()
+        task.worktree_key = "issue-7"
+        task.target_branch = "feature/x"
+        task.task_type = "implement_issue"
+        task.describe.return_value = "do work"
+        return task
+
+    def _acquire_bot_lease(self) -> None:
+        from loony_dev import pipeline_lease
+        self.assertTrue(
+            pipeline_lease.acquire_pipeline_lease(
+                self.tmp, "owner/repo", "issue-7", holder=pipeline_lease.HOLDER_BOT,
+            )
+        )
+
+    def _reclaim_lease(self) -> None:
+        """Simulate another holder reclaiming the lease (new acquisition)."""
+        from loony_dev import pipeline_lease
+        path = pipeline_lease.lease_path(self.tmp, "owner/repo", "issue-7")
+        path.write_text(
+            '{"holder": "bot", "pid": 999999, "pipeline_key": "issue-7", '
+            '"started_at": 99999999.0}'
+        )
+
+    def _lease_exists(self) -> bool:
+        from loony_dev import pipeline_lease
+        return pipeline_lease.lease_path(self.tmp, "owner/repo", "issue-7").exists()
+
+    def _snapshot_state(self):
+        from loony_dev import execution_state
+        snap = execution_state.read_snapshot(self.tmp, "owner/repo", "issue-7")
+        return None if snap is None else snap.state
+
+    def test_normal_return_while_reclaimed_stands_down(self) -> None:
+        # Exit shape (c): the agent returns success, but the pipeline was
+        # reclaimed mid-turn — on_complete must NOT run, the lease must NOT be
+        # released (the new holder owns it), and the snapshot must NOT finalize.
+        self._acquire_bot_lease()
+        task = self._make_task()
+
+        def _execute(*a, **kw):
+            self._reclaim_lease()
+            return TaskResult(success=True, output="", summary="done")
+
+        self.agent.execute.side_effect = _execute
+        self.orch._run_task(self.agent, task)
+
+        task.on_complete.assert_not_called()
+        task.on_failure.assert_not_called()
+        self.assertTrue(self._lease_exists())  # not released (new holder's lease)
+        self.assertEqual(self._snapshot_state(), "running")  # not finalized
+
+    def test_reclaim_during_on_complete_skips_lease_release(self) -> None:
+        # The reclaim lands *after* the in-try fence check, during on_complete —
+        # the finally re-check must still catch it so the snapshot is not
+        # finalized and the lease (the new holder's) is not released (#268 critical).
+        self._acquire_bot_lease()
+        task = self._make_task()
+        self.agent.execute.return_value = TaskResult(success=True, output="", summary="ok")
+        task.on_complete.side_effect = lambda *a, **kw: self._reclaim_lease()
+
+        self.orch._run_task(self.agent, task)
+
+        task.on_complete.assert_called_once()  # it did run (in-try fence passed)
+        self.assertTrue(self._lease_exists())  # not released (new holder's lease)
+        self.assertEqual(self._snapshot_state(), "running")  # not finalized to idle
+
+    def test_agent_raises_fenced_error_stands_down(self) -> None:
+        # Exit shape (a): the agent's own turn loop detected the reclaim and
+        # raised LeaseFencedError — neither callback runs.
+        from loony_dev import pipeline_lease
+        self._acquire_bot_lease()
+        task = self._make_task()
+
+        def _execute(*a, **kw):
+            self._reclaim_lease()
+            raise pipeline_lease.LeaseFencedError("reclaimed mid-turn")
+
+        self.agent.execute.side_effect = _execute
+        self.orch._run_task(self.agent, task)
+
+        task.on_complete.assert_not_called()
+        task.on_failure.assert_not_called()
+        self.assertTrue(self._lease_exists())
+
+    def test_non_fence_exception_while_reclaimed_stands_down(self) -> None:
+        # Exit shape (b): the agent raised an ordinary error while the lease was
+        # reclaimed — the probe re-routes to stand-down, so on_failure is skipped.
+        self._acquire_bot_lease()
+        task = self._make_task()
+
+        def _execute(*a, **kw):
+            self._reclaim_lease()
+            raise RuntimeError("boom")
+
+        self.agent.execute.side_effect = _execute
+        self.orch._run_task(self.agent, task)
+
+        task.on_failure.assert_not_called()
+        task.on_complete.assert_not_called()
+
+    def test_non_fence_exception_without_reclaim_runs_on_failure(self) -> None:
+        # Control: an ordinary error with the lease intact follows the normal
+        # failure path (on_failure runs, lease released) — fencing is inert.
+        self._acquire_bot_lease()
+        task = self._make_task()
+        self.agent.execute.side_effect = RuntimeError("boom")
+
+        self.orch._run_task(self.agent, task)
+
+        task.on_failure.assert_called_once()
+        self.assertFalse(self._lease_exists())  # released normally
+
+    def test_success_without_reclaim_runs_on_complete(self) -> None:
+        # Control: a clean success with the lease intact still completes normally.
+        self._acquire_bot_lease()
+        task = self._make_task()
+        self.agent.execute.return_value = TaskResult(success=True, output="", summary="ok")
+
+        self.orch._run_task(self.agent, task)
+
+        task.on_complete.assert_called_once()
+        self.assertFalse(self._lease_exists())  # released normally
+        self.assertEqual(self._snapshot_state(), "idle")  # finalized
+
+
+class TestStartupReconciliation(unittest.TestCase):
+    """Startup flips crashed ``running`` snapshots to ``crashed`` (#268)."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.tmp = Path(self._tmpdir.name)
+        self.git = _make_git(self.tmp)
+
+    def _write_running(self, key: str) -> None:
+        from loony_dev import execution_state as es
+        es.write_snapshot(
+            self.tmp, "owner/repo", key,
+            es.LiveState(
+                pipeline_key=key, repo="owner/repo", stage="Implementing",
+                current_skill="implement-issue", state="running", live=True,
+            ),
+        )
+
+    def _state(self, key: str):
+        from loony_dev import execution_state as es
+        snap = es.read_snapshot(self.tmp, "owner/repo", key)
+        return None if snap is None else snap
+
+    def test_running_snapshot_without_lease_becomes_crashed(self) -> None:
+        self._write_running("issue-7")  # no lease — writer is gone
+        Orchestrator(
+            repo=_make_repo(), git=self.git, agents=[], interval=60, base_dir=self.tmp,
+        )
+        snap = self._state("issue-7")
+        self.assertEqual(snap.state, "crashed")
+        self.assertFalse(snap.live)
+        self.assertTrue(snap.needs_you)  # derives True for a crashed pipeline
+
+    def test_running_snapshot_with_dead_pid_lease_becomes_crashed(self) -> None:
+        from loony_dev import pipeline_lease
+        self._write_running("issue-7")
+        path = pipeline_lease.lease_path(self.tmp, "owner/repo", "issue-7")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '{"holder": "bot", "pid": 2147483646, "pipeline_key": "issue-7", '
+            '"started_at": 1.0}'
+        )
+        Orchestrator(
+            repo=_make_repo(), git=self.git, agents=[], interval=60, base_dir=self.tmp,
+        )
+        self.assertEqual(self._state("issue-7").state, "crashed")
+
+    def test_running_snapshot_with_live_lease_is_left_alone(self) -> None:
+        from loony_dev import pipeline_lease
+        self._write_running("issue-9")
+        # A live-pid lease (this process) means a genuinely active writer.
+        self.assertTrue(
+            pipeline_lease.acquire_pipeline_lease(
+                self.tmp, "owner/repo", "issue-9", holder=pipeline_lease.HOLDER_BOT,
+            )
+        )
+        Orchestrator(
+            repo=_make_repo(), git=self.git, agents=[], interval=60, base_dir=self.tmp,
+        )
+        self.assertEqual(self._state("issue-9").state, "running")
+
+
 class TestStartupSweep(unittest.TestCase):
 
     def test_removes_preexisting_worktrees_under_root(self) -> None:

@@ -143,6 +143,10 @@ class Orchestrator:
         self._repo_short_name = repo.name.split("/", 1)[1] if "/" in repo.name else repo.name
         self.worktree_root = git.work_dir / ".worktrees" / repo.owner / self._repo_short_name
         self._prune_stale_worktrees()
+        # Reconcile any ``running`` snapshot left behind by a crashed prior run
+        # (dead/missing lease) to ``crashed`` so discovery resumes it as
+        # owner-resumption (#268). Startup, no tasks active — safe to mutate.
+        self._reconcile_crashed_snapshots()
 
     def run(self) -> None:
         """Main polling loop."""
@@ -343,6 +347,7 @@ class Orchestrator:
             pkey = task.worktree_key
             if pkey is not None and not pipeline_lease.acquire_pipeline_lease(
                 self.base_dir, self.repo.name, pkey, holder=pipeline_lease.HOLDER_BOT,
+                heartbeat_stale_after_seconds=pipeline_lease.heartbeat_stale_after_seconds(),
             ):
                 logger.info(
                     "Pipeline %s is held by an active drive session — skipping dispatch", pkey,
@@ -474,6 +479,12 @@ class Orchestrator:
         # tasks with no worktree (e.g. cleanup), which run against the base
         # checkout exactly as before.
         ps = self._pipeline_session_for(task)
+        # Record the fence token (this dispatch's lease ``started_at``) so the
+        # agent's turn-boundary :func:`pipeline_lease.check_fence` can detect a
+        # reclaim and stand down (#268). Always set — even to ``None`` for a
+        # no-worktree task — so a reused pool thread never inherits a prior
+        # task's token.
+        self._set_fence_token(task)
         # Open the #267 execution-state record for this dispatch: a ``running``
         # snapshot + a ``dispatched`` event. ``outcome`` is the terminal snapshot
         # state, defaulting to ``failed`` so an early/unexpected exit is recorded
@@ -484,6 +495,10 @@ class Orchestrator:
         # the ``except`` below does not call it a second time when the failure
         # callback (or a later step) raises after on_failure has been attempted.
         failure_reported = False
+        # Set when the pipeline was reclaimed out from under us (#268): the new
+        # holder owns the snapshot + lease, so on terminal we must NOT finalize
+        # the snapshot or release the lease (both would stomp the new holder).
+        fenced = False
         self._write_running_snapshot(task, ps)
         self._emit_execution_event(
             task, "dispatched", f"Dispatched {task.task_type}", "active", "capo",
@@ -530,6 +545,10 @@ class Orchestrator:
                 "Agent %s finished %s phase: %s.",
                 agent.name, task.task_type, "success" if result.success else "failure",
             )
+            # Stand down before any GitHub mutation if the pipeline was reclaimed
+            # while the turn ran — a normal return after a reclaim must not run
+            # ``on_complete``/``on_failure`` against the new holder's work (#268).
+            self._check_fence(task)
             if result.success:
                 task.on_complete(self.repo, result)
                 outcome = "idle"
@@ -547,40 +566,73 @@ class Orchestrator:
                 )
                 failure_reported = True
                 task.on_failure(self.repo, RuntimeError(result.summary))
+        except pipeline_lease.LeaseFencedError:
+            # The agent's turn loop detected the reclaim and raised — stand down.
+            fenced = True
+            self._stand_down(task)
         except Exception as e:
-            # Wire the ``error`` vocab on the orchestrator path too (the turn path
-            # wires it independently in ``_run_claude_cli``).
-            self._emit_execution_event(
-                task, "error", f"{task.task_type} failed: {e}", "blocked", "system",
-            )
-            if failure_reported:
-                # ``on_failure`` already ran for this dispatch (and itself raised,
-                # or a later step did) — do not double-invoke it; just record it.
-                logger.exception("Task callback failed after on_failure already ran")
+            # If the pipeline was reclaimed under us, the agent's failure is moot:
+            # stand down rather than running ``on_failure`` against the new holder
+            # (#268). The probe is best-effort and only raises ``LeaseFencedError``,
+            # so a reclaim-read error never masks the original exception.
+            try:
+                self._check_fence(task)
+            except pipeline_lease.LeaseFencedError:
+                fenced = True
+                self._stand_down(task)
             else:
-                # ``_execute_task`` is contracted "Never raises": if the failure
-                # callback itself raises while handling the original exception, the
-                # secondary exception must not escape the worker after ``finally``.
-                try:
-                    task.on_failure(self.repo, e)
-                except Exception:
-                    logger.exception("Task failure callback failed for %s", task.task_type)
-        finally:
-            # Close the #267 record: a ``terminal`` event + flip the snapshot to
-            # the terminal state (``idle`` on success, ``failed`` otherwise) with
-            # ``live=False``. ``crashed`` is reserved for the reliability layer
-            # (#268) to set on a stale heartbeat — the writer only sets idle/failed.
-            self._emit_execution_event(
-                task, "terminal", f"{task.task_type} finished ({outcome})", "none", "capo",
-            )
-            self._finalize_snapshot(task, outcome)
-            # Release the pipeline lease taken at dispatch (issue #199) so the
-            # next gather — and any human drive — can claim the pipeline again.
-            pkey = task.worktree_key
-            if pkey is not None:
-                pipeline_lease.release_pipeline_lease(
-                    self.base_dir, self.repo.name, pkey, holder=pipeline_lease.HOLDER_BOT,
+                # Wire the ``error`` vocab on the orchestrator path too (the turn
+                # path wires it independently in ``_run_claude_cli``).
+                self._emit_execution_event(
+                    task, "error", f"{task.task_type} failed: {e}", "blocked", "system",
                 )
+                if failure_reported:
+                    # ``on_failure`` already ran for this dispatch (and itself
+                    # raised, or a later step did) — do not double-invoke it.
+                    logger.exception("Task callback failed after on_failure already ran")
+                else:
+                    # ``_execute_task`` is contracted "Never raises": if the
+                    # failure callback itself raises while handling the original
+                    # exception, the secondary exception must not escape the
+                    # worker after ``finally``.
+                    try:
+                        task.on_failure(self.repo, e)
+                    except Exception:
+                        logger.exception("Task failure callback failed for %s", task.task_type)
+        finally:
+            if not fenced:
+                # Last-chance fence check: a reclaim that landed after the
+                # in-``try`` check (e.g. during ``on_complete``) must still be
+                # caught before any terminal write or lease release, or those
+                # would stomp the new holder's state (#268).
+                try:
+                    self._check_fence(task)
+                except pipeline_lease.LeaseFencedError:
+                    fenced = True
+                    self._stand_down(task)
+            if fenced:
+                # The new holder owns this pipeline's snapshot and lease now;
+                # finalizing the snapshot or releasing the lease would stomp it
+                # (both holders are ``bot``, so a holder-checked release still
+                # matches). Leave both to the new holder (#268).
+                pass
+            else:
+                # Close the #267 record: a ``terminal`` event + flip the snapshot
+                # to its terminal state (``idle`` on success, ``failed``
+                # otherwise) with ``live=False``. ``crashed`` is reserved for the
+                # reliability layer (#268, startup reconciliation) — the writer
+                # only sets idle/failed.
+                self._emit_execution_event(
+                    task, "terminal", f"{task.task_type} finished ({outcome})", "none", "capo",
+                )
+                self._finalize_snapshot(task, outcome)
+                # Release the pipeline lease taken at dispatch (issue #199) so the
+                # next gather — and any human drive — can claim the pipeline again.
+                pkey = task.worktree_key
+                if pkey is not None:
+                    pipeline_lease.release_pipeline_lease(
+                        self.base_dir, self.repo.name, pkey, holder=pipeline_lease.HOLDER_BOT,
+                    )
             # The worktree is NOT torn down here anymore (issue #198): it is
             # retained for the pipeline's next phase and reclaimed only once the
             # pipeline reaches a terminal GitHub state (see
@@ -671,6 +723,110 @@ class Orchestrator:
             )
         except Exception:  # pragma: no cover - substrate is best-effort
             logger.debug("Could not emit %s event for %s", event_type, pkey, exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Fencing (#268) — a reclaimed worker stands down mid-task
+    # ------------------------------------------------------------------
+    # The heartbeat reclaim tier lets another holder take a wedged pipeline out
+    # from under this worker. If the wedged turn later unwedges it must NOT
+    # double-run against the new holder. The orchestrator records the lease's
+    # fence token at dispatch; the agent checks it at every turn boundary and the
+    # orchestrator re-checks before any GitHub mutation. A failed check raises
+    # ``LeaseFencedError`` → the stand-down branch in ``_execute_task``.
+
+    def _set_fence_token(self, task: Task) -> None:
+        """Record this dispatch's lease fence token for the agent's fence checks.
+
+        Reads the lease taken at dispatch and stows its ``started_at`` in the
+        :data:`~loony_dev.pipeline_lease.current_lease_token` contextvar (the pool
+        thread is the same one the agent turn runs in). The var is **always** set
+        — to ``None`` for a no-worktree task, or for a pipeline task with no
+        readable lease — so a recycled pool thread never inherits a previous
+        task's token.
+
+        A ``None`` token (fencing disabled) for a pipeline task is intentional,
+        not a swallowed error: :func:`pipeline_lease.read_pipeline_lease` is
+        contractually defensive (it returns ``None`` on a missing/malformed lease
+        and never raises), and the bot dispatch loop always holds the lease it
+        just acquired in the tick thread — so a ``None`` here means the lease-less
+        :meth:`dispatch` test/caller path, for which running without a fence is
+        correct. The real guard against acting on a *reclaimed* lease is the
+        turn-boundary + terminal :func:`check_fence`, which only fires once a
+        token is set.
+        """
+        pkey = task.worktree_key
+        token: float | None = None
+        if pkey is not None:
+            lease = pipeline_lease.read_pipeline_lease(self.base_dir, self.repo.name, pkey)
+            token = lease.started_at if lease is not None else None
+        pipeline_lease.current_lease_token.set(token)
+
+    def _check_fence(self, task: Task) -> None:
+        """Raise ``LeaseFencedError`` if *task*'s pipeline lease was reclaimed (#268)."""
+        pkey = task.worktree_key
+        if pkey is None:
+            return
+        pipeline_lease.check_fence(self.base_dir, self.repo.name, pkey)
+
+    def _stand_down(self, task: Task) -> None:
+        """Log + record a fenced stand-down (no GitHub mutation, no lease release)."""
+        logger.warning(
+            "Pipeline %s stood down — lease reclaimed by another holder (fenced); "
+            "skipping callbacks, snapshot finalize, and lease release",
+            task.worktree_key,
+        )
+        # Append-only and harmless: the new holder owns the live snapshot, so this
+        # only adds a record to the (per-pipeline, shared) event log.
+        self._emit_execution_event(
+            task, "terminal", f"{task.task_type} stood down (fenced)", "none", "system",
+        )
+
+    def _reconcile_crashed_snapshots(self) -> None:
+        """Flip stale ``running`` snapshots from a crashed prior run to ``crashed`` (#268).
+
+        Startup reconciliation, alongside the orphan-worktree prune. A snapshot
+        left ``running`` whose lease is **missing** or **dead-pid** means the
+        writer is gone (a clean exit finalizes the snapshot to idle/failed and
+        releases the lease), so it is flipped to ``crashed`` with ``live=False``:
+        ``needs_you`` then derives ``True`` and it drops out of ``list_active``,
+        and the next discovery resumes the work as owner-resumption (the
+        ``stuck_item_task`` 12h reset + label state machine are unchanged — this
+        does not itself re-dispatch or touch GitHub). A ``running`` snapshot still
+        backed by a live-pid lease is genuinely active and left alone. Best-effort:
+        a reconcile failure never aborts startup.
+        """
+        try:
+            from loony_dev import execution_state
+
+            for state in execution_state.list_active(self.base_dir):
+                if state.repo != self.repo.name or state.state != "running":
+                    continue
+                try:
+                    lease = pipeline_lease.read_pipeline_lease(
+                        self.base_dir, self.repo.name, state.pipeline_key,
+                    )
+                except Exception:
+                    # A read error is NOT a missing lease: flipping a possibly
+                    # live pipeline to ``crashed`` on transient trouble would be a
+                    # false positive. Leave the snapshot untouched and retry next
+                    # startup.
+                    logger.debug(
+                        "Could not read lease for running snapshot %s; leaving it unchanged",
+                        state.pipeline_key, exc_info=True,
+                    )
+                    continue
+                if lease is not None and pipeline_lease._pid_alive(lease.pid):
+                    continue  # a live-pid lease backs it — genuinely active
+                logger.info(
+                    "Reconciling crashed pipeline snapshot %s (no live lease) → crashed",
+                    state.pipeline_key,
+                )
+                execution_state._bump_snapshot(
+                    self.base_dir, self.repo.name, state.pipeline_key,
+                    state="crashed", live=False,
+                )
+        except Exception:  # pragma: no cover - best-effort startup housekeeping
+            logger.debug("crashed-snapshot reconciliation failed", exc_info=True)
 
     @staticmethod
     def _linked_pr(task: Task) -> int | None:

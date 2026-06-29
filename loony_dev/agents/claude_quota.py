@@ -321,6 +321,25 @@ class ClaudeQuotaMixin:
         except Exception:  # pragma: no cover - substrate is best-effort
             logger.debug("execution_state heartbeat failed", exc_info=True)
 
+    def _check_fence(self) -> None:
+        """Stand down if this pipeline's lease was reclaimed under us (#268).
+
+        Raises :class:`~loony_dev.pipeline_lease.LeaseFencedError` when the
+        on-disk lease no longer matches the token the orchestrator set for this
+        dispatch — so a turn that unwedges *after* its lease was reclaimed never
+        double-runs against the new holder. Unlike :meth:`_bump_heartbeat` this is
+        **not** best-effort: ``LeaseFencedError`` must propagate out of the turn
+        loop to the orchestrator's stand-down branch. A no-op when there is no
+        active pipeline / fence token (bare/test/drive path).
+        """
+        coords = self._execution_coords()
+        if coords is None:
+            return
+        base, repo, pkey = coords
+        from loony_dev import pipeline_lease
+
+        pipeline_lease.check_fence(base, repo, pkey)
+
     # ------------------------------------------------------------------
     # Shared Claude CLI runner with session continuity
     # ------------------------------------------------------------------
@@ -435,8 +454,20 @@ class ClaudeQuotaMixin:
         return, ``error`` on any non-zero rc (quota / timeout 124 / failure). The
         heartbeat advances only on real turn progress — a wedged turn stops
         heart-beating, which is exactly the reliability signal #268 needs.
+
+        The heartbeat bumps at **turn start** as well as turn complete (#268):
+        starting a turn *is* real progress, and an implement dispatch interleaves
+        turns with a multi-minute ``coderabbit review`` subprocess that never
+        bumps the heartbeat — bumping at start bounds the worst-case inter-
+        heartbeat gap to a single turn cap rather than CodeRabbit + a full turn,
+        so a healthy worker is never falsely reclaimed. Each boundary first calls
+        :meth:`_check_fence`: a worker whose lease was reclaimed while wedged
+        raises :class:`~loony_dev.pipeline_lease.LeaseFencedError` here and stands
+        down before any further turn or GitHub mutation.
         """
+        self._check_fence()
         self._emit_turn_event("turn_start", "active")
+        self._bump_heartbeat()
         try:
             stdout, stderr, rc = self._run_claude_cli_inner(
                 prompt, cwd=cwd, session_id=session_id, timeout=timeout,
@@ -445,6 +476,7 @@ class ClaudeQuotaMixin:
             self._emit_turn_event("error", "blocked")
             raise
         if rc == 0:
+            self._check_fence()
             self._emit_turn_event("turn_complete", "active")
             self._bump_heartbeat()
         else:
