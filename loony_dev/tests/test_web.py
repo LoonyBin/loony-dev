@@ -202,6 +202,20 @@ class ServicesTestCase(unittest.TestCase):
             [],
         )
 
+    def test_pipeline_activity_rejects_traversal(self) -> None:
+        # #269: tail_events does not validate path segments, so the feed must
+        # reject separators / ``..`` / NUL in owner/repo/key before they reach
+        # the ``.logs`` tree — matching the log-tail path it replaced.
+        for owner, repo, key in (
+            ("acme", "widgets", ".."),
+            ("acme", "widgets", "a/b"),
+            ("..", "widgets", "issue-5"),
+            ("acme", "..", "issue-5"),
+            ("acme", "widgets", "with\x00nul"),
+        ):
+            with self.assertRaises(services.LogNotFoundError):
+                services.pipeline_activity(self.base, owner, repo, key, 10)
+
     # ── Live-state snapshot read-model (#269) ────────────────────────────────
 
     def _seed_snapshot(self, repo: str, key: str, **kw) -> None:
@@ -1094,6 +1108,15 @@ class WebAppTestCase(unittest.TestCase):
                     "/api/pipelines/issue-5/activity", params={"repo": repo}
                 )
                 self.assertEqual(resp.status_code, 422)
+
+    def test_pipeline_activity_traversal_repo_404(self) -> None:
+        # A ``repo`` like "../widgets" passes the owner/repo shape check but must
+        # be rejected by the service's path gate (it would escape .logs); the
+        # route surfaces that as 404, like the log-tail endpoints.
+        resp = self.client.get(
+            "/api/pipelines/issue-5/activity", params={"repo": "../widgets"}
+        )
+        self.assertEqual(resp.status_code, 404)
 
     def test_pipeline_log_traversal_rejected(self) -> None:
         bad = self.client.get("/api/logs/acme/widgets/pipelines/%2e%2e/tail")

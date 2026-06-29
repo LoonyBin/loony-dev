@@ -542,8 +542,9 @@ def create_api_router(
         tails the #267 structured event store directly — no log-regex. ``repo`` is
         required and names the ``owner/repo`` the pipeline belongs to, matching the
         front-end's pipeline-key-centric addressing. A pipeline with no events
-        returns ``{events: [], count: 0}`` (200), not 404: the substrate's read
-        side never raises, so there is no log-missing error to catch.
+        returns ``{events: [], count: 0}`` (200): the substrate's read side
+        yields ``[]`` for a missing log. A traversal-bearing ``repo``/``key``
+        (rejected by the service's path gate) 404s like the log-tail endpoints.
         """
         if "/" not in repo:
             raise HTTPException(status_code=422, detail="'repo' must be 'owner/repo'")
@@ -552,7 +553,10 @@ def create_api_router(
         # repo resolves to a single ``owner/repo`` pair before path validation.
         if not owner or not name or "/" in name:
             raise HTTPException(status_code=422, detail="'repo' must be 'owner/repo'")
-        events = services.pipeline_activity(base_dir, owner, name, pipeline_key, lines)
+        try:
+            events = services.pipeline_activity(base_dir, owner, name, pipeline_key, lines)
+        except services.LogNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {
             "repo": repo,
             "pipeline_key": pipeline_key,

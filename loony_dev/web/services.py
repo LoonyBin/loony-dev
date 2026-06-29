@@ -1307,9 +1307,16 @@ def pipeline_activity(
     config-resolved attribution, not a message/logger heuristic. This is the
     structured feed the #225 Activity timeline consumes.
 
-    Never raises: a pipeline with no event log yields ``[]`` (the substrate's
-    read-side guarantee), so the old log-missing 404 path no longer fires.
+    A pipeline with no event log yields ``[]`` (the substrate's read-side
+    guarantee), so there is no log-missing 404. Invalid path segments still
+    raise :class:`LogNotFoundError`: ``execution_state.tail_events`` trusts its
+    callers and does **not** validate ``owner``/``repo``/``pipeline_key`` before
+    they flow into ``.logs/<owner>/<repo>/...``, so we apply the same traversal
+    gate the log-tail path (``tail_pipeline_log``, which this replaced) used —
+    rejecting separators / ``..`` / NUL so a crafted ``repo`` can't escape the
+    pipelines tree.
     """
+    _safe_pipeline_log_path(base_dir, owner, repo, pipeline_key)  # traversal gate only
     events = execution_state.tail_events(base_dir, f"{owner}/{repo}", pipeline_key, lines)
     return [e.to_dict() for e in events]
 
