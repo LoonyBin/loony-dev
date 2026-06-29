@@ -168,8 +168,13 @@ def heartbeat_stale_after_seconds() -> float:
     turn_cap_raw = _worker_setting("claude_turn_timeout_seconds", 30 * 60)
     try:
         turn_cap = float(turn_cap_raw)
-    except (TypeError, ValueError):
-        turn_cap = float(30 * 60)
+    except (TypeError, ValueError) as exc:
+        # The turn cap is the safety bound this window is validated against;
+        # silently defaulting it on a parse failure could admit an unsafe
+        # heartbeat window and hide the operator's config error. Fail loud.
+        raise ValueError(
+            f"worker.claude_turn_timeout_seconds must be a number, got {turn_cap_raw!r}"
+        ) from exc
     if value <= turn_cap:
         raise ValueError(
             "worker.heartbeat_stale_after must be greater than "
@@ -403,11 +408,16 @@ def release_pipeline_lease(
     path = lease_path(base_dir, repo, pipeline_key)
     if holder is not None or expected_started_at is not None:
         existing = _parse_lease(path)
-        if existing is not None:
-            if holder is not None and existing.holder != holder:
-                return False
-            if expected_started_at is not None and existing.started_at != expected_started_at:
-                return False
+        # A guarded release must *prove* ownership/token match before unlinking.
+        # An unreadable/malformed lease (``None``) cannot be proven ours, so
+        # refuse to delete it — a stale/garbage lease is cleaned up by the next
+        # ``acquire`` (which treats an unparseable lease as reclaimable) instead.
+        if existing is None:
+            return False
+        if holder is not None and existing.holder != holder:
+            return False
+        if expected_started_at is not None and existing.started_at != expected_started_at:
+            return False
     try:
         path.unlink()
         return True

@@ -74,6 +74,23 @@ class PipelineLeaseTestCase(unittest.TestCase):
         )
         self.assertIsNone(pl.read_pipeline_lease(self.base, REPO, "issue-7"))
 
+    def test_guarded_release_does_not_unlink_unverifiable_lease(self) -> None:
+        # A guarded release must not delete a lease it cannot parse (ownership
+        # unprovable) — the next acquire reclaims garbage instead (#268).
+        path = pl.lease_path(self.base, REPO, "issue-7")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{ not valid json")
+        self.assertFalse(
+            pl.release_pipeline_lease(self.base, REPO, "issue-7", holder=pl.HOLDER_BOT)
+        )
+        self.assertFalse(
+            pl.release_pipeline_lease(
+                self.base, REPO, "issue-7", expected_started_at=123.0
+            )
+        )
+        # The (malformed) file is left in place for acquire to reclaim.
+        self.assertTrue(path.exists())
+
     def test_dead_pid_lease_is_reclaimed(self) -> None:
         # Hand-write a lease owned by a pid that cannot exist.
         path = pl.lease_path(self.base, REPO, "issue-7")
@@ -281,6 +298,15 @@ class HeartbeatConfigTestCase(unittest.TestCase):
 
     def test_non_numeric_raises(self) -> None:
         self._set("soon")
+        with self.assertRaises(ValueError):
+            pl.heartbeat_stale_after_seconds()
+
+    def test_non_numeric_turn_cap_raises(self) -> None:
+        # The turn cap is the safety bound; a non-numeric value must fail loud,
+        # not silently default (which could admit an unsafe window) (#268).
+        self._config.settings = self._config.Settings(
+            {"worker": {"heartbeat_stale_after": 3600, "claude_turn_timeout_seconds": "soon"}}
+        )
         with self.assertRaises(ValueError):
             pl.heartbeat_stale_after_seconds()
 
