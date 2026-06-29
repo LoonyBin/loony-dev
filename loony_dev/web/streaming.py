@@ -11,11 +11,15 @@ a bounded backlog (the last N lines) and then streams new lines forever until th
 consumer closes it — at which point all file/inotify descriptors are released in
 a ``finally`` block, guaranteeing no FD leak across reconnects.
 
-Backlog and live tailing share a single file handle: the backlog is read by
-draining the file into a bounded ``deque`` (which leaves the handle positioned at
-EOF), and live tailing continues from exactly that position. This closes the
-window in which lines appended between "read backlog" and "start watching" would
-otherwise be lost.
+Backlog and live tailing are pinned to a single captured EOF cursor so no line
+is lost or duplicated across the "read backlog → start watching" boundary. For a
+positive backlog the watcher seeks its own handle to EOF, reads the last N lines
+with the bounded reverse-block reader (:func:`loony_dev.web.log_tail._read_tail_page`,
+bounded to that cursor so it never sees bytes appended meanwhile), then restores
+the handle to the captured cursor; live tailing resumes from exactly there. This
+keeps initial-backlog cost proportional to N rather than file size (issue #286)
+while preserving the gap-free hand-off. A ``None`` backlog (the JSONL transcript
+tailer) still drains the whole file, since it needs the full history.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from loony_dev import inotify, pipeline_log
+from loony_dev.web.log_tail import _read_tail_page
 
 logger = logging.getLogger(__name__)
 
@@ -103,21 +108,36 @@ class AsyncLogWatcher:
         """Async-iterate the backlog, then new lines appended to the file.
 
         *backlog* is the number of pre-existing lines to replay first: ``0``
-        replays none (live-only), a positive int replays the last N, and
+        replays none (live-only), a positive int replays the last N via a bounded
+        reverse-block read (proportional to N, not file size — issue #286), and
         ``None`` replays the **entire** file (used by the JSONL observe tailer,
         which needs the full history so a reconnecting client renders an
-        identical conversation, #202).
+        identical conversation, #202). A negative *backlog* is invalid and raises
+        :class:`ValueError` rather than being silently treated as live-only.
         """
+        if backlog is not None and backlog < 0:
+            raise ValueError(f"backlog must be >= 0 or None, got {backlog}")
         try:
             await self._open_when_available()
-            # Drain the existing content into a deque for the backlog; this
-            # leaves the handle at EOF so live tailing continues seamlessly. A
-            # ``None`` maxlen keeps every line (full history).
-            if backlog is None or backlog > 0:
-                maxlen = None if backlog is None else backlog
-                tail: deque[str] = deque(self._file, maxlen=maxlen)
+            if backlog is None:
+                # Full history: drain the whole file into the backlog, leaving the
+                # handle at EOF so live tailing continues seamlessly. Only the
+                # JSONL transcript tailer takes this path (it needs every line).
+                tail: deque[str] = deque(self._file)
                 for line in tail:
                     yield line.rstrip("\n")
+            elif backlog > 0:
+                # Bounded backlog: pin both the replayed window and the live-tail
+                # start to one captured EOF cursor. ``seek`` returns the new
+                # position; reading the tail bounded to ``end`` means the reverse
+                # reader never sees bytes appended after we captured it, so the
+                # backlog can't overlap the live ``_drain()`` — no line is lost or
+                # duplicated at the hand-off. The reader uses its own handle; we
+                # then restore ours to ``end`` so live tailing resumes from there.
+                end = self._file.seek(0, os.SEEK_END)
+                for line in _read_tail_page(self._path, backlog, before_offset=end)[0]:
+                    yield line
+                self._file.seek(end)
             else:
                 self._file.seek(0, os.SEEK_END)
 

@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from loony_dev import session_registry
 from loony_dev.web import create_app
 from loony_dev.web import entries
-from loony_dev.web import routes, services, streaming
+from loony_dev.web import log_tail, routes, services, streaming
 
 _HAS_PROC = sys.platform.startswith("linux") and Path("/proc/self/stat").exists()
 
@@ -1516,6 +1516,78 @@ class AsyncLogWatcherTestCase(unittest.IsolatedAsyncioTestCase):
         finally:
             await gen.aclose()
 
+    async def test_backlog_none_replays_full_history(self) -> None:
+        # The JSONL transcript tailer passes backlog=None and needs every line,
+        # so this path must still drain the whole file (not a bounded tail).
+        self.log.write_text("".join(f"line{i}\n" for i in range(50)))
+        gen = streaming.tail_lines(self.log, backlog=None, poll_interval=0.05)
+        try:
+            got = [await _anext_with_timeout(gen) for _ in range(50)]
+            self.assertEqual(got, [f"line{i}" for i in range(50)])
+        finally:
+            await gen.aclose()
+
+    async def test_negative_backlog_rejected(self) -> None:
+        # A negative backlog is invalid input and must raise rather than being
+        # silently treated as live-only (CodeRabbit #286).
+        self.log.write_text("a\n")
+        gen = streaming.tail_lines(self.log, backlog=-1, poll_interval=0.05)
+        with self.assertRaises(ValueError):
+            await _anext_with_timeout(gen)
+        await gen.aclose()
+
+    async def test_bounded_backlog_no_gap_no_duplicate(self) -> None:
+        # Regression guard for the EOF-cursor pinning (#286): a line appended
+        # after the backlog window is captured must stream exactly once, and no
+        # pre-EOF line may be replayed by the live tail.
+        self.log.write_text("".join(f"old{i}\n" for i in range(20)))
+        gen = streaming.tail_lines(self.log, backlog=3, poll_interval=0.05)
+        try:
+            backlog = [await _anext_with_timeout(gen) for _ in range(3)]
+            self.assertEqual(backlog, ["old17", "old18", "old19"])
+            with self.log.open("a") as fh:
+                fh.write("new0\nnew1\n")
+                fh.flush()
+            self.assertEqual(await _anext_with_timeout(gen), "new0")
+            self.assertEqual(await _anext_with_timeout(gen), "new1")
+        finally:
+            await gen.aclose()
+
+    async def test_bounded_backlog_does_not_read_from_offset_zero(self) -> None:
+        # The SSE backlog must use the bounded reverse reader, not a whole-file
+        # drain: on a large file no read may begin at byte 0 (mirrors the REST
+        # /tail invariant, test_read_tail_does_not_read_from_offset_zero).
+        import builtins
+
+        lines = [f"line-{i}" for i in range(100_000)]
+        self.log.write_text("\n".join(lines) + "\n")
+        self.assertLess(log_tail._TAIL_BLOCK_SIZE * 4, self.log.stat().st_size)
+
+        spies: list[_ReadOffsetSpy] = []
+        real_open = builtins.open
+
+        def spy_open(file, *args, **kwargs):
+            fh = real_open(file, *args, **kwargs)
+            # Only the binary reverse-reader handle is instrumented; the watcher's
+            # text handle (mode "r") is left alone so live tailing is unaffected.
+            if Path(file) == self.log and "b" in (args[0] if args else kwargs.get("mode", "")):
+                spy = _ReadOffsetSpy(fh)
+                spies.append(spy)
+                return spy
+            return fh
+
+        with mock.patch("builtins.open", side_effect=spy_open):
+            gen = streaming.tail_lines(self.log, backlog=3, poll_interval=0.05)
+            try:
+                got = [await _anext_with_timeout(gen) for _ in range(3)]
+            finally:
+                await gen.aclose()
+
+        self.assertEqual(got, ["line-99997", "line-99998", "line-99999"])
+        self.assertTrue(spies, "the bounded reverse reader should have opened the file")
+        self.assertIsNotNone(spies[0].min_read_offset)
+        self.assertGreater(spies[0].min_read_offset, 0)
+
     async def test_file_appears_late(self) -> None:
         gen = streaming.tail_lines(self.log, backlog=10, poll_interval=0.05)
         try:
@@ -2225,7 +2297,7 @@ class FastLogReadTestCase(unittest.TestCase):
                 return spy
             return fh
 
-        with mock.patch.object(services, "_TAIL_MAX_BYTES", services._TAIL_BLOCK_SIZE), \
+        with mock.patch.object(log_tail, "_TAIL_MAX_BYTES", log_tail._TAIL_BLOCK_SIZE), \
                 mock.patch("builtins.open", side_effect=spy_open):
             got = services._read_tail(p, 3)
 
@@ -2238,6 +2310,19 @@ class FastLogReadTestCase(unittest.TestCase):
         self.assertEqual(len(got), 1)
         self.assertGreater(len(got[0]), 0)
         self.assertLessEqual(len(got[0].encode("utf-8")), services._TAIL_BLOCK_SIZE)
+
+    def test_zero_lines_returns_empty_but_negative_raises(self) -> None:
+        # ``lines == 0`` is a valid request for no lines (empty page); a negative
+        # count is invalid input and must raise rather than silently return empty
+        # (repo convention: prefer raising over silent empty/default — CodeRabbit
+        # #290, https://github.com/LoonyBin/loony-dev/pull/290#discussion_r3493056086).
+        p = self._write("a\nb\nc\n")
+        self.assertEqual(services._read_tail(p, 0), [])
+        self.assertEqual(services._read_tail_page(p, 0, None)[0], [])
+        with self.assertRaises(ValueError):
+            services._read_tail(p, -1)
+        with self.assertRaises(ValueError):
+            services._read_tail_page(p, -1, None)
 
     def test_offset_pagination_round_trips(self) -> None:
         p = self._write("".join(f"line-{i}\n" for i in range(10)))
