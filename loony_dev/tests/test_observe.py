@@ -266,7 +266,7 @@ class LiveObserveJsonlPathTestCase(unittest.TestCase):
         # session_id becomes the transcript filename in jsonl_path_for(), so a
         # path-bearing value from a malformed connection file must be rejected
         # (→ honest None) rather than escaping projects/<slug>/.
-        for sid in ("..", ".", "../other", "/tmp/x", "a/b", "a\\b", "a\x00b"):
+        for sid in ("..", ".", "../other", "/abs/x", "a/b", "a\\b", "a\x00b"):
             self._write_conn({"cwd": "/base/acme/widgets", "session_id": sid})
             self.assertIsNone(
                 services.live_observe_jsonl_path(self.base, "acme", "widgets"),
