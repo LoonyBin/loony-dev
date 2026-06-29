@@ -165,33 +165,108 @@ class ServicesTestCase(unittest.TestCase):
     def test_list_pipeline_logs_empty_when_no_dir(self) -> None:
         self.assertEqual(services.list_pipeline_logs(self.base, "acme", "widgets"), [])
 
-    def test_pipeline_activity_parses_well_formed_and_falls_back(self) -> None:
-        _make_pipeline_log(
-            self.base, "acme", "widgets", "issue-5",
-            [
-                "2026-06-17 12:00:00,123 [INFO] loony_dev.agents.coding: implementing",
-                "2026-06-17 12:00:01,000 [INFO] loony_dev.orchestrator: Dispatching task",
-                "    File \"x.py\", line 1, in f",  # a wrapped traceback continuation
-            ],
-        )
-        events = services.pipeline_activity(self.base, "acme", "widgets", "issue-5", 100)
-        self.assertEqual(len(events), 3)
-        self.assertEqual(events[0]["level"], "INFO")
-        self.assertEqual(events[0]["logger"], "loony_dev.agents.coding")
-        self.assertEqual(events[0]["message"], "implementing")
-        self.assertEqual(events[0]["actor"], "trixy")
-        self.assertEqual(events[1]["actor"], "system")
-        # The non-matching continuation line is kept verbatim, not dropped.
-        self.assertIsNone(events[2]["ts"])
-        self.assertIn("x.py", events[2]["message"])
+    def test_pipeline_activity_tails_structured_event_log(self) -> None:
+        # #269: the feed tails the structured event store (#267), returning typed
+        # events in order — no log-regex, actor straight from the event field.
+        from loony_dev import execution_state
 
-    def test_pipeline_activity_attributes_operator(self) -> None:
-        _make_pipeline_log(
-            self.base, "acme", "widgets", "issue-5",
-            ["2026-06-17 12:00:00,123 [INFO] loony_dev.orchestrator: running operator-injected turn"],
-        )
+        for ev in (
+            execution_state.ExecutionEvent(
+                type="dispatched", what="Dispatched", actor="capo", target={},
+            ),
+            execution_state.ExecutionEvent(
+                type="turn_start", what="Turn 1", actor="trixy", target={},
+                state_tone="active",
+            ),
+        ):
+            execution_state.append_event(self.base, "acme/widgets", "issue-5", ev)
         events = services.pipeline_activity(self.base, "acme", "widgets", "issue-5", 100)
-        self.assertEqual(events[0]["actor"], "operator")
+        self.assertEqual(len(events), 2)
+        # Typed shape, oldest→newest, actor is the event's config-resolved field.
+        self.assertEqual(events[0]["type"], "dispatched")
+        self.assertEqual(events[0]["actor"], "capo")
+        self.assertEqual(events[1]["type"], "turn_start")
+        self.assertEqual(events[1]["what"], "Turn 1")
+        self.assertEqual(events[1]["state_tone"], "active")
+        self.assertEqual(events[1]["actor"], "trixy")
+        # No log-regex fields leak through.
+        self.assertNotIn("level", events[0])
+        self.assertNotIn("logger", events[0])
+        self.assertNotIn("message", events[0])
+
+    def test_pipeline_activity_empty_when_no_event_log(self) -> None:
+        # The substrate's read side never raises: a pipeline with no events yields
+        # an empty list (the old log-missing error path is gone).
+        self.assertEqual(
+            services.pipeline_activity(self.base, "acme", "widgets", "issue-404", 100),
+            [],
+        )
+
+    # ── Live-state snapshot read-model (#269) ────────────────────────────────
+
+    def _seed_snapshot(self, repo: str, key: str, **kw) -> None:
+        from loony_dev import execution_state
+
+        defaults = dict(
+            pipeline_key=key, repo=repo, stage="Implementing",
+            current_skill="implement-issue", state="running", attempt=1,
+        )
+        defaults.update(kw)
+        execution_state.write_snapshot(
+            self.base, repo, key, execution_state.LiveState(**defaults)
+        )
+
+    def test_list_live_states_surfaces_running_snapshots(self) -> None:
+        self._seed_snapshot("acme/widgets", "issue-5")
+        views = services.list_live_states(self.base)
+        self.assertEqual(len(views), 1)
+        v = views[0]
+        self.assertEqual(v.pipeline_key, "issue-5")
+        self.assertEqual(v.repo, "acme/widgets")
+        self.assertEqual(v.stage, "Implementing")
+        self.assertEqual(v.current_skill, "implement-issue")
+        self.assertEqual(v.state, "running")
+        self.assertEqual(v.attempt, 1)
+
+    def test_list_live_states_empty_when_no_logs(self) -> None:
+        self.assertEqual(services.list_live_states(self.base), [])
+
+    def test_pipeline_live_overlay_from_snapshot(self) -> None:
+        self._seed_snapshot(
+            "acme/widgets", "issue-5", stage="In Review",
+            current_skill="address-reviews", attempt=2,
+        )
+        overlay = services.pipeline_live_overlay(self.base, "acme/widgets", "issue-5")
+        self.assertIsNotNone(overlay)
+        self.assertEqual(overlay["stage"], "In Review")
+        self.assertEqual(overlay["current_skill"], "address-reviews")
+        self.assertEqual(overlay["attempt"], 2)
+        self.assertEqual(overlay["state"], "running")
+        # In Review is a human gate → needs_you derived True (execution_state).
+        self.assertTrue(overlay["needs_you"])
+        self.assertIsNone(overlay["holder"])  # no lease seeded
+
+    def test_pipeline_live_overlay_holder_from_lease(self) -> None:
+        from loony_dev import pipeline_lease
+
+        # A lease but no snapshot: overlay carries the holder, snapshot fields None.
+        self.assertTrue(
+            pipeline_lease.acquire_pipeline_lease(
+                self.base, "acme/widgets", "issue-5",
+                holder="drive", pid=os.getpid(),
+            )
+        )
+        overlay = services.pipeline_live_overlay(self.base, "acme/widgets", "issue-5")
+        self.assertIsNotNone(overlay)
+        self.assertEqual(overlay["holder"], "drive")
+        self.assertIsNone(overlay["stage"])
+        self.assertIsNone(overlay["state"])
+
+    def test_pipeline_live_overlay_none_when_idle(self) -> None:
+        # No snapshot and no lease → null overlay (UI keeps GitHub/coarse stage).
+        self.assertIsNone(
+            services.pipeline_live_overlay(self.base, "acme/widgets", "issue-5")
+        )
 
     def test_list_sessions_empty_without_files(self) -> None:
         self.assertEqual(services.list_sessions(self.base), [])
@@ -981,9 +1056,14 @@ class WebAppTestCase(unittest.TestCase):
         self.assertEqual(body["count"], 2)
 
     def test_pipeline_activity_endpoint(self) -> None:
-        _make_pipeline_log(
-            self.base, "acme", "widgets", "issue-5",
-            ["2026-06-17 12:00:00,123 [INFO] loony_dev.agents.coding: doing work"],
+        from loony_dev import execution_state
+
+        execution_state.append_event(
+            self.base, "acme/widgets", "issue-5",
+            execution_state.ExecutionEvent(
+                type="turn_start", what="doing work", actor="trixy", target={},
+                state_tone="active",
+            ),
         )
         resp = self.client.get("/api/pipelines/issue-5/activity?repo=acme/widgets")
         self.assertEqual(resp.status_code, 200)
@@ -991,10 +1071,16 @@ class WebAppTestCase(unittest.TestCase):
         self.assertEqual(body["pipeline_key"], "issue-5")
         self.assertEqual(body["count"], 1)
         self.assertEqual(body["events"][0]["actor"], "trixy")
+        self.assertEqual(body["events"][0]["type"], "turn_start")
+        self.assertEqual(body["events"][0]["what"], "doing work")
 
-    def test_pipeline_activity_unknown_404(self) -> None:
+    def test_pipeline_activity_unknown_returns_empty_200(self) -> None:
+        # #269: no event log → empty list at 200 (substrate never raises), not 404.
         resp = self.client.get("/api/pipelines/issue-404/activity?repo=acme/widgets")
-        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["events"], [])
+        self.assertEqual(body["count"], 0)
 
     def test_pipeline_activity_bad_repo_422(self) -> None:
         # Missing repo query param, no slash, empty halves, and a nested slash
@@ -1591,10 +1677,54 @@ class StateEventsEndpointTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             set(snapshot),
             {"workers", "worktrees", "sessions", "task_sessions", "stuck",
-             "pipelines", "repos"},
+             "pipelines", "repos", "live_states"},
         )
         # The snapshot mirrors the per-resource endpoints: the seeded worker shows.
         self.assertEqual([w["repo"] for w in snapshot["workers"]], ["acme/widgets"])
+
+    async def test_events_snapshot_carries_live_states(self) -> None:
+        # #269: the Fleet board reads the active snapshot set off the SSE stream.
+        from loony_dev import execution_state
+
+        execution_state.write_snapshot(
+            self.base, "acme/widgets", "issue-7",
+            execution_state.LiveState(
+                pipeline_key="issue-7", repo="acme/widgets", stage="Implementing",
+                current_skill="implement-issue", state="running", attempt=1,
+            ),
+        )
+        async with _SSEDriver(self.app, "/api/events") as drv:
+            snapshot = json.loads(await _read_first_sse_event(drv))
+        ls = snapshot["live_states"]
+        self.assertEqual(len(ls), 1)
+        self.assertEqual(ls[0]["pipeline_key"], "issue-7")
+        self.assertEqual(ls[0]["current_skill"], "implement-issue")
+        self.assertEqual(ls[0]["stage"], "Implementing")
+
+    async def test_events_snapshot_pipelines_carry_live_overlay(self) -> None:
+        # The streamed `pipelines` payload must match GET /api/pipelines: each
+        # entry carries the nested `live` overlay (parity, not a separate shape).
+        from loony_dev import execution_state
+
+        execution_state.write_snapshot(
+            self.base, "acme/widgets", "issue-3",
+            execution_state.LiveState(
+                pipeline_key="issue-3", repo="acme/widgets", stage="Implementing",
+                current_skill="implement-issue", state="running", attempt=1,
+            ),
+        )
+        pipeline = services.PipelineGitHubView(
+            pipeline_key="issue-3", repo="acme/widgets", kind="issue", number=3,
+            title="t", stage="Planning", labels=[], pr_state=None, mergeable=None,
+            updated_at=None,
+        )
+        with mock.patch.object(services, "github_state",
+                               return_value=([pipeline], [])):
+            async with _SSEDriver(self.app, "/api/events") as drv:
+                snapshot = json.loads(await _read_first_sse_event(drv))
+        entry = snapshot["pipelines"][0]
+        self.assertIn("live", entry)
+        self.assertEqual(entry["live"]["current_skill"], "implement-issue")
 
     async def test_events_snapshot_carries_task_session_pipeline_key(self) -> None:
         # The pipeline-detail view (#190) reads pipeline_key off the SSE snapshot's
@@ -2420,6 +2550,33 @@ class GitHubStateApiTestCase(unittest.TestCase):
         self.assertEqual(body[0]["pipeline_key"], "issue-3")
         self.assertEqual(body[0]["title"], "Add a thing")
         self.assertEqual(body[0]["stage"], "Planning")
+        # No snapshot seeded → null live overlay (UI keeps the GitHub stage).
+        self.assertIsNone(body[0]["live"])
+
+    def test_pipelines_endpoint_merges_live_overlay(self) -> None:
+        # #269: a seeded snapshot surfaces as the authoritative nested `live`
+        # object, distinct from the GitHub-derived top-level `stage`.
+        from loony_dev import execution_state
+
+        execution_state.write_snapshot(
+            self.base, "acme/widgets", "issue-3",
+            execution_state.LiveState(
+                pipeline_key="issue-3", repo="acme/widgets", stage="Implementing",
+                current_skill="implement-issue", state="running", attempt=1,
+            ),
+        )
+        with mock.patch.object(services, "github_state",
+                               return_value=self._fake_state()):
+            resp = self.client.get("/api/pipelines")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body[0]["stage"], "Planning")  # GitHub fallback unchanged
+        live = body[0]["live"]
+        self.assertIsNotNone(live)
+        self.assertEqual(live["stage"], "Implementing")
+        self.assertEqual(live["current_skill"], "implement-issue")
+        self.assertEqual(live["state"], "running")
+        self.assertEqual(live["attempt"], 1)
 
     def test_repos_endpoint(self) -> None:
         with mock.patch.object(services, "github_state",

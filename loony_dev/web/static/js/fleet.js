@@ -15,6 +15,12 @@
 // empty and we fall back to the filesystem-derived coarse stage / de-slugged
 // title and the deferred `—` counts. Everything derivable from workers /
 // worktrees / sessions / task_sessions / stuck stays live regardless.
+//
+// Live state (#269): `snapshot.live_states` carries the worker-written
+// execution-state snapshot per running pipeline — the AUTHORITATIVE `stage`,
+// `current_skill`, `attempt`, and `state`. For a row with a snapshot we bind to
+// it directly instead of guessing the phase from labels or faking the skill from
+// the stage; rows without one keep the GitHub/coarse fallback above.
 
 import { goRepo, icon, formatAge, stageTone } from "./dom.js";
 // Shared design-system components (static/ds/) — single source of truth (#258 / Phase 4).
@@ -43,11 +49,15 @@ const FILTER_LABEL = {
   conflict: "Conflicts",
 };
 
-// A row "needs you" when a human gate is required: the process wedged (stuck)
-// or the lifecycle parked it in `in-error`. Drives both the metric count and
-// the per-row Review button.
+// A row "needs you" when a human gate is required. The live-state snapshot
+// (#269) derives this authoritatively (state failed/crashed, or stage In
+// Review / Conflicts — see execution_state.derive_needs_you), so a row with a
+// snapshot trusts `row.needsYou`; the wedged-process (`stuck`) signal always
+// wins, and rows without a snapshot fall back to the raw `in-error` label.
 function needsYou(row) {
-  return Boolean(row.stuck) || (row.labels || []).includes("in-error");
+  if (row.stuck) return true;
+  if (row.live) return Boolean(row.needsYou);
+  return (row.labels || []).includes("in-error");
 }
 
 function matchesFilter(row, filter) {
@@ -58,20 +68,26 @@ function matchesFilter(row, filter) {
   return true; // "all"
 }
 
-// Heuristic stage → running skill label. There is no live "current skill" field
-// in the snapshot yet, so we infer the phase-appropriate command from the stage
-// — and only for rows that are actively running (else `—`). Replace with a real
-// per-pipeline skill feed when the backend surfaces one.
-const STAGE_SKILL = {
-  "Planning": "plan-issue",
-  "Implementing": "implement-issue",
-  "PR Open": "implement-issue",
-  "In Review": "address-reviews",
-  "Conflicts": "resolve-conflicts",
-};
-function skillFor(row) {
-  if (row.state !== "active") return "—";
-  return STAGE_SKILL[row.stage] || "—";
+// The board's "Skill running" cell text: the live snapshot's real
+// `current_skill`, suffixed with the retry count while a re-attempt is running
+// (#269). `—` when there's no live snapshot (the skill is unknown off-snapshot).
+// Composed as app DATA into the existing skill column — the FleetRow design
+// component (SoT) carries no separate attempt slot.
+function skillLabel(row) {
+  if (!row.currentSkill) return "—";
+  return row.attempt && row.attempt > 1
+    ? `${row.currentSkill} · try ${row.attempt}`
+    : row.currentSkill;
+}
+
+// Map a live-state snapshot's `state` to the row's display state (#269):
+// running → active, failed/crashed → blocked, anything else (idle) → idle. The
+// wedged-process (`stuck`) signal is applied with higher precedence by the
+// caller, so it isn't handled here.
+function liveRowState(state) {
+  if (state === "running") return "active";
+  if (state === "failed" || state === "crashed") return "blocked";
+  return "idle";
 }
 
 // The six stat metrics, in document (3-col × 2-row) order. The four with a
@@ -136,6 +152,7 @@ export function buildRows(snapshot) {
   const stuck = snapshot.stuck || [];
   const taskSessions = snapshot.task_sessions || [];
   const pipelines = snapshot.pipelines || [];
+  const liveStates = snapshot.live_states || [];
 
   const rows = new Map();
   const ensure = (p, repo) => {
@@ -145,6 +162,10 @@ export function buildRows(snapshot) {
         key: p.key, kind: p.kind, number: p.number, repo: repo || null,
         title: null, stage: "Inbox", ghStage: null, labels: [],
         state: "idle", running: false, stuck: false, lastUpdate: null,
+        // Live-state overlay (#269): null until a snapshot joins in. When set,
+        // it is authoritative for stage / skill / attempt / state / needsYou.
+        live: false, currentSkill: null, attempt: null, needsYou: false,
+        linkedPr: null,
       };
       rows.set(p.key, r);
     }
@@ -190,15 +211,41 @@ export function buildRows(snapshot) {
     if (Array.isArray(g.labels)) r.labels = g.labels;
     r.lastUpdate = newer(r.lastUpdate, g.updated_at);
   }
+  // Live-state snapshot (#269): the real per-pipeline stage / current_skill /
+  // attempt / state the worker writes, replacing the label-guess + faked skill.
+  // It also SEEDS a row for a running pipeline GitHub state hasn't surfaced yet.
+  for (const ls of liveStates) {
+    const p = parseKey(ls.pipeline_key);
+    if (!p) continue;
+    const r = ensure(p, ls.repo);
+    r.live = true;
+    r.liveStage = ls.stage || null;
+    r.currentSkill = ls.current_skill || null;
+    r.attempt = ls.attempt != null ? ls.attempt : null;
+    r.needsYou = Boolean(ls.needs_you);
+    r.liveState = ls.state || null;
+    if (ls.linked_pr != null) r.linkedPr = ls.linked_pr;
+    r.lastUpdate = newer(r.lastUpdate, ls.updated_at);
+  }
 
   for (const r of rows.values()) {
-    // Prefer the real GitHub stage; fall back to the coarse filesystem guess
-    // when GitHub state is absent (disabled / fetch failed / pipeline unseen):
+    // Coarse filesystem guess, used only when neither a live snapshot nor a
+    // GitHub stage is available (disabled / fetch failed / pipeline unseen):
     // PRs read as "PR Open", an issue with a live task session "Implementing",
     // everything else "Inbox".
     const coarse = r.kind === "pr" ? "PR Open" : r.running ? "Implementing" : "Inbox";
-    r.stage = r.ghStage || coarse;
-    r.state = r.stuck ? "blocked" : r.running ? "active" : "idle";
+    if (r.live) {
+      // The snapshot is authoritative for a live pipeline: real stage, real
+      // skill, real state — never the label guess. `stuck` still wins on state.
+      r.stage = r.liveStage || r.ghStage || coarse;
+      r.state = r.stuck ? "blocked" : liveRowState(r.liveState);
+    } else {
+      // No snapshot: fall back to the GitHub stage / coarse guess and the
+      // session-derived running/blocked state, exactly as before (#219).
+      r.stage = r.ghStage || coarse;
+      r.state = r.stuck ? "blocked" : r.running ? "active" : "idle";
+      r.currentSkill = null;
+    }
     if (!r.title) r.title = r.key;
   }
 
@@ -415,7 +462,7 @@ function boardRow(row) {
       title: row.title,
       repo: row.repo,
       stage: row.stage,
-      skill: skillFor(row),
+      skill: skillLabel(row),   // real per-pipeline skill + retry count (#269)
       upd: relTime(row.lastUpdate),
     },
     actions: action,
@@ -524,16 +571,16 @@ function renderTriage(rows) {
 // it's omitted there.
 function kanbanCard(row) {
   // Compose the shared KanbanCard factory (SoT). Identity is app DATA — the
-  // single `trixy` bot (soft avatar), not a sample worker number. PR# is only
-  // known for `pr`-kind rows (the number IS the PR); issue rows know a PR exists
-  // but not its number, so it's omitted there.
+  // single `trixy` bot (soft avatar), not a sample worker number. PR# is the
+  // pipeline number for a `pr`-kind row; for an issue row it comes from the
+  // live snapshot's `linked_pr` (#269) when known, else omitted.
   const card = KanbanCard({
     worker: {
       issue: row.number,
       title: row.title,
       repo: row.repo,
       needs: needsYou(row),
-      pr: row.kind === "pr" ? row.number : null,
+      pr: row.kind === "pr" ? row.number : (row.linkedPr || null),
       avatar: { tone: "soft", glyph: "TX" },
     },
     class: "fleet-card",   // app interaction styling (hover / focus ring)

@@ -109,9 +109,10 @@ export function stageTone(stage) {
   return STAGE_TONE[stage] || "neutral";
 }
 
-// Actor role → avatar colour tone (visual). worker(trixy/bot)→soft, operator→
-// green, capo→accent, system→neutral. The role/login is never a visual class.
-const AVATAR_TONE = { trixy: "soft", bot: "soft", capo: "accent", operator: "green", system: "neutral" };
+// Actor role → avatar colour tone (visual). worker(trixy/bot)→soft, operator/
+// human→green, capo→accent, system→neutral. The role/login is never a visual
+// class. `human` is the #269 event-log identity for operator-injected turns.
+const AVATAR_TONE = { trixy: "soft", bot: "soft", capo: "accent", operator: "green", human: "green", system: "neutral" };
 export function avatarTone(actor) {
   return AVATAR_TONE[actor] || "soft";
 }
