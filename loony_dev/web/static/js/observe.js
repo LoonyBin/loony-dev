@@ -192,21 +192,51 @@ export function streamObserve(taskKey, conv, onStatus) {
 // URL differs. Returns the same `{ close }` controller as streamObserve.
 export function streamObserveAt(url, conv, onStatus) {
   const status = onStatus || (() => {});
+  // `seen`/`toolCards`/`conv` persist across reconnects: the backend replays the
+  // full backlog from zero on every (re)connect, and applyEvent dedupes by stable
+  // `id`, so a dropped socket recovers into the identical DOM without clearing it.
   const stream = { ws: null, conv, seen: new Set(), toolCards: new Map() };
   if (conv) conv.innerHTML = "";
-  const ws = new WebSocket(url);
-  stream.ws = ws;
-  status("connecting…", null);
-  ws.onopen = () => status("live", "live");
-  ws.onmessage = (e) => {
-    let ev;
-    try { ev = JSON.parse(e.data); } catch (_) { return; }
-    applyEvent(stream, ev);
-  };
-  ws.onclose = () => status("disconnected", "off");
-  ws.onerror = () => status("connection error", "off");
+
+  // Reconnect with exponential backoff so the Live screen's primary conversation
+  // pane (#282) is as resilient to a transient drop / dashboard restart as the
+  // sidebar's auto-reconnecting EventSource feed — instead of going permanently
+  // dead on the first close. `closed` guards against a reconnect racing an
+  // explicit close(); `retryTimer` is cleared on teardown.
+  let closed = false;
+  let retryTimer = null;
+  let backoff = 1000;
+  const MAX_BACKOFF = 15000;
+
+  function connect() {
+    if (closed) return;
+    const ws = new WebSocket(url);
+    stream.ws = ws;
+    status("connecting…", null);
+    ws.onopen = () => {
+      backoff = 1000; // a successful connection resets the backoff
+      status("live", "live");
+    };
+    ws.onmessage = (e) => {
+      let ev;
+      try { ev = JSON.parse(e.data); } catch (_) { return; }
+      applyEvent(stream, ev);
+    };
+    ws.onerror = () => status("connection error", "off");
+    ws.onclose = () => {
+      stream.ws = null;
+      if (closed) return;
+      status("reconnecting…", "off");
+      retryTimer = setTimeout(connect, backoff);
+      backoff = Math.min(backoff * 2, MAX_BACKOFF);
+    };
+  }
+
+  connect();
   return {
     close() {
+      closed = true;
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
       if (stream.ws) {
         try { stream.ws.close(); } catch (_) { /* already closing */ }
         stream.ws = null;
