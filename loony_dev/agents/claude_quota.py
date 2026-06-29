@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from loony_dev import config
+from loony_dev import config, pipeline_log
 from loony_dev.agents.context_file import (
     CommandNotInstalledError,
     write_context_file,
@@ -82,6 +82,14 @@ class ClaudeQuotaMixin:
     # race-free across threads.
     _quota_lock = threading.Lock()
     repo: str = ""  # Set by subclass __init__; used for session ID generation.
+    # The resolved workspace base dir, threaded down from the orchestrator
+    # (``Orchestrator.__init__``) so the turn-boundary heartbeat writes the
+    # execution-state substrate (#267) under the *same* tree the orchestrator
+    # does. ``None`` for bare/test agents — the heartbeat is then a no-op (the
+    # substrate is strictly best-effort). Never derived here from
+    # ``config.settings.base_dir`` (that property raises ``KeyError`` when unset,
+    # which would diverge the agent's heartbeat from the orchestrator's events).
+    base_dir: Path | None = None
 
     # ------------------------------------------------------------------
     # Persistent session registry
@@ -248,6 +256,72 @@ class ClaudeQuotaMixin:
             )
 
     # ------------------------------------------------------------------
+    # Execution-state substrate — turn-boundary heartbeat (#267)
+    # ------------------------------------------------------------------
+    # The progress-driven write path: a real turn flowing through
+    # ``_run_claude_cli`` stamps a ``turn_*`` event and bumps ``last_heartbeat``
+    # in the pipeline's live-state snapshot. The pipeline key is read from the
+    # ``pipeline_log.current_pipeline`` contextvar (already bound for the whole
+    # ``_run_task`` body), ``repo`` from ``self.repo`` (a string), and ``base_dir``
+    # from the value the orchestrator threaded down — so the agent never touches
+    # the ``config.settings.base_dir`` property (which raises when unset) and its
+    # heartbeat always lands beside the orchestrator's events. Strictly
+    # best-effort: a substrate failure must never break a turn.
+
+    def _execution_coords(self) -> tuple[Path, str, str] | None:
+        """Return ``(base_dir, repo, pipeline_key)`` for substrate writes, or ``None``.
+
+        ``None`` (no-op) whenever any coordinate is missing: no threaded
+        ``base_dir`` (a bare/test agent), no repo, or no active pipeline.
+        """
+        base = self.base_dir
+        repo = self.repo or ""
+        pkey = pipeline_log.current_pipeline.get()
+        if base is None or not repo or pkey is None:
+            return None
+        return base, repo, pkey
+
+    def _emit_turn_event(self, event_type: str, state_tone: str) -> None:
+        """Append a turn-boundary event to the active pipeline's log (best-effort)."""
+        coords = self._execution_coords()
+        if coords is None:
+            return
+        base, repo, pkey = coords
+        try:
+            from loony_dev import execution_state
+
+            what = {
+                "turn_start": "Claude turn started",
+                "turn_complete": "Claude turn complete",
+                "error": "Claude turn failed",
+            }.get(event_type, event_type)
+            execution_state.append_event(
+                base, repo, pkey,
+                execution_state.ExecutionEvent(
+                    type=event_type,
+                    what=what,
+                    actor=execution_state.resolve_actor(execution_state.ACTOR_BOT),
+                    target=execution_state.target_for(repo, pkey),
+                    state_tone=state_tone,
+                ),
+            )
+        except Exception:  # pragma: no cover - substrate is best-effort
+            logger.debug("execution_state turn event failed", exc_info=True)
+
+    def _bump_heartbeat(self) -> None:
+        """Bump the active pipeline's snapshot ``last_heartbeat`` (best-effort)."""
+        coords = self._execution_coords()
+        if coords is None:
+            return
+        base, repo, pkey = coords
+        try:
+            from loony_dev import execution_state
+
+            execution_state._bump_snapshot(base, repo, pkey)
+        except Exception:  # pragma: no cover - substrate is best-effort
+            logger.debug("execution_state heartbeat failed", exc_info=True)
+
+    # ------------------------------------------------------------------
     # Shared Claude CLI runner with session continuity
     # ------------------------------------------------------------------
 
@@ -353,14 +427,48 @@ class ClaudeQuotaMixin:
     ) -> tuple[str, str, int]:
         """Run the Claude CLI with optional session continuity.
 
-        When *session_id* is provided, attempts ``--resume`` first to
-        continue an existing session.  If that fails because no matching
-        session is found, retries with ``--session-id`` to create a new
-        session with the given UUID.
+        One call == one logical turn (the ``--resume`` → ``--session-id`` create
+        retry is part of the same turn). This is the single chokepoint every real
+        agent turn (planning + coding) flows through, so it is where the #267
+        execution-state substrate records turn boundaries: ``turn_start`` before,
+        ``turn_complete`` + a **progress-driven heartbeat** after a successful
+        return, ``error`` on any non-zero rc (quota / timeout 124 / failure). The
+        heartbeat advances only on real turn progress — a wedged turn stops
+        heart-beating, which is exactly the reliability signal #268 needs.
+        """
+        self._emit_turn_event("turn_start", "active")
+        try:
+            stdout, stderr, rc = self._run_claude_cli_inner(
+                prompt, cwd=cwd, session_id=session_id, timeout=timeout,
+            )
+        except BaseException:
+            self._emit_turn_event("error", "blocked")
+            raise
+        if rc == 0:
+            self._emit_turn_event("turn_complete", "active")
+            self._bump_heartbeat()
+        else:
+            self._emit_turn_event("error", "blocked")
+        return stdout, stderr, rc
 
-        *timeout* (seconds) bounds each invocation; on expiry the CLI process
-        group is killed and the call returns rc ``124`` (a timeout is not a
-        "session not found", so it is returned as-is without the create retry).
+    def _run_claude_cli_inner(
+        self,
+        prompt: str,
+        *,
+        cwd: Path,
+        session_id: str | None = None,
+        timeout: float | None = None,
+    ) -> tuple[str, str, int]:
+        """The raw ``claude -p`` runner (``--resume`` → ``--session-id`` retry).
+
+        Split from :meth:`_run_claude_cli` so the turn-boundary instrumentation
+        wraps exactly one logical turn without re-emitting on the internal create
+        retry. When *session_id* is provided, attempts ``--resume`` first; if that
+        fails because no matching session is found, retries with ``--session-id``
+        to create a new session with the given UUID. *timeout* (seconds) bounds
+        each invocation; on expiry the CLI process group is killed and the call
+        returns rc ``124`` (a timeout is not a "session not found", so it is
+        returned as-is without the create retry).
         """
         if session_id:
             stdout, stderr, rc = self._invoke_claude(
