@@ -501,22 +501,28 @@ class WebAppTestCase(unittest.TestCase):
 
     def test_index_live_has_greyed_steer_bar_and_diagnostics(self) -> None:
         # The Live screen (#224): a disabled chat + Send steer bar below the
-        # session body, and the worktrees/stuck/log blocks collapsed into a
-        # <details> Diagnostics section (their IDs preserved for the JS).
+        # session body, and the worktrees/stuck blocks collapsed into a
+        # <details> Diagnostics section (their IDs preserved for the JS). The
+        # worker log moved up into the session card as a transcript (#259).
         body = self.client.get("/").text
         # Greyed steer bar (#258 / Phase 4): now built by the shared ChatComposer
         # factory (disabled) in repoDetail.renderSteer(), so the static shell only
         # carries the host element it renders into.
         self.assertIn('id="repo-steer"', body)
-        # Diagnostics <details> wraps the preserved worktrees / stuck / log IDs.
+        # Diagnostics <details> wraps the preserved worktrees / stuck IDs.
         self.assertIn('class="diagnostics-section"', body)
         self.assertIn("<summary>Diagnostics</summary>", body)
         for preserved in ('id="repo-worktrees"', 'id="repo-stuck-section"',
                           'id="repo-stuck"', 'id="repo-log"', 'id="repo-log-title"'):
             self.assertIn(preserved, body)
-        # The Diagnostics wrapper precedes those blocks (it encloses them).
+        # The Diagnostics wrapper precedes (encloses) the worktrees / stuck blocks.
         self.assertLess(body.index('class="diagnostics-section"'), body.index('id="repo-worktrees"'))
-        self.assertLess(body.index('class="diagnostics-section"'), body.index('id="repo-log"'))
+        self.assertLess(body.index('class="diagnostics-section"'), body.index('id="repo-stuck-section"'))
+        # The transcript (#259) lives in the live-session card, ABOVE Diagnostics —
+        # both its title and its host moved up out of the Diagnostics block.
+        self.assertIn('class="live-transcript"', body)
+        self.assertLess(body.index('id="repo-log"'), body.index('class="diagnostics-section"'))
+        self.assertLess(body.index('id="repo-log-title"'), body.index('class="diagnostics-section"'))
 
     def test_index_wires_pipeline_view(self) -> None:
         # The Issue ▸ PR detail view (#190): the shell must expose the section,
