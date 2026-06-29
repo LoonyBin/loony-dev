@@ -63,6 +63,15 @@ def hook_cmd(args: tuple[str, ...]) -> None:
          "git worktree; GitHub label state prevents two workers from taking the same item.",
 )
 @click.option("--work-dir", default=".", type=click.Path(exists=True), help="Working directory for the agent")
+@click.option(
+    "--base-dir", default=None, type=click.Path(), metavar="PATH",
+    help="Base directory the supervisor and web dashboard share for logs and the "
+         "session registry (<base-dir>/.logs/<owner>/<repo>/...). The supervisor "
+         "threads its own --base-dir down to each worker so every worker-written "
+         "artifact (sessions, pipeline logs, leases, execution-state) lands where "
+         "the web reads it. When unset (a bare standalone worker) it falls back to "
+         "the checkout root, preserving today's behaviour.",
+)
 @click.option("--bot-name", default=None, help="Bot username for watermark detection (default: detected from gh auth)")
 @click.option(
     "--verbose", "-v", is_flag=True,
@@ -146,7 +155,15 @@ def worker(**_) -> None:
     git = GitRepo(work_dir=work_path, default_branch=default_branch)
     agents = [NullAgent(), CodingAgent(repo=repo_name), PlanningAgent(repo=repo_name)]
 
-    orchestrator = Orchestrator(repo=repo, git=git, agents=agents)
+    # When the supervisor threads down its --base-dir, resolve it here so every
+    # worker-written artifact (sessions, pipeline logs, leases, execution-state)
+    # lands under the *same* tree the web dashboard reads (#285). Unset means a
+    # bare standalone worker: leave base_dir None so Orchestrator keeps its
+    # git.work_dir fallback (unchanged behaviour).
+    configured_base = config.settings.get("base_dir")
+    base_dir = Path(configured_base).resolve() if configured_base else None
+
+    orchestrator = Orchestrator(repo=repo, git=git, agents=agents, base_dir=base_dir)
 
     click.echo(
         f"Starting orchestrator for {repo_name} (polling every {config.settings.interval}s, "

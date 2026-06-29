@@ -15,8 +15,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from unittest.mock import patch
+
 from fastapi.testclient import TestClient
 
+from loony_dev.agents.base import Agent
+from loony_dev.agents.claude_quota import ClaudeQuotaMixin
 from loony_dev import session_registry as sr
 from loony_dev.session import jsonl_path_for
 from loony_dev.web import create_app, services
@@ -271,6 +275,74 @@ class ObserveWebSocketTestCase(unittest.TestCase):
             with self.client.websocket_connect("/api/sessions/ghost/observe") as ws:
                 ws.receive_json()
         self.assertEqual(ctx.exception.code, 4404)
+
+
+class _DummyObserveAgent(ClaudeQuotaMixin, Agent):
+    """Concrete mixin agent for exercising the observe-registration helpers."""
+
+    name = "dummy_observe"
+
+    def _can_handle_task(self, task):  # noqa: ANN001
+        return True
+
+    def execute(self, task):  # noqa: ANN001
+        raise NotImplementedError
+
+
+class ObserveRegistrationBaseDirTestCase(unittest.TestCase):
+    """The agent registers observe sessions under its threaded base_dir (#285).
+
+    Acceptance regression: registration must land under the *same* base-dir the
+    web reads, even when ``config.settings`` carries no ``base_dir`` (the
+    supervisor runs the worker spawn without a ``[worker] base_dir`` key). The
+    pre-#285 code read ``config.settings.base_dir`` — which raises when unset —
+    so this would have silently dropped the entry.
+    """
+
+    def setUp(self) -> None:
+        self.base = Path(_tmpdir())
+        self.addCleanup(lambda: shutil.rmtree(self.base, ignore_errors=True))
+
+    def _task(self, worktree_key: str):
+        task = mock.MagicMock()
+        task.worktree_key = worktree_key
+        return task
+
+    def test_registration_lands_under_threaded_base_dir(self) -> None:
+        from loony_dev import config
+        from loony_dev.config._settings import Settings
+
+        agent = _DummyObserveAgent()
+        agent.repo = "acme/widgets"
+        agent.base_dir = self.base  # threaded by the orchestrator
+        work_dir = self.base / "acme" / "widgets" / ".worktrees" / "issue-9"
+
+        # config.settings has NO base_dir — the property would raise if touched.
+        with patch.object(config, "settings", Settings({})):
+            agent._register_observe_session(
+                self._task("issue-9"), work_dir, session_id="sid-9",
+            )
+
+        view = next(v for v in services.list_task_sessions(self.base)
+                    if v.task_key == "issue-9")
+        self.assertTrue(view.observable)
+        self.assertEqual(view.cwd, str(work_dir))
+
+    def test_no_threaded_base_dir_is_silent_noop(self) -> None:
+        from loony_dev import config
+        from loony_dev.config._settings import Settings
+
+        agent = _DummyObserveAgent()
+        agent.repo = "acme/widgets"
+        agent.base_dir = None  # a bare/test agent
+
+        with patch.object(config, "settings", Settings({})):
+            # Must not raise even though config.settings.base_dir is unavailable.
+            agent._register_observe_session(
+                self._task("issue-9"), self.base / "wt", session_id="sid-9",
+            )
+
+        self.assertEqual(list(services.list_task_sessions(self.base)), [])
 
 
 if __name__ == "__main__":

@@ -681,5 +681,44 @@ class TestPipelineLogWiring(unittest.TestCase):
         self.assertFalse(pipelines_dir.exists())
 
 
+class TestBaseDirThreading(unittest.TestCase):
+    """An explicit base_dir wins over the git.work_dir fallback and reaches agents (#285)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        # Distinct trees: the checkout (git.work_dir) vs. the supervisor base_dir.
+        self.checkout = self.tmp / "checkout"
+        self.checkout.mkdir()
+        self.base = self.tmp / "base"
+        self.base.mkdir()
+
+    def test_explicit_base_dir_threaded_to_agents(self) -> None:
+        git = _make_git(self.checkout)
+        agent = MagicMock()
+        orch = Orchestrator(
+            repo=_make_repo(), git=git, agents=[agent], interval=60, base_dir=self.base,
+        )
+        # The supervisor-threaded base_dir wins over the checkout fallback...
+        self.assertEqual(orch.base_dir, self.base)
+        # ...and is propagated to every agent for the observe registry / heartbeat.
+        self.assertEqual(agent.base_dir, self.base)
+
+    def test_falls_back_to_checkout_when_base_dir_unset(self) -> None:
+        from loony_dev import config
+        from loony_dev.config._settings import Settings
+
+        git = _make_git(self.checkout)
+        agent = MagicMock()
+        # No configured base_dir (a bare standalone worker): keep today's behaviour.
+        with patch.object(config, "settings", Settings({})):
+            orch = Orchestrator(
+                repo=_make_repo(), git=git, agents=[agent], interval=60,
+            )
+        self.assertEqual(orch.base_dir, self.checkout)
+        self.assertEqual(agent.base_dir, self.checkout)
+
+
 if __name__ == "__main__":
     unittest.main()

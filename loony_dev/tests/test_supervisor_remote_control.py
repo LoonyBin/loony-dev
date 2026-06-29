@@ -129,6 +129,51 @@ class LaunchRemoteControlTestCase(unittest.TestCase):
         self.assertEqual(second["started_at"], "2026-06-06T00:00:00+00:00")
 
 
+class LaunchWorkerTestCase(unittest.TestCase):
+    """The supervisor threads its --base-dir down to each worker (#285)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.work_dir = self.base / "LoonyBin" / "loony-dev"
+        self.log_file = self.base / ".logs" / "worker.log"
+        self.pid_file = self.base / ".logs" / "worker.pid"
+
+    def _launch(self) -> _FakeContext:
+        ctx = _FakeContext(_FakeProcess)
+        with mock.patch.object(supervisor.multiprocessing, "get_context", return_value=ctx), \
+                mock.patch.object(supervisor.config, "_load_config", return_value={}):
+            supervisor.launch_worker(
+                repo="LoonyBin/loony-dev",
+                work_dir=self.work_dir,
+                log_file=self.log_file,
+                pid_file=self.pid_file,
+                base_dir=self.base,
+            )
+        return ctx
+
+    def test_threads_base_dir_into_worker_command(self) -> None:
+        ctx = self._launch()
+        proc = ctx.created[0]
+        self.assertIs(proc.target, supervisor._run_worker_process)
+        _log_file, cmd_args = proc.args
+        # The worker must resolve the same base-dir as the supervisor/web so its
+        # session registry + pipeline logs land where the dashboard reads them.
+        self.assertIn("--base-dir", cmd_args)
+        idx = cmd_args.index("--base-dir")
+        self.assertEqual(cmd_args[idx + 1], str(self.base))
+        self.assertEqual(
+            cmd_args[:6],
+            ["worker", "--repo", "LoonyBin/loony-dev", "--work-dir", str(self.work_dir), "--base-dir"],
+        )
+        self.assertTrue(proc.started)
+
+    def test_writes_pid_file(self) -> None:
+        self._launch()
+        self.assertEqual(self.pid_file.read_text(), "4321")
+
+
 class LaunchWebTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
