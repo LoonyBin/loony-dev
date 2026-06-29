@@ -2311,6 +2311,19 @@ class FastLogReadTestCase(unittest.TestCase):
         self.assertGreater(len(got[0]), 0)
         self.assertLessEqual(len(got[0].encode("utf-8")), services._TAIL_BLOCK_SIZE)
 
+    def test_zero_lines_returns_empty_but_negative_raises(self) -> None:
+        # ``lines == 0`` is a valid request for no lines (empty page); a negative
+        # count is invalid input and must raise rather than silently return empty
+        # (repo convention: prefer raising over silent empty/default — CodeRabbit
+        # #290, https://github.com/LoonyBin/loony-dev/pull/290#discussion_r3493056086).
+        p = self._write("a\nb\nc\n")
+        self.assertEqual(services._read_tail(p, 0), [])
+        self.assertEqual(services._read_tail_page(p, 0, None)[0], [])
+        with self.assertRaises(ValueError):
+            services._read_tail(p, -1)
+        with self.assertRaises(ValueError):
+            services._read_tail_page(p, -1, None)
+
     def test_offset_pagination_round_trips(self) -> None:
         p = self._write("".join(f"line-{i}\n" for i in range(10)))
         page1, next1 = services._read_tail_page(p, 3, None)

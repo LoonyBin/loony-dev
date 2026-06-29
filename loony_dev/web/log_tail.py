@@ -42,13 +42,16 @@ def _read_tail_page(
     passes back as ``before_offset`` to page older lines — or ``None`` when the
     start of file was reached (no older lines remain). Decodes UTF-8 with
     ``errors="replace"`` and strips trailing newlines, matching the previous
-    ``deque(fh)`` behaviour. Raises ``FileNotFoundError`` like ``open``.
+    ``deque(fh)`` behaviour. Raises ``ValueError`` for a negative line count and
+    ``FileNotFoundError`` like ``open``.
     """
+    if lines < 0:
+        raise ValueError(f"lines must be >= 0, got {lines}")
     with open(path, "rb") as fh:
         fh.seek(0, os.SEEK_END)
         size = fh.tell()
         end = size if before_offset is None else max(0, min(before_offset, size))
-        if lines <= 0 or end == 0:
+        if lines == 0 or end == 0:
             return [], (end if end > 0 else None)
 
         pos = end
