@@ -274,33 +274,49 @@ function renderStepper(staging) {
   host.appendChild(ol);
 }
 
-// Map a log level to an .sdot tone for the timeline dot.
-function levelTone(level) {
-  const l = String(level || "").toUpperCase();
-  if (l === "ERROR" || l === "CRITICAL") return "blocked";
-  if (l === "WARNING") return "review";
-  return "active"; // INFO / DEBUG / neutral
+// Map a structured event's `state_tone` (#269: active / review / blocked / none)
+// to an .sdot tone for the timeline dot. `none` (the default for most events)
+// keeps the neutral accent dot, matching the pre-#269 INFO styling.
+function toneFor(stateTone) {
+  const t = String(stateTone || "").toLowerCase();
+  if (t === "blocked") return "blocked";
+  if (t === "review") return "review";
+  return "active"; // active / none / unknown
 }
 
-// Best-effort skill chip from the emitting logger (e.g. agents.coding →
-// implement, agents.planning → plan). Omitted (null) when not derivable.
-function skillFor(logger) {
-  const l = String(logger || "").toLowerCase();
-  if (l.includes("agents.coding")) return "implement";
-  if (l.includes("agents.planning")) return "plan";
-  if (l.includes("coderabbit")) return "review";
-  return null;
+// Short chip label from a structured event `type` (#269 closed vocabulary), or
+// null to omit the chip. Events carry no per-event skill, so the chip now
+// categorises the event rather than naming a command.
+const TYPE_CHIP = {
+  dispatched: "dispatch",
+  phase_enter: "phase",
+  turn_start: "turn",
+  turn_complete: "turn",
+  error: "error",
+  terminal: "done",
+};
+function chipFor(type) {
+  return TYPE_CHIP[String(type || "")] || null;
 }
 
-// Two-letter avatar glyph for an activity actor role.
+// Two-letter avatar glyph for an activity actor. The event log's `actor` is a
+// config-resolved identity (#269): the bot account (e.g. trixy), `capo`,
+// `human`, or `system`. `operator` is kept for the snapshot-fallback rows. A
+// non-default bot login derives its own initials rather than assuming `trixy`.
 function actorGlyph(actor) {
-  if (actor === "operator") return "OP";
-  if (actor === "system") return "SY";
-  return "TX"; // trixy (the bot account)
+  const a = String(actor || "").toLowerCase();
+  if (a === "human" || a === "operator") return "OP";
+  if (a === "system") return "SY";
+  if (a === "capo") return "CA";
+  if (a === "trixy" || a === "bot") return "TX";
+  const initials = String(actor || "bot").replace(/[^a-z0-9]/gi, "").slice(0, 2);
+  return initials ? initials.toUpperCase() : "BT";
 }
 
-// Parse a pipeline-log timestamp ("2026-06-17 12:00:00,123") into a relative age
-// in seconds, or null when unparseable.
+// Parse an event timestamp into a relative age in seconds, or null when
+// unparseable. The #269 event log stamps ISO-8601 UTC (e.g.
+// "2026-06-29T12:00:00+00:00"), which Date.parse handles directly; the legacy
+// "2026-06-17 12:00:00,123" log format is still tolerated by normalising it.
 function tsAgeSeconds(ts) {
   if (!ts) return null;
   const t = Date.parse(String(ts).replace(",", ".").replace(" ", "T"));
@@ -308,10 +324,10 @@ function tsAgeSeconds(ts) {
   return Math.max(0, (Date.now() - t) / 1000);
 }
 
-// Fetch the structured activity feed (#220) and render it, falling back to the
-// snapshot-derived rows when the feed is empty or unavailable (404 — no pipeline
-// log yet, common for GitHub-only pipelines). Token-guarded so a slow response
-// for a pipeline we've navigated away from is dropped.
+// Fetch the structured event-log activity feed (#269) and render it, falling
+// back to the snapshot-derived rows when the feed is empty (no events yet — the
+// endpoint returns an empty list, not 404) or the fetch errors. Token-guarded so
+// a slow response for a pipeline we've navigated away from is dropped.
 async function loadTimeline(repo, taskKey, row, stuckEntries) {
   const host = document.getElementById("pipeline-timeline");
   if (!host) return;
@@ -335,19 +351,20 @@ async function loadTimeline(repo, taskKey, row, stuckEntries) {
   renderTimeline(host, events, row, stuckEntries);
 }
 
-// Pure renderer: the GitHub/pipeline-log activity feed (tone dot + actor avatar +
-// message + skill chip + relative time) when present, else the snapshot-derived
-// fallback rows (session started / status / stuck).
+// Pure renderer: the structured event-log activity feed (tone dot + actor avatar
+// + `what` text + type chip + relative time) when present, else the
+// snapshot-derived fallback rows (session started / status / stuck).
 function renderTimeline(host, events, row, stuckEntries) {
   host.innerHTML = "";
   const rows = [];
   if (Array.isArray(events) && events.length) {
     for (const ev of events) {
+      // Structured event shape (#269): {ts, actor, type, what, target, state_tone}.
       rows.push({
-        tone: levelTone(ev.level),
+        tone: toneFor(ev.state_tone),
         actor: ev.actor || "system",
-        text: ev.message || "",
-        skill: skillFor(ev.logger),
+        text: ev.what || "",
+        skill: chipFor(ev.type),
         age: tsAgeSeconds(ev.ts),
       });
     }

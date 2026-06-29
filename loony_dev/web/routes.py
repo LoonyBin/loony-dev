@@ -164,9 +164,34 @@ def create_api_router(
         """List per-task worker sessions the dashboard can attach to / steer."""
         return [asdict(s) for s in services.list_task_sessions(base_dir)]
 
+    def _pipelines_payload(pipelines) -> list[dict]:
+        """Serialise GitHub pipelines, merging each one's live-state overlay (#269).
+
+        The single source of the pipeline payload shape: the ``/api/pipelines``
+        GET and the ``/api/events`` SSE snapshot both build their ``pipelines``
+        list through here, so the polling and streamed shapes never drift (the
+        ``_state_snapshot`` parity contract). Each entry is the GitHub-derived
+        dict plus a nested ``live`` overlay (or ``null`` — see :func:`get_pipelines`).
+        """
+        out = []
+        for p in pipelines:
+            d = asdict(p)
+            d["live"] = services.pipeline_live_overlay(base_dir, p.repo, p.pipeline_key)
+            out.append(d)
+        return out
+
     @router.get("/pipelines")
     def get_pipelines() -> list[dict]:
-        """GitHub-derived per-pipeline state: title, label/PR stage, labels (#219).
+        """Per-pipeline state: GitHub facets + the live-state overlay (#219/#269).
+
+        Each entry carries the GitHub-derived ``title`` / label-or-PR ``stage`` /
+        ``labels`` plus a nested ``live`` object — the authoritative
+        ``stage`` / ``current_skill`` / ``attempt`` / ``state`` / ``needs_you`` /
+        ``live`` / ``updated_at`` from the execution-state snapshot (#267) and the
+        drive-lease ``holder`` (#199). ``live`` is ``null`` for an idle,
+        never-dispatched pipeline, so the UI falls back to the GitHub/coarse stage.
+        The ``live`` object is also the #218 cockpit DAG's per-node live-overlay
+        source (its dependency *edges* come from GitHub sub-issue links, not here).
 
         Distinct from ``POST /pipelines/{pipeline_key}/interrogate``. Returns an
         empty list when GitHub state is disabled or every fetch failed.
@@ -176,7 +201,7 @@ def create_api_router(
             enabled=github_state_enabled,
             refresh_seconds=github_refresh_seconds,
         )
-        return [asdict(p) for p in pipelines]
+        return _pipelines_payload(pipelines)
 
     @router.get("/repos")
     def get_repos() -> list[dict]:
@@ -373,8 +398,18 @@ def create_api_router(
                     activity_sample_seconds=activity_sample_seconds,
                 )
             ],
-            "pipelines": [asdict(p) for p in gh_pipelines],
+            # Built through the same helper as ``GET /api/pipelines`` so the
+            # streamed and polled pipeline payloads (incl. the nested ``live``
+            # overlay) stay identical — the parity contract above.
+            "pipelines": _pipelines_payload(gh_pipelines),
             "repos": [asdict(r) for r in gh_repos],
+            # The live-state snapshot set (#269): real stage / current_skill /
+            # attempt / state per running pipeline, the Fleet board + stat-strip
+            # source. Filesystem-derived, so (like workers / sessions / stuck) it
+            # stays live even when GitHub state is disabled / fetch-failed and the
+            # ``pipelines`` list above is empty. The 2s SSE cadence is unchanged
+            # (streaming overhaul is #270).
+            "live_states": [asdict(s) for s in services.list_live_states(base_dir)],
         }
 
     @router.get("/events")
@@ -501,11 +536,15 @@ def create_api_router(
         repo: str = Query(..., description="owner/repo the pipeline belongs to"),
         lines: int = Query(default_tail_lines, ge=1, le=MAX_TAIL_LINES),
     ) -> dict:
-        """Structured activity timeline for a pipeline, parsed from its log (#220).
+        """Structured activity timeline from the pipeline's event log (#269).
 
-        This is the endpoint the Issue ▸ PR activity timeline (#225) consumes.
-        ``repo`` is required and names the ``owner/repo`` the pipeline belongs to,
-        matching the front-end's pipeline-key-centric addressing.
+        This is the endpoint the Issue ▸ PR activity timeline (#225) consumes. It
+        tails the #267 structured event store directly — no log-regex. ``repo`` is
+        required and names the ``owner/repo`` the pipeline belongs to, matching the
+        front-end's pipeline-key-centric addressing. A pipeline with no events
+        returns ``{events: [], count: 0}`` (200): the substrate's read side
+        yields ``[]`` for a missing log. A traversal-bearing ``repo``/``key``
+        (rejected by the service's path gate) 404s like the log-tail endpoints.
         """
         if "/" not in repo:
             raise HTTPException(status_code=422, detail="'repo' must be 'owner/repo'")

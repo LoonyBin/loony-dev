@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from loony_dev import pipeline_lease, pipeline_log, session_registry
+from loony_dev import execution_state, pipeline_lease, pipeline_log, session_registry
 from loony_dev.agents import session_resume
 from loony_dev.git import GitRepo
 
@@ -475,6 +475,86 @@ class RepoGitHubView:
     open_issues: int | None  # None = this repo's GitHub fetch failed
     open_prs: int | None
     ok: bool
+
+
+@dataclass(frozen=True)
+class LiveStateView:
+    """The consumer-facing slice of a pipeline's live-state snapshot (#269).
+
+    Mirrors the projection fields the Fleet board / stat strip and the
+    ``/api/pipelines`` live-overlay read off :class:`execution_state.LiveState` —
+    the **authoritative** ``stage`` / ``current_skill`` / ``attempt`` / ``state``
+    the dashboard binds to instead of guessing the phase from GitHub labels. The
+    snapshot substrate (#267) guarantees these reads never raise; the worker-only
+    ``last_heartbeat`` is omitted (the board has no use for it yet).
+    """
+
+    pipeline_key: str
+    repo: str
+    stage: str
+    current_skill: str | None
+    state: str
+    attempt: int
+    needs_you: bool
+    live: bool
+    linked_pr: int | None
+    updated_at: str
+    worktree_path: str | None
+
+    @classmethod
+    def from_state(cls, s: "execution_state.LiveState") -> "LiveStateView":
+        return cls(
+            pipeline_key=s.pipeline_key,
+            repo=s.repo,
+            stage=s.stage,
+            current_skill=s.current_skill,
+            state=s.state,
+            attempt=s.attempt,
+            needs_you=s.needs_you,
+            live=s.live,
+            linked_pr=s.linked_pr,
+            updated_at=s.updated_at,
+            worktree_path=s.worktree_path,
+        )
+
+
+def list_live_states(base_dir: Path) -> list[LiveStateView]:
+    """Every live snapshot under *base_dir* (the Fleet board / stat-strip source).
+
+    This is the "reduce over the active snapshot set" feed (ADR 0002 read-model):
+    :func:`execution_state.list_active` returns every running/live snapshot,
+    skipping missing/malformed files, so this never raises and yields an empty
+    list when ``.logs`` is absent.
+    """
+    return [LiveStateView.from_state(s) for s in execution_state.list_active(base_dir)]
+
+
+def pipeline_live_overlay(base_dir: Path, repo: str, pipeline_key: str) -> dict | None:
+    """The per-pipeline live overlay for ``/api/pipelines`` and the #218 DAG.
+
+    Reads the pipeline's snapshot (authoritative ``stage`` / ``current_skill`` /
+    ``attempt`` / ``state`` / ``needs_you`` / ``live`` / ``updated_at``) and its
+    drive-lease ``holder`` (#199) — the only place the holder is read off the
+    drive path. Returns ``None`` when neither a snapshot nor a lease exists (an
+    idle, never-dispatched pipeline), so the caller can emit a ``null`` overlay
+    and the UI keeps its GitHub/coarse stage fallback. Snapshot-derived fields are
+    ``None`` when only a lease exists.
+    """
+    state = execution_state.read_snapshot(base_dir, repo, pipeline_key)
+    lease = pipeline_lease.read_pipeline_lease(base_dir, repo, pipeline_key)
+    holder = lease.holder if lease else None
+    if state is None and holder is None:
+        return None
+    return {
+        "stage": state.stage if state else None,
+        "current_skill": state.current_skill if state else None,
+        "attempt": state.attempt if state else None,
+        "state": state.state if state else None,
+        "needs_you": state.needs_you if state else None,
+        "live": state.live if state else None,
+        "updated_at": state.updated_at if state else None,
+        "holder": holder,
+    }
 
 
 def derive_stage(issue_labels: list[str], pr) -> str:
@@ -1218,50 +1298,27 @@ def list_pipeline_logs(base_dir: Path, owner: str, repo: str) -> list[str]:
 def pipeline_activity(
     base_dir: Path, owner: str, repo: str, pipeline_key: str, lines: int
 ) -> list[dict]:
-    """Parse a pipeline log's tail into structured activity-timeline events (#220).
+    """Tail the pipeline's structured event log into activity-timeline events (#269).
 
-    Each well-formed ``asctime [LEVEL] logger: message`` line becomes
-    ``{ts, level, logger, message, actor}``. Lines that don't match the format
-    (e.g. wrapped traceback continuations) fall back to a raw-text event so no
-    content is dropped. ``actor`` attributes the event: the coding/planning
-    agents → ``trixy`` (the bot account), operator-injection records → ``operator``,
-    everything else → ``system``. This is the structured feed #225 consumes.
+    Reads the **structured event store** (``execution_state.tail_events``) the
+    #267 substrate writes — no regex-parsing of the freeform ``.log``. Each event
+    is returned as ``{ts, actor, type, what, target, state_tone}`` (oldest→newest,
+    malformed lines skipped by the substrate). ``actor`` is the event's
+    config-resolved attribution, not a message/logger heuristic. This is the
+    structured feed the #225 Activity timeline consumes.
+
+    A pipeline with no event log yields ``[]`` (the substrate's read-side
+    guarantee), so there is no log-missing 404. Invalid path segments still
+    raise :class:`LogNotFoundError`: ``execution_state.tail_events`` trusts its
+    callers and does **not** validate ``owner``/``repo``/``pipeline_key`` before
+    they flow into ``.logs/<owner>/<repo>/...``, so we apply the same traversal
+    gate the log-tail path (``tail_pipeline_log``, which this replaced) used —
+    rejecting separators / ``..`` / NUL so a crafted ``repo`` can't escape the
+    pipelines tree.
     """
-    tail = tail_pipeline_log(base_dir, owner, repo, pipeline_key, lines)
-    return [_parse_activity_line(line) for line in tail]
-
-
-# ``2026-06-17 12:00:00,123 [INFO] loony_dev.agents.coding: message`` — the
-# worker/pipeline log format (cli.py / pipeline_log.DEFAULT_LOG_FORMAT).
-_ACTIVITY_LINE_RE = re.compile(
-    r"^(?P<ts>\S+ \S+) \[(?P<level>[A-Z]+)\] (?P<logger>[^:]+): (?P<message>.*)$"
-)
-
-
-def _activity_actor(logger_name: str, message: str) -> str:
-    """Attribute an activity event to ``trixy`` / ``operator`` / ``system``."""
-    if "agents.planning" in logger_name or "agents.coding" in logger_name:
-        return "trixy"
-    if "operator" in message.lower():
-        return "operator"
-    return "system"
-
-
-def _parse_activity_line(line: str) -> dict:
-    match = _ACTIVITY_LINE_RE.match(line)
-    if not match:
-        # A continuation line (wrapped traceback, multi-line message): keep it
-        # verbatim rather than dropping it.
-        return {"ts": None, "level": None, "logger": None, "message": line, "actor": "system"}
-    logger_name = match.group("logger")
-    message = match.group("message")
-    return {
-        "ts": match.group("ts"),
-        "level": match.group("level"),
-        "logger": logger_name,
-        "message": message,
-        "actor": _activity_actor(logger_name, message),
-    }
+    _safe_pipeline_log_path(base_dir, owner, repo, pipeline_key)  # traversal gate only
+    events = execution_state.tail_events(base_dir, f"{owner}/{repo}", pipeline_key, lines)
+    return [e.to_dict() for e in events]
 
 
 # ---------------------------------------------------------------------------
