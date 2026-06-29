@@ -1355,9 +1355,13 @@ def _read_tail_page(
     # A trailing '\n' yields a final empty fragment that is not a line.
     if data.endswith(b"\n") and entries and entries[-1][1] == b"":
         entries.pop()
-    # When we stopped mid-file, the first fragment began before `pos`, so it is an
-    # incomplete line — drop it (its start is captured by the next page's window).
-    if pos > 0 and entries:
+    # When we stopped mid-file because we found enough newline delimiters, the
+    # first fragment began before `pos` and is incomplete — drop it (its start is
+    # captured by the next page's window). But if the byte budget stopped the scan
+    # first (a few-newline / oversized line), keep that sole bounded suffix so the
+    # tail returns the line truncated rather than reporting nothing.
+    budget_hit = pos > 0 and (end - pos) >= _TAIL_MAX_BYTES and newline_count <= lines
+    if pos > 0 and entries and not budget_hit:
         entries.pop(0)
 
     selected = entries[-lines:]

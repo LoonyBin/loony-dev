@@ -211,6 +211,11 @@ class FleetEventWatcher:
         reconciles the new dir and the recomputed snapshot already reflects the
         first append. Without this an SSE client that connects before any pipeline
         exists would sleep until the heartbeat, missing the sub-second target.
+
+        Raises :class:`OSError` if a directory can't be enumerated: returning a
+        *partial* target set would leave ``_use_inotify`` on while some dirs go
+        unwatched, so :meth:`wait_for_change` would block on edges that never
+        arrive for them. The caller catches this and falls back to polling.
         """
         targets: dict[Path, int] = {}
         # Watch the base dir so the very first ``.logs`` creation is caught too.
@@ -220,19 +225,11 @@ class FleetEventWatcher:
         if not logs_dir.is_dir():
             return targets
         targets[logs_dir] = inotify.PARENT_WATCH_MASK
-        try:
-            owner_dirs = sorted(p for p in logs_dir.iterdir() if p.is_dir())
-        except OSError:
-            return targets
-        for owner_dir in owner_dirs:
+        for owner_dir in sorted(p for p in logs_dir.iterdir() if p.is_dir()):
             if owner_dir.name.startswith("."):
                 continue
             targets[owner_dir] = inotify.PARENT_WATCH_MASK
-            try:
-                repo_dirs = sorted(p for p in owner_dir.iterdir() if p.is_dir())
-            except OSError:
-                continue
-            for repo_dir in repo_dirs:
+            for repo_dir in sorted(p for p in owner_dir.iterdir() if p.is_dir()):
                 targets[repo_dir] = inotify.PARENT_WATCH_MASK
                 pipelines = repo_dir / pipeline_log.PIPELINES_DIR_NAME
                 if pipelines.is_dir():
@@ -256,16 +253,27 @@ class FleetEventWatcher:
     def _reconcile_watches(self) -> None:
         """Add a watch for any pipeline dir that has appeared since the last pass.
 
-        A failed ``add_watch`` (e.g. the per-instance watch limit is hit) must not
-        be swallowed: leaving ``_use_inotify`` True would let
-        :meth:`wait_for_change` block on an inotify edge that can never fire for the
-        unwatched dir, silently missing its updates. So we tear the watcher down and
-        fall back to polling — which catches *every* dir's changes — surfacing the
-        failure via a log rather than degrading invisibly.
+        A failed enumeration (:meth:`_watch_targets` raising) or ``add_watch``
+        (e.g. the per-instance watch limit is hit) must not be swallowed: leaving
+        ``_use_inotify`` True would let :meth:`wait_for_change` block on an inotify
+        edge that can never fire for the unwatched dir, silently missing its
+        updates. So in either case we tear the watcher down and fall back to
+        polling — which catches *every* dir's changes — surfacing the failure via a
+        log rather than degrading invisibly.
         """
         if not self._use_inotify or self._inotify_fd < 0:
             return
-        for d, mask in self._watch_targets().items():
+        try:
+            targets = self._watch_targets()
+        except OSError:
+            logger.warning(
+                "inotify watch enumeration failed; falling back to polling",
+                exc_info=True,
+            )
+            self.close()
+            self._use_inotify = False
+            return
+        for d, mask in targets.items():
             if d in self._watched:
                 continue
             wd = inotify.add_watch(self._inotify_fd, str(d), mask)

@@ -121,6 +121,25 @@ class FleetEventWatcherTestCase(unittest.IsolatedAsyncioTestCase):
         finally:
             watcher.close()
 
+    async def test_enumeration_failure_falls_back_to_polling(self) -> None:
+        if not inotify.INOTIFY_AVAILABLE:
+            self.skipTest("inotify unavailable; reconcile never enumerates targets")
+        execution_state.append_event(self.base, "acme/widgets", "issue-1", _event("a"))
+        watcher = streaming.FleetEventWatcher(self.base, poll_interval=0.01)
+        try:
+            # If a watched dir can't be enumerated, _watch_targets raises rather
+            # than returning a partial set (which would leave inotify "on" with some
+            # dirs unwatched) — reconcile catches it and falls back to polling.
+            with mock.patch.object(
+                watcher, "_watch_targets", side_effect=OSError("boom")
+            ):
+                watcher.arm()
+            self.assertFalse(watcher._use_inotify)
+            self.assertEqual(watcher._inotify_fd, -1)
+            self.assertTrue(await watcher.wait_for_change(timeout=1.0))
+        finally:
+            watcher.close()
+
     async def test_close_releases_descriptors(self) -> None:
         fd_dir = Path("/proc/self/fd")
         if not fd_dir.exists():

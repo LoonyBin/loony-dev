@@ -1803,8 +1803,13 @@ class StateEventsEndpointTestCase(unittest.IsolatedAsyncioTestCase):
                         state="running", attempt=1, live=True,
                     ),
                 )
+                start = time.monotonic()
                 pushed = await drv.read_until("issue-9", timeout=10.0)
+                elapsed = time.monotonic() - start
                 self.assertIn("issue-9", pushed)
+                # Strictly below the retired 2s re-snapshot timer: an inotify edge
+                # is sub-second, so this fails if the fixed-timer path ever returns.
+                self.assertLess(elapsed, 1.5, f"second push took {elapsed:.2f}s")
 
     async def test_events_disconnect_tears_down_cleanly(self) -> None:
         # Entering reads the initial snapshot; exiting delivers http.disconnect and
@@ -2196,12 +2201,17 @@ class FastLogReadTestCase(unittest.TestCase):
 
         with mock.patch.object(services, "_TAIL_MAX_BYTES", services._TAIL_BLOCK_SIZE), \
                 mock.patch("builtins.open", side_effect=spy_open):
-            services._read_tail(p, 3)
+            got = services._read_tail(p, 3)
 
         self.assertTrue(spies, "the reverse reader should have opened the file")
         self.assertIsNotNone(spies[0].min_read_offset)
         # The budget stopped the backward scan before it reached byte 0.
         self.assertGreater(spies[0].min_read_offset, 0)
+        # The bounded suffix is returned (oversized line truncated), not dropped to
+        # empty — and it stays within the byte budget.
+        self.assertEqual(len(got), 1)
+        self.assertGreater(len(got[0]), 0)
+        self.assertLessEqual(len(got[0].encode("utf-8")), services._TAIL_BLOCK_SIZE)
 
     def test_offset_pagination_round_trips(self) -> None:
         p = self._write("".join(f"line-{i}\n" for i in range(10)))
