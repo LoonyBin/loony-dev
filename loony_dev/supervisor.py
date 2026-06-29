@@ -345,11 +345,20 @@ def _run_worker_process(log_file: Path, cmd_args: list[str]) -> None:
         sys.exit(1)
 
 
-def launch_worker(repo: str, work_dir: Path, log_file: Path, pid_file: Path) -> WorkerProcess:
-    """Spawn a worker multiprocessing.Process; stdout/stderr are redirected to *log_file*."""
+def launch_worker(
+    repo: str, work_dir: Path, log_file: Path, pid_file: Path, base_dir: Path,
+) -> WorkerProcess:
+    """Spawn a worker multiprocessing.Process; stdout/stderr are redirected to *log_file*.
+
+    *base_dir* is threaded down via ``--base-dir`` so the worker resolves the
+    *same* base directory as the supervisor and web dashboard. Without it a
+    spawned worker (config re-parsed fresh, ``[worker]`` carries no ``base_dir``)
+    would fall back to its checkout root, writing the session registry / pipeline
+    logs / leases under a tree the web never reads (#285).
+    """
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
-    cmd_args = ["worker", "--repo", repo, "--work-dir", str(work_dir)]
+    cmd_args = ["worker", "--repo", repo, "--work-dir", str(work_dir), "--base-dir", str(base_dir)]
     extra = config.settings.get("worker_args") or ()
     if extra:
         cmd_args += list(extra)
@@ -952,6 +961,7 @@ def run_supervisor() -> None:
                             work_dir=work_dir,
                             log_file=log_path,
                             pid_file=pid_path,
+                            base_dir=config.settings.base_dir,
                         )
                         workers[repo] = wp
                     except Exception:
@@ -1025,6 +1035,7 @@ def run_supervisor() -> None:
                     work_dir=wp.work_dir,
                     log_file=wp.log_file,
                     pid_file=wp.pid_file,
+                    base_dir=config.settings.base_dir,
                 ),
                 should_stop,
             )
