@@ -558,7 +558,13 @@ class Orchestrator:
                 # or a later step did) — do not double-invoke it; just record it.
                 logger.exception("Task callback failed after on_failure already ran")
             else:
-                task.on_failure(self.repo, e)
+                # ``_execute_task`` is contracted "Never raises": if the failure
+                # callback itself raises while handling the original exception, the
+                # secondary exception must not escape the worker after ``finally``.
+                try:
+                    task.on_failure(self.repo, e)
+                except Exception:
+                    logger.exception("Task failure callback failed for %s", task.task_type)
         finally:
             # Close the #267 record: a ``terminal`` event + flip the snapshot to
             # the terminal state (``idle`` on success, ``failed`` otherwise) with
