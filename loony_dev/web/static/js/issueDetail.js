@@ -168,8 +168,10 @@ export function deriveStage(taskKey, row, worktree, stuckEntries, ghView) {
   } else {
     stage = "Plan"; // no worktree yet — still planning / awaiting approval.
   }
+  // Heartbeat-derived stuck rows (#270) carry no cmdline; the blocked_on reason
+  // is the only signal left for this best-effort conflict hint.
   const conflict = (stuckEntries || []).some((s) => {
-    const blob = `${s.blocked_on || ""} ${s.cmdline || ""}`.toLowerCase();
+    const blob = `${s.blocked_on || ""}`.toLowerCase();
     return blob.includes("conflict") || blob.includes("rebase") ||
       blob.includes("merge");
   });

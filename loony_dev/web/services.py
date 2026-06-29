@@ -147,6 +147,27 @@ class StuckProcessView:
     session_id: str | None = None
 
 
+@dataclass(frozen=True)
+class HeartbeatStuckView:
+    """A pipeline flagged stuck by **heartbeat age**, not ``/proc`` (#270).
+
+    The dashboard request path no longer samples ``/proc`` CPU/IO to find a
+    wedged Claude turn (that ``300ms`` blocking sleep was the worst latency sink).
+    Instead "stuck" is now derived from the #267 snapshot: a *live* pipeline whose
+    ``last_heartbeat`` (bumped by #268) is older than the threshold. It carries the
+    same keys the frontend stuck tables render — minus ``pid`` / ``cmdline``,
+    which a snapshot cannot supply (so the pid-keyed Kill affordance is dropped;
+    Interrupt, addressed by ``session_id``, remains the primary intervention).
+    """
+
+    worker_repo: str
+    task_key: str | None
+    pipeline_key: str | None
+    age_seconds: int
+    blocked_on: str
+    session_id: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # PID liveness
 # ---------------------------------------------------------------------------
@@ -527,6 +548,71 @@ def list_live_states(base_dir: Path) -> list[LiveStateView]:
     list when ``.logs`` is absent.
     """
     return [LiveStateView.from_state(s) for s in execution_state.list_active(base_dir)]
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    """Parse an ISO-8601 timestamp into an aware UTC datetime, or ``None``.
+
+    The substrate writes ``datetime.now(timezone.utc).isoformat()`` (offset-aware);
+    a naive value is treated as UTC so the age arithmetic never mixes tz-aware and
+    naive datetimes.
+    """
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def list_stuck_by_heartbeat(
+    base_dir: Path, *, threshold_seconds: float = 300
+) -> list[HeartbeatStuckView]:
+    """Pipelines whose live snapshot has gone *threshold_seconds* without a heartbeat.
+
+    The #270 replacement for the ``/proc``-sampling :func:`list_stuck` on the
+    dashboard request path: a single small read per active snapshot, no CPU/IO
+    sampling and no blocking sleep. A pipeline is stuck when it is ``live`` and
+    ``now - last_heartbeat > threshold`` (a non-live or fresh snapshot is never
+    flagged). ``session_id`` is resolved from the session registry so the
+    ESC-interrupt endpoint can still address it; ``None`` disables Interrupt in
+    the UI. Never raises — :func:`execution_state.list_active` skips
+    missing/malformed snapshots, and an unparseable ``last_heartbeat`` is ignored.
+    """
+    now = datetime.now(timezone.utc)
+    out: list[HeartbeatStuckView] = []
+    for state in execution_state.list_active(base_dir):
+        if not state.live:
+            continue
+        heartbeat = _parse_iso(state.last_heartbeat)
+        if heartbeat is None:
+            continue
+        age = (now - heartbeat).total_seconds()
+        if age <= threshold_seconds:
+            continue
+        session = session_registry.find_pipeline_session(
+            base_dir, state.repo, state.pipeline_key
+        )
+        age_int = int(age)
+        blocked_on = f"no heartbeat for {age_int}s"
+        if state.stage:
+            blocked_on += f" (stage: {state.stage})"
+        out.append(
+            HeartbeatStuckView(
+                worker_repo=state.repo,
+                # ``task_key`` and ``pipeline_key`` coincide for issue-N/pr-P; the
+                # frontend's scoped stuck tables filter on ``task_key``.
+                task_key=state.pipeline_key,
+                pipeline_key=state.pipeline_key,
+                age_seconds=age_int,
+                blocked_on=blocked_on,
+                session_id=session.session_id if session else None,
+            )
+        )
+    return out
 
 
 def pipeline_live_overlay(base_dir: Path, repo: str, pipeline_key: str) -> dict | None:
@@ -1206,20 +1292,107 @@ def _safe_repo_log_path(base_dir: Path, owner: str, repo: str) -> Path:
     return candidate
 
 
+# Block size for the reverse tail reader. The reader walks the file backward in
+# fixed-size blocks from EOF, so memory + IO are bounded by ``lines × avg-line``
+# rather than file size — a large ``loony-worker.log`` is no longer read from
+# byte 0 and discarded per request (issue #270).
+_TAIL_BLOCK_SIZE = 8192
+
+
+def _read_tail_page(
+    path: Path, lines: int, before_offset: int | None = None
+) -> tuple[list[str], int | None]:
+    """Read up to *lines* whole lines ending at *before_offset* (default EOF).
+
+    Seeks to the window end (``before_offset`` or EOF) and reads fixed-size blocks
+    **backward**, stopping once enough newlines are seen — never touching byte 0 of
+    a large file. Returns ``(lines, next_offset)`` where ``next_offset`` is the
+    byte position at which the first returned line begins — the cursor a client
+    passes back as ``before_offset`` to page older lines — or ``None`` when the
+    start of file was reached (no older lines remain). Decodes UTF-8 with
+    ``errors="replace"`` and strips trailing newlines, matching the previous
+    ``deque(fh)`` behaviour. Raises ``FileNotFoundError`` like ``open``.
+    """
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        end = size if before_offset is None else max(0, min(before_offset, size))
+        if lines <= 0 or end == 0:
+            return [], (end if end > 0 else None)
+
+        pos = end
+        chunks: list[bytes] = []
+        newline_count = 0
+        # Read backward until we have one more newline than requested lines (so the
+        # lines-th line from the end is bounded), or we hit the start of file.
+        while pos > 0 and newline_count <= lines:
+            read_size = min(_TAIL_BLOCK_SIZE, pos)
+            pos -= read_size
+            fh.seek(pos)
+            block = fh.read(read_size)
+            chunks.append(block)
+            newline_count += block.count(b"\n")
+        data = b"".join(reversed(chunks))  # bytes [pos, end)
+
+    # Map each split fragment to the absolute byte offset where it begins.
+    parts = data.split(b"\n")
+    entries: list[tuple[int, bytes]] = []
+    offset = pos
+    for part in parts:
+        entries.append((offset, part))
+        offset += len(part) + 1  # +1 for the consumed '\n' separator
+
+    # A trailing '\n' yields a final empty fragment that is not a line.
+    if data.endswith(b"\n") and entries and entries[-1][1] == b"":
+        entries.pop()
+    # When we stopped mid-file, the first fragment began before `pos`, so it is an
+    # incomplete line — drop it (its start is captured by the next page's window).
+    if pos > 0 and entries:
+        entries.pop(0)
+
+    selected = entries[-lines:]
+    if not selected:
+        return [], None
+    start_offset = selected[0][0]
+    next_offset = start_offset if start_offset > 0 else None
+    return [content.decode("utf-8", errors="replace") for _, content in selected], next_offset
+
+
+def _read_tail(path: Path, lines: int) -> list[str]:
+    """Return the last *lines* lines of *path* without reading the whole file."""
+    return _read_tail_page(path, lines)[0]
+
+
 def tail_log(base_dir: Path, owner: str, repo: str, lines: int) -> list[str]:
     """Return up to the last *lines* lines of ``owner/repo``'s worker log.
 
     Raises :class:`LogNotFoundError` for invalid segments or a missing log file.
-    Reads the whole file but keeps only the tail in a bounded ``deque`` so memory
-    stays proportional to *lines* rather than file size.
+    Reads the file's tail backward from EOF (see :func:`_read_tail`) so memory and
+    IO stay proportional to *lines* rather than file size.
     """
     log_path = _safe_repo_log_path(base_dir, owner, repo)
     try:
-        with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
-            tail: deque[str] = deque(fh, maxlen=max(lines, 0))
+        return _read_tail(log_path, lines)
     except FileNotFoundError as exc:
         raise LogNotFoundError(f"no log for {owner}/{repo}") from exc
-    return [line.rstrip("\n") for line in tail]
+
+
+def tail_log_page(
+    base_dir: Path, owner: str, repo: str, lines: int, before_offset: int | None = None
+) -> dict:
+    """Offset-paginated worker-log tail: ``{lines, next_offset}`` (issue #270).
+
+    Like :func:`tail_log` but returns a byte cursor so a client can page *older*
+    lines without re-reading the file: pass the previous response's ``next_offset``
+    back as *before_offset*. ``next_offset`` is ``None`` once the start of file is
+    reached. Raises :class:`LogNotFoundError` for invalid segments / missing log.
+    """
+    log_path = _safe_repo_log_path(base_dir, owner, repo)
+    try:
+        page, next_offset = _read_tail_page(log_path, lines, before_offset)
+    except FileNotFoundError as exc:
+        raise LogNotFoundError(f"no log for {owner}/{repo}") from exc
+    return {"lines": page, "next_offset": next_offset}
 
 
 # ---------------------------------------------------------------------------
@@ -1257,18 +1430,16 @@ def tail_pipeline_log(
     """Return up to the last *lines* lines of a pipeline's log.
 
     Raises :class:`LogNotFoundError` for invalid segments or a missing log file.
-    Keeps only the tail in a bounded ``deque`` so memory stays proportional to
-    *lines* rather than file size (mirrors :func:`tail_log`).
+    Reads the tail backward from EOF (see :func:`_read_tail`) so memory and IO stay
+    proportional to *lines* rather than file size (mirrors :func:`tail_log`).
     """
     log_path = _safe_pipeline_log_path(base_dir, owner, repo, pipeline_key)
     try:
-        with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
-            tail: deque[str] = deque(fh, maxlen=max(lines, 0))
+        return _read_tail(log_path, lines)
     except FileNotFoundError as exc:
         raise LogNotFoundError(
             f"no pipeline log for {owner}/{repo}:{pipeline_key}"
         ) from exc
-    return [line.rstrip("\n") for line in tail]
 
 
 def list_pipeline_logs(base_dir: Path, owner: str, repo: str) -> list[str]:
@@ -1319,6 +1490,35 @@ def pipeline_activity(
     _safe_pipeline_log_path(base_dir, owner, repo, pipeline_key)  # traversal gate only
     events = execution_state.tail_events(base_dir, f"{owner}/{repo}", pipeline_key, lines)
     return [e.to_dict() for e in events]
+
+
+def fleet_activity(base_dir: Path, lines: int) -> list[dict]:
+    """Cross-fleet "Live activity" feed: a bounded k-way merge of recent tails (#270).
+
+    The Cockpit live-activity panel is a **time-ordered merge of recent events
+    across the active set** — not a historical/aggregate query. We serve it by
+    tailing each *active* pipeline's structured event log
+    (:func:`execution_state.tail_events`, at most ``lines`` each) and merge-sorting
+    by the event's ISO-8601 ``ts`` (lexicographic == chronological, an ADR-0002
+    guarantee), then keeping the last ``lines`` overall. The active set is bounded
+    by the worker pool, so this is ``≤ active × lines`` small tail reads — **no DB,
+    no cross-cutting scan**. Each event is annotated with its ``repo`` /
+    ``pipeline_key`` so the UI can attribute the line. Never raises (the substrate
+    read side skips missing/malformed logs); an empty active set yields ``[]``.
+    """
+    if lines <= 0:
+        return []
+    merged: list[dict] = []
+    for state in execution_state.list_active(base_dir):
+        for event in execution_state.tail_events(
+            base_dir, state.repo, state.pipeline_key, lines
+        ):
+            d = event.to_dict()
+            d["repo"] = state.repo
+            d["pipeline_key"] = state.pipeline_key
+            merged.append(d)
+    merged.sort(key=lambda d: d.get("ts", ""))
+    return merged[-lines:]
 
 
 # ---------------------------------------------------------------------------
@@ -1629,6 +1829,14 @@ def list_stuck(
     parked in a non-returning syscall, AND (2) part of a Claude subtree doing no
     CPU/IO work. The (potentially blocking) activity sample is taken only when at
     least one old, blocked candidate exists, so the common case pays no latency.
+
+    **Off the dashboard request path (issue #270).** This ``/proc`` sampler — with
+    its ``activity_sample_seconds`` blocking sleep — is no longer called when
+    serving an HTTP request: ``/api/events`` and ``/api/stuck`` derive "stuck" from
+    the snapshot heartbeat via :func:`list_stuck_by_heartbeat` instead. The only
+    remaining caller is the opt-in background ``_auto_interrupt_loop`` (web/app.py),
+    which runs off the request path and still needs the precise "Claude is wedged"
+    signal to auto-ESC. Do not reintroduce a call to this from a request handler.
     """
     # Map each repo to its advertised session so a stuck descendant can be tied
     # back to the ClaudeSession that owns it (for the ESC-interrupt endpoint).

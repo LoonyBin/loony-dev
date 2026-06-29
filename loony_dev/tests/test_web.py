@@ -1763,14 +1763,48 @@ class StateEventsEndpointTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["pipeline_key"], "issue-11")
 
     async def test_events_heartbeat_during_idle(self) -> None:
-        # Shrink the cadences so an idle period elapses in test time; the state is
-        # static, so after the initial snapshot only heartbeats should arrive.
-        with mock.patch.object(routes, "SSE_STATE_INTERVAL", 0.02), \
-                mock.patch.object(routes, "SSE_HEARTBEAT_INTERVAL", 0.02):
+        # Shrink the heartbeat cadence (now also the watcher's idle wake timeout,
+        # #270) so an idle period elapses in test time; the state is static, so
+        # after the initial snapshot only heartbeats should arrive.
+        with mock.patch.object(routes, "SSE_HEARTBEAT_INTERVAL", 0.02):
             async with _SSEDriver(self.app, "/api/events") as drv:
                 await _read_first_sse_event(drv)
                 heartbeat = await drv.read_until(": heartbeat")
                 self.assertIn(": heartbeat", heartbeat)
+
+    async def test_events_pushed_on_substrate_change_without_timer(self) -> None:
+        # #270: a worker action (a snapshot rewrite) must be reflected sub-second
+        # via the inotify push — not by waiting out a fixed 2s re-snapshot timer.
+        # The heartbeat/idle wake is long here, so an arriving change is the only
+        # thing that can produce the second push within the read timeout. The
+        # pipelines dir already exists at connect (a prior pipeline), so the watch
+        # is armed and the new snapshot's os.replace fires the edge immediately.
+        from loony_dev import execution_state
+
+        execution_state.write_snapshot(
+            self.base, "acme/widgets", "issue-1",
+            execution_state.LiveState(
+                pipeline_key="issue-1", repo="acme/widgets", stage="Planning",
+                current_skill="plan-issue", state="running", attempt=1, live=True,
+            ),
+        )
+        with mock.patch.object(routes, "SSE_HEARTBEAT_INTERVAL", 30.0):
+            async with _SSEDriver(self.app, "/api/events") as drv:
+                first = json.loads(await _read_first_sse_event(drv))
+                self.assertEqual(
+                    [s["pipeline_key"] for s in first["live_states"]], ["issue-1"]
+                )
+                # A second snapshot in the same (watched) dir → inotify edge → push.
+                execution_state.write_snapshot(
+                    self.base, "acme/widgets", "issue-9",
+                    execution_state.LiveState(
+                        pipeline_key="issue-9", repo="acme/widgets",
+                        stage="Implementing", current_skill="implement-issue",
+                        state="running", attempt=1, live=True,
+                    ),
+                )
+                pushed = await drv.read_until("issue-9", timeout=10.0)
+                self.assertIn("issue-9", pushed)
 
     async def test_events_disconnect_tears_down_cleanly(self) -> None:
         # Entering reads the initial snapshot; exiting delivers http.disconnect and
@@ -1918,6 +1952,265 @@ class StuckHeuristicTestCase(unittest.TestCase):
         self.assertEqual(stuck[0].task_key, "base")
 
 
+def _seed_heartbeat_snapshot(
+    base: Path, repo: str, key: str, *, age_seconds: float, live: bool = True, **kw
+) -> None:
+    """Write a live-state snapshot whose ``last_heartbeat`` is *age_seconds* old."""
+    from datetime import datetime, timedelta, timezone
+
+    from loony_dev import execution_state
+
+    hb = (datetime.now(timezone.utc) - timedelta(seconds=age_seconds)).isoformat()
+    defaults = dict(
+        pipeline_key=key, repo=repo, stage="Implementing",
+        current_skill="implement-issue", state="running", attempt=1,
+        live=live, updated_at=hb, last_heartbeat=hb,
+    )
+    defaults.update(kw)
+    execution_state.write_snapshot(base, repo, key, execution_state.LiveState(**defaults))
+
+
+class StuckByHeartbeatTestCase(unittest.TestCase):
+    """Heartbeat-derived stuck detection (#270) — no /proc, no blocking sleep."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_fresh_heartbeat_not_stuck(self) -> None:
+        _seed_heartbeat_snapshot(self.base, "acme/widgets", "issue-1", age_seconds=2)
+        self.assertEqual(
+            services.list_stuck_by_heartbeat(self.base, threshold_seconds=300), []
+        )
+
+    def test_stale_heartbeat_is_stuck(self) -> None:
+        _seed_heartbeat_snapshot(self.base, "acme/widgets", "issue-2", age_seconds=900)
+        stuck = services.list_stuck_by_heartbeat(self.base, threshold_seconds=300)
+        self.assertEqual(len(stuck), 1)
+        self.assertEqual(stuck[0].worker_repo, "acme/widgets")
+        self.assertEqual(stuck[0].task_key, "issue-2")
+        self.assertEqual(stuck[0].pipeline_key, "issue-2")
+        self.assertGreaterEqual(stuck[0].age_seconds, 300)
+        self.assertIn("no heartbeat", stuck[0].blocked_on)
+
+    def test_non_live_never_stuck(self) -> None:
+        # state==running keeps it in list_active, but live=False means no process
+        # currently holds the pipeline — a stale heartbeat must never flag it.
+        _seed_heartbeat_snapshot(
+            self.base, "acme/widgets", "issue-3", age_seconds=900,
+            live=False, state="running",
+        )
+        self.assertEqual(
+            services.list_stuck_by_heartbeat(self.base, threshold_seconds=300), []
+        )
+
+    def test_malformed_snapshot_skipped(self) -> None:
+        # A torn snapshot file is skipped by list_active and never raises.
+        from loony_dev import execution_state
+
+        path = execution_state.snapshot_path(self.base, "acme/widgets", "issue-4")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{ not json")
+        self.assertEqual(
+            services.list_stuck_by_heartbeat(self.base, threshold_seconds=0), []
+        )
+
+    def test_session_id_resolved_when_registry_session_exists(self) -> None:
+        _seed_heartbeat_snapshot(self.base, "acme/widgets", "issue-5", age_seconds=900)
+        sess_dir = session_registry.session_dir(self.base, "acme", "widgets", "issue-5")
+        session_registry.write_session_file(
+            sess_dir, task_key="issue-5", repo="acme/widgets", session_id="sid-5",
+            pid=1, started_at="t", pipeline_key="issue-5",
+        )
+        stuck = services.list_stuck_by_heartbeat(self.base, threshold_seconds=300)
+        self.assertEqual(stuck[0].session_id, "sid-5")
+
+    def test_session_id_none_without_registry_session(self) -> None:
+        _seed_heartbeat_snapshot(self.base, "acme/widgets", "issue-6", age_seconds=900)
+        stuck = services.list_stuck_by_heartbeat(self.base, threshold_seconds=300)
+        self.assertIsNone(stuck[0].session_id)
+
+    def test_api_stuck_is_heartbeat_derived(self) -> None:
+        _seed_heartbeat_snapshot(self.base, "acme/widgets", "issue-7", age_seconds=900)
+        client = TestClient(create_app(
+            base_dir=self.base, supervisor_log=None, stuck_after_seconds=300,
+        ))
+        resp = client.get("/api/stuck")
+        self.assertEqual(resp.status_code, 200)
+        rows = resp.json()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["task_key"], "issue-7")
+        # The payload no longer carries raw process forensics — the heartbeat
+        # source can't supply a pid/cmdline, and the /proc path is off the request
+        # path (#270). Guard the API shape so a regression is caught.
+        self.assertNotIn("pid", rows[0])
+        self.assertNotIn("cmdline", rows[0])
+
+
+class FleetActivityTestCase(unittest.TestCase):
+    """Cross-fleet activity feed: bounded recent-tail k-way merge (#270)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _seed(self, repo: str, key: str, *, ts: str, what: str) -> None:
+        from loony_dev import execution_state
+
+        # A live snapshot so the pipeline is in the active set.
+        execution_state.write_snapshot(
+            self.base, repo, key,
+            execution_state.LiveState(
+                pipeline_key=key, repo=repo, stage="Implementing",
+                current_skill="implement-issue", state="running", attempt=1, live=True,
+            ),
+        )
+        execution_state.append_event(
+            self.base, repo, key,
+            execution_state.ExecutionEvent(
+                type="turn_start", what=what, actor="bot", target={}, ts=ts,
+            ),
+        )
+
+    def test_empty_active_set(self) -> None:
+        self.assertEqual(services.fleet_activity(self.base, 10), [])
+
+    def test_merges_across_pipelines_in_ts_order(self) -> None:
+        self._seed("acme/widgets", "issue-1", ts="2026-01-01T00:00:02+00:00", what="b")
+        self._seed("acme/gadgets", "issue-2", ts="2026-01-01T00:00:01+00:00", what="a")
+        events = services.fleet_activity(self.base, 10)
+        self.assertEqual([e["what"] for e in events], ["a", "b"])
+        # Each event is attributed with its repo/pipeline_key.
+        self.assertEqual(events[0]["repo"], "acme/gadgets")
+        self.assertEqual(events[0]["pipeline_key"], "issue-2")
+
+    def test_bounded_to_lines(self) -> None:
+        for i in range(5):
+            self._seed(
+                "acme/widgets", f"issue-{i}",
+                ts=f"2026-01-01T00:00:0{i}+00:00", what=f"e{i}",
+            )
+        events = services.fleet_activity(self.base, 2)
+        self.assertEqual(len(events), 2)
+        self.assertEqual([e["what"] for e in events], ["e3", "e4"])
+
+
+class _ReadOffsetSpy:
+    """Wrap a binary file handle, recording the smallest offset any read starts at."""
+
+    def __init__(self, fh) -> None:
+        self._fh = fh
+        self.min_read_offset: int | None = None
+
+    def read(self, *args):
+        off = self._fh.tell()
+        if self.min_read_offset is None or off < self.min_read_offset:
+            self.min_read_offset = off
+        return self._fh.read(*args)
+
+    def seek(self, *args):
+        return self._fh.seek(*args)
+
+    def tell(self):
+        return self._fh.tell()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return self._fh.__exit__(*exc)
+
+
+class FastLogReadTestCase(unittest.TestCase):
+    """Offset/tail-pointer log reads that never touch byte 0 (#270)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _write(self, text: str) -> Path:
+        p = self.base / "f.log"
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def test_read_tail_matches_deque_various_n(self) -> None:
+        from collections import deque
+
+        for body in ("a\nb\nc\nd\ne\n", "a\nb\nc\nd\ne", "", "single\n", "single"):
+            p = self._write(body)
+            for n in (1, 2, 3, 10):
+                with p.open("r", encoding="utf-8", errors="replace") as fh:
+                    expected = [ln.rstrip("\n") for ln in deque(fh, maxlen=n)]
+                got = services._read_tail(p, n)
+                self.assertEqual(got, expected, f"body={body!r} n={n}")
+
+    def test_read_tail_does_not_read_from_offset_zero(self) -> None:
+        # A large file: instrument the file handle so every read records where it
+        # starts, then assert the reverse reader never reads from byte 0.
+        import builtins
+
+        lines = [f"line-{i}" for i in range(100_000)]
+        p = self._write("\n".join(lines) + "\n")
+        self.assertLess(services._TAIL_BLOCK_SIZE * 4, p.stat().st_size)  # truly large
+
+        spies: list[_ReadOffsetSpy] = []
+        real_open = builtins.open
+
+        def spy_open(file, *args, **kwargs):
+            fh = real_open(file, *args, **kwargs)
+            if Path(file) == p:
+                spy = _ReadOffsetSpy(fh)
+                spies.append(spy)
+                return spy
+            return fh
+
+        with mock.patch("builtins.open", side_effect=spy_open):
+            got = services._read_tail(p, 3)
+
+        self.assertEqual(got, ["line-99997", "line-99998", "line-99999"])
+        self.assertTrue(spies, "the reverse reader should have opened the file")
+        self.assertIsNotNone(spies[0].min_read_offset)
+        # The invariant: no read ever begins at byte 0 of the large file.
+        self.assertGreater(spies[0].min_read_offset, 0)
+
+    def test_offset_pagination_round_trips(self) -> None:
+        p = self._write("".join(f"line-{i}\n" for i in range(10)))
+        page1, next1 = services._read_tail_page(p, 3, None)
+        self.assertEqual(page1, ["line-7", "line-8", "line-9"])
+        self.assertIsNotNone(next1)
+        page2, next2 = services._read_tail_page(p, 3, next1)
+        self.assertEqual(page2, ["line-4", "line-5", "line-6"])
+        page3, _ = services._read_tail_page(p, 3, next2)
+        self.assertEqual(page3, ["line-1", "line-2", "line-3"])
+
+    def test_offset_pagination_reaches_bof(self) -> None:
+        p = self._write("".join(f"line-{i}\n" for i in range(4)))
+        page1, next1 = services._read_tail_page(p, 3, None)
+        self.assertEqual(page1, ["line-1", "line-2", "line-3"])
+        page2, next2 = services._read_tail_page(p, 3, next1)
+        self.assertEqual(page2, ["line-0"])
+        self.assertIsNone(next2)  # start of file reached
+
+    def test_api_log_tail_carries_next_offset(self) -> None:
+        _make_worker(self.base, "acme", "widgets", os.getpid(),
+                     [f"log {i}" for i in range(20)])
+        client = TestClient(create_app(base_dir=self.base, supervisor_log=None))
+        resp = client.get("/api/logs/acme/widgets/tail?lines=5")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["lines"], ["log 15", "log 16", "log 17", "log 18", "log 19"])
+        self.assertIn("next_offset", body)
+        # Page older lines using the returned cursor.
+        resp2 = client.get(
+            f"/api/logs/acme/widgets/tail?lines=5&before_offset={body['next_offset']}"
+        )
+        self.assertEqual(resp2.json()["lines"],
+                         ["log 10", "log 11", "log 12", "log 13", "log 14"])
+
+
 @unittest.skipUnless(_HAS_PROC, "requires a Linux /proc filesystem")
 class StuckRealProcessTestCase(unittest.TestCase):
     """Acceptance reproducer against real child processes."""
@@ -1954,17 +2247,10 @@ class StuckRealProcessTestCase(unittest.TestCase):
         view = next(s for s in stuck if s.pid == proc.pid)
         self.assertIn("sleep", view.cmdline)
 
-    def test_sleep_child_flagged_via_api(self) -> None:
-        proc = self._spawn(["sleep", "99999"])
-        time.sleep(0.2)
-        client = TestClient(create_app(
-            base_dir=self.base, supervisor_log=None,
-            stuck_after_seconds=0, activity_sample_seconds=0.2,
-        ))
-        resp = client.get("/api/stuck")
-        self.assertEqual(resp.status_code, 200)
-        pids = {row["pid"] for row in resp.json()}
-        self.assertIn(proc.pid, pids)
+    # NOTE: the old test_sleep_child_flagged_via_api was removed in #270 — the
+    # ``/api/stuck`` endpoint no longer samples /proc; it is heartbeat-derived now
+    # (see StuckByHeartbeatTestCase). ``list_stuck`` itself is still exercised
+    # directly here because the opt-in auto-interrupt monitor keeps using it.
 
     def test_busy_child_not_flagged(self) -> None:
         # A CPU-burning child (running tests analogue) is state R, not blocked,

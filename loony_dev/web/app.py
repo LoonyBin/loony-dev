@@ -171,7 +171,9 @@ def create_app(
             tail_lines=tail_lines,
             claude_home=claude_home,
             stuck_after_seconds=stuck_after_seconds,
-            activity_sample_seconds=activity_sample_seconds,
+            # activity_sample_seconds is intentionally NOT passed: the dashboard
+            # request path no longer samples /proc (issue #270). It remains a
+            # create_app arg only for the opt-in _auto_interrupt_loop below.
             kill_grace_seconds=kill_grace_seconds,
             github_state_enabled=github_state_enabled,
             github_refresh_seconds=github_refresh_seconds,
