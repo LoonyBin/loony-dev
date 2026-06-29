@@ -1496,10 +1496,10 @@ button.action:hover,
   padding: 0;
 }
 
-/* Worker transcript inside the live-session card (#259): a scrollable column of
-   TimelineRow turns. The rows themselves use the design-system .tl-row / .tl-flat
-   / .tl-dot / .ava classes from ds/css/sessions.css — only the scroll host needs
-   styling here. Modelled on .observe-conv's chip-bg scroll surface. */
+/* Base-session conversation inside the live-session card (#282/#283): a scrollable
+   column of design-system ChatBubble turns streamed via observe.js — the same
+   .msg/.bubble render path as .observe-conv. Only the scroll host needs styling
+   here; bubble spacing matches .observe-conv so both observe surfaces read alike. */
 .live-transcript {
   overflow-y: auto;
   max-height: 32vh;
@@ -1509,7 +1509,7 @@ button.action:hover,
   padding: var(--space-2) var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-2);
 }
 
 /* Sidebar: a stack of panels. */
@@ -1942,43 +1942,81 @@ button.action:hover,
   gap: var(--space-2);
 }
 
-.obs {
-  border-radius: var(--radius-xs);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-default);
-  background: var(--bg-app);
-}
-.obs-label {
-  font-size: var(--fs-2xs);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--fg-secondary);
-  margin-bottom: var(--space-1);
-}
-.obs-body {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+/* The .obs-* turns render as design-system ChatBubbles (.msg/.bubble from
+   ds/ld-system.css) since #283; the rules below layer the observe-specific
+   affordances — collapsible tool/thinking cards, monospace tool payloads, and the
+   non-bubble system dividers — on TOP of the DS bubble look. Scoped to the observe
+   surfaces (.observe-conv / .live-transcript) so the shared DS .bubble elsewhere
+   is untouched. */
+
+/* Prose bubbles (user/assistant text is a raw text child of .bubble): preserve
+   newlines and wrap long tokens. */
+.observe-conv .bubble,
+.live-transcript .bubble {
   white-space: pre-wrap;
   overflow-wrap: break-word;
 }
-.obs-user { border-left: 3px solid var(--primary); }
-.obs-assistant { border-left: 3px solid var(--running); }
-.obs-thinking { background: var(--bg-chip); }
-.obs-thinking summary {
+
+/* Tool + thinking bubbles wrap a collapsible <details>, not prose — widen them so
+   their <pre> payloads have room (the DS prose width, 78%, is too narrow). */
+.observe-conv .obs-tool .bubble,
+.observe-conv .obs-thinking .bubble,
+.live-transcript .obs-tool .bubble,
+.live-transcript .obs-thinking .bubble {
+  max-width: 92%;
+}
+
+/* The DS .bubble.received bakes color: var(--gray-800) — a light-mode ink with no
+   dark override — so on the app's dark theme it reads near-black-on-near-black
+   (assistant text + the inherited tool <pre> payloads both vanish). Re-point the
+   received bubbles at the theme-aware --fg-primary so they stay legible on either
+   theme. Scoped to the observe surfaces; the shared DS .bubble is untouched. */
+.observe-conv .bubble.received,
+.live-transcript .bubble.received { color: var(--fg-primary); }
+
+/* Thinking reads as a muted aside (still readable on both themes). Listed AFTER
+   the rule above and at equal specificity so it wins source-order for the
+   thinking bubble. */
+.observe-conv .obs-thinking .bubble,
+.live-transcript .obs-thinking .bubble { color: var(--fg-secondary); }
+
+/* The bot avatar (DS .ava.neutral) likewise bakes color: var(--gray-700), a
+   light-mode ink that vanishes on the dark theme. Re-point the observe avatars at
+   --fg-primary so the "TX" initials stay legible on either theme. */
+.observe-conv .ava.neutral,
+.live-transcript .ava.neutral { color: var(--fg-primary); }
+
+/* Collapsible tool / thinking cards — the <summary> is the click affordance. */
+.obs-tool-card,
+.obs-thinking-card { width: 100%; }
+.obs-tool-summary,
+.obs-thinking-summary {
   cursor: pointer;
   font-size: var(--fs-2xs);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--fg-secondary);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
 }
-.obs-tool { border-left: 3px solid var(--unknown); }
+.obs-tool-summary .material-symbols-outlined { font-size: 1rem; }
+
+/* Tool args / output + thinking text: monospace, constrained to the bubble width
+   with scroll — legibility is an explicit acceptance criterion, so they stay
+   <pre>-like, not bubble prose. */
+.obs-body,
 .obs-tool-args,
 .obs-tool-out {
   font-family: var(--font-mono);
-  font-size: var(--fs-2xs);
   white-space: pre-wrap;
   overflow-wrap: break-word;
-  margin: var(--space-1) 0 0;
+}
+.obs-body { font-size: var(--fs-xs); margin-top: var(--space-2); }
+.obs-tool-args,
+.obs-tool-out {
+  font-size: var(--fs-2xs);
+  margin: var(--space-2) 0 0;
   padding: var(--space-2);
   background: var(--bg-chip);
   border-radius: var(--radius-xs);
@@ -1986,6 +2024,8 @@ button.action:hover,
   overflow: auto;
 }
 .obs-tool-err { color: var(--danger); }
+
+/* System dividers (turn-ended / interrupted) — centred, not chat bubbles. */
 .obs-stop,
 .obs-interrupt {
   text-align: center;
@@ -2155,10 +2195,23 @@ button.action:hover,
 .pipeline-steer { display: flex; flex-direction: column; gap: var(--space-3); }
 .pipeline-steer .observe-conv { height: 40vh; min-height: 240px; }
 .pipeline-reply { display: flex; flex-direction: column; gap: var(--space-2); }
+/* The reply row reads as the DS ChatComposer input (#283): a boxed input with
+   the composer's border/padding/radius. Kept a multiline <textarea> rather than
+   swapping in the single-line ChatComposer factory so the multiline reply, the
+   #pipeline-reply-error aria-live region, and the #285 injectTurn wiring don't
+   regress. Colours use the app's theme-aware --fg-primary/--bg-app (not the
+   light-baked --ink of .chat-input) so the active input stays readable on either
+   theme. */
 .pipeline-reply textarea {
   width: 100%;
   resize: vertical;
-  font: inherit;
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  color: var(--fg-primary);
+  background: var(--bg-app);
+  padding: 11px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
 }
 .pipeline-controls {
   display: flex;

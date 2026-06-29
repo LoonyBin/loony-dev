@@ -14,6 +14,14 @@
 
 import { openModalA11y, closeModalA11y } from "./modal.js";
 import { icon } from "./dom.js";
+import { ChatBubble } from "/static/ds/components/sessions.js";
+
+// The observe stream has no per-worker identity, so every bot ("received") bubble
+// carries one stable avatar glyph. The bot account is "trixy" → initials "TX"
+// (Avatar uppercases + slices to two chars). Kept as a single module constant so
+// the bot identity stays caller-supplied per the DS ChatBubble contract (glyph is
+// never baked into the factory) rather than hard-coded inside each render fn.
+const BOT_GLYPH = "TX";
 
 // The modal's open stream ({ close }), or null. The reusable core (streamObserve)
 // holds its own per-stream state, so a caller-provided host (e.g. the #190
@@ -54,19 +62,17 @@ function formatArgs(args) {
   }
 }
 
+// A lightweight, non-bubble system divider (turn-ended / interrupted). These are
+// not chat turns in the prototype, so they stay centred dividers rather than
+// ChatBubbles.
 function block(kind) {
   const el = document.createElement("div");
   el.className = `obs obs-${kind}`;
   return el;
 }
 
-function label(text) {
-  const el = document.createElement("div");
-  el.className = "obs-label";
-  el.textContent = text;
-  return el;
-}
-
+// A pre-wrap text block for the body of a thinking bubble (kept monospace + wrap
+// so multi-line reasoning stays legible inside the bubble).
 function body(text) {
   const el = document.createElement("div");
   el.className = "obs-body";
@@ -74,66 +80,82 @@ function body(text) {
   return el;
 }
 
-function renderUser(ev) {
-  const el = block("user");
-  el.appendChild(label("user"));
-  el.appendChild(body(ev.text));
-  return el;
-}
-
-function renderAssistant(ev) {
-  const el = block("assistant");
-  el.appendChild(label("assistant"));
-  el.appendChild(body(ev.text));
-  return el;
-}
-
-// Thinking is collapsed by default — a <details> the reader can expand.
-function renderThinking(ev) {
-  const el = block("thinking");
+// A collapsible tool card (<details>): the summary shows a glyph + name and the
+// caller fills the body (args <pre>, result slot). Default-open so tool output
+// stays legible without a click (matching the pre-#283 always-visible behaviour),
+// while remaining collapsible per the acceptance criteria.
+function toolCard(name) {
   const det = document.createElement("details");
+  det.className = "obs-tool-card";
+  det.open = true;
   const sum = document.createElement("summary");
+  sum.className = "obs-tool-summary";
+  sum.appendChild(icon("build"));
+  // Separate the icon from the tool name so a font-load failure degrades to a
+  // readable "build tool" rather than "buildtool" (matches attach.js spacing).
+  sum.appendChild(document.createTextNode(" " + (name || "tool")));
+  det.appendChild(sum);
+  return det;
+}
+
+// User turns are right-aligned accent bubbles with no avatar (DS `sent` side).
+function renderUser(ev) {
+  return ChatBubble({ side: "sent", class: "obs-user", children: ev.text || "" });
+}
+
+// Assistant turns are left-aligned bubbles carrying the bot avatar (DS `received`).
+function renderAssistant(ev) {
+  return ChatBubble({ side: "received", glyph: BOT_GLYPH, class: "obs-assistant", children: ev.text || "" });
+}
+
+// Thinking is a received bubble holding a default-collapsed <details> the reader
+// can expand; the muted/italic treatment lives in CSS (.obs-thinking .bubble).
+function renderThinking(ev) {
+  const det = document.createElement("details");
+  det.className = "obs-thinking-card";
+  const sum = document.createElement("summary");
+  sum.className = "obs-thinking-summary";
   sum.textContent = "thinking";
   det.appendChild(sum);
   det.appendChild(body(ev.text));
-  el.appendChild(det);
-  return el;
+  return ChatBubble({ side: "received", glyph: BOT_GLYPH, class: "obs-thinking", children: det });
 }
 
 function renderToolUse(ev, stream) {
-  const el = block("tool");
-  const lab = label(ev.tool || "tool");
-  lab.prepend(icon("build"));
-  // Separate the icon from the tool name so a font-load failure degrades to
-  // readable "build tool" rather than "buildtool" (matches attach.js spacing).
-  lab.insertBefore(document.createTextNode(" "), lab.childNodes[1] || null);
-  el.appendChild(lab);
+  const det = toolCard(ev.tool);
   const args = formatArgs(ev.args);
   if (args) {
     const pre = document.createElement("pre");
     pre.className = "obs-tool-args";
     pre.textContent = args;
-    el.appendChild(pre);
+    det.appendChild(pre);
   }
-  // A slot the matching tool_result fills in (paired by tool_use_id).
+  // A slot the matching tool_result fills in (paired by tool_use_id). Kept verbatim
+  // (div + toolCards.set) so the #202 pairing model is unchanged by the restyle.
   const result = document.createElement("div");
   result.className = "obs-tool-result";
-  el.appendChild(result);
+  det.appendChild(result);
   if (ev.tool_use_id && stream) stream.toolCards.set(ev.tool_use_id, result);
-  return el;
+  return ChatBubble({ side: "received", glyph: BOT_GLYPH, class: "obs-tool", children: det });
 }
 
 function renderToolResult(ev, stream) {
   // Prefer attaching the result to its originating tool card; if the card isn't
-  // present (result before call, or out-of-order), render a standalone block.
+  // present (result before call, or out-of-order), render a standalone tool bubble.
   const slot = ev.tool_use_id && stream ? stream.toolCards.get(ev.tool_use_id) : null;
-  const target = slot || block("tool");
-  if (!slot) target.appendChild(label("tool result"));
   const out = document.createElement("pre");
   out.className = ev.is_error ? "obs-tool-out obs-tool-err" : "obs-tool-out";
   out.textContent = ev.text || "";
-  target.appendChild(out);
-  return slot ? null : target; // null => already attached in place
+  if (slot) {
+    // Attaching into an existing card grows the conversation just like an append,
+    // so keep a bottom-pinned viewer pinned (applyEvent's append path is skipped
+    // when we return null, so we run the same scroll-pin here).
+    withBottomPin(stream && stream.conv, () => slot.appendChild(out));
+    return null; // already attached in place
+  }
+  const det = toolCard("tool result");
+  det.appendChild(out);
+  return ChatBubble({ side: "received", glyph: BOT_GLYPH, class: "obs-tool", children: det });
 }
 
 function renderStop(ev) {
@@ -161,6 +183,18 @@ function renderEvent(ev, stream) {
   }
 }
 
+// Run a DOM mutation that grows `conv` while preserving bottom-stickiness: a
+// viewer already pinned to the bottom is kept there, while one scrolled up is
+// left undisturbed. The at-bottom test must be read BEFORE the mutation, since
+// appending changes scrollHeight. Shared by the append path and the
+// tool_result attach-in-place path so both scroll consistently.
+function withBottomPin(conv, mutate) {
+  if (!conv) { mutate(); return; }
+  const atBottom = conv.scrollHeight - conv.scrollTop - conv.clientHeight < 40;
+  mutate();
+  if (atBottom) conv.scrollTop = conv.scrollHeight;
+}
+
 // Apply one event idempotently into the stream's container: a previously-seen
 // `id` is a no-op, so replaying the whole transcript on reconnect never
 // duplicates a node.
@@ -172,9 +206,7 @@ function applyEvent(stream, ev) {
   if (!node) return; // e.g. a tool_result attached to an existing card in place
   const conv = stream.conv;
   if (!conv) return;
-  const atBottom = conv.scrollHeight - conv.scrollTop - conv.clientHeight < 40;
-  conv.appendChild(node);
-  if (atBottom) conv.scrollTop = conv.scrollHeight;
+  withBottomPin(conv, () => conv.appendChild(node));
 }
 
 // Reusable observe core (issue #190): connect to a task's observe WS and render
