@@ -27,34 +27,15 @@ export async function interruptSession(sessionId) {
   }
 }
 
-// Kill is the escalation path (SIGTERM → SIGKILL); it ends the process, so it
-// keeps a confirmation prompt. Shared with the per-repo drill-down's scoped
-// stuck table.
-export async function killProcess(pid) {
-  if (!window.confirm(`Send SIGTERM to PID ${pid}? It will be SIGKILLed if it does not exit.`)) {
-    return;
-  }
-  try {
-    const resp = await fetch(`/api/processes/${pid}/kill`, { method: "POST" });
-    if (!resp.ok) {
-      const detail = await resp.text();
-      throw new Error(`${resp.status}: ${detail}`);
-    }
-    // No manual refresh needed: the /api/events stream re-emits the new state
-    // (the process gone from the stuck table) within a couple of seconds.
-  } catch (err) {
-    window.alert(`Failed to kill PID ${pid}: ${err.message}`);
-  }
-}
-
+// "Stuck" is now derived from the snapshot heartbeat age (#270), not /proc, so a
+// row no longer carries a pid/cmdline. The pid-keyed Kill escalation is therefore
+// dropped — Interrupt (ESC, addressed by session_id) is the intervention. A hard
+// kill, if ever needed, would resolve the live pid server-side at click time, off
+// the list path; that is a noted follow-up, not part of this read-path change.
 function renderStuckRow(s) {
   const tr = document.createElement("tr");
   tr.appendChild(cell(s.worker_repo, "Repo"));
   tr.appendChild(cell(s.task_key, "Task"));
-  tr.appendChild(cell(s.pid, "PID"));
-  const cmd = cell(s.cmdline, "Cmdline");
-  cmd.className = "cmdline";
-  tr.appendChild(cmd);
   tr.appendChild(cell(formatAge(s.age_seconds), "Age"));
   tr.appendChild(cell(s.blocked_on, "Blocked on"));
 
@@ -75,15 +56,6 @@ function renderStuckRow(s) {
     interruptBtn.title = "No control channel for this session yet";
   }
   actionTd.appendChild(interruptBtn);
-
-  // Kill stays as the secondary/danger escalation.
-  const killBtn = document.createElement("button");
-  killBtn.type = "button";
-  killBtn.className = "kill-btn";
-  killBtn.textContent = "Kill";
-  killBtn.title = "SIGTERM the wedged process, escalating to SIGKILL";
-  killBtn.addEventListener("click", () => killProcess(s.pid));
-  actionTd.appendChild(killBtn);
 
   tr.appendChild(actionTd);
   return tr;

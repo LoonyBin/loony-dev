@@ -32,7 +32,7 @@ import { cell, setRows, formatAge, icon, goRepo, goPipeline, stageTone } from ".
 // Shared design-system components (static/ds/) — single source of truth (#258 / Phase 4).
 import { StatePill, Tag, Avatar, Btn } from "/static/ds/components/primitives.js";
 import { ChatComposer } from "/static/ds/components/sessions.js";
-import { killProcess, interruptSession } from "./overview.js";
+import { interruptSession } from "./overview.js";
 import { streamLog } from "./logs.js";
 import { renderSessionCard } from "./sessions.js";
 
@@ -428,13 +428,11 @@ function renderWorktreeRow(w) {
   return tr;
 }
 
+// Heartbeat-derived stuck rows (#270): no pid/cmdline, so no Kill — Interrupt
+// (ESC via session_id) is the intervention. Mirrors overview.renderStuckRow.
 function renderStuckRow(s) {
   const tr = document.createElement("tr");
   tr.appendChild(cell(s.task_key, "Task"));
-  tr.appendChild(cell(s.pid, "PID"));
-  const cmd = cell(s.cmdline, "Cmdline");
-  cmd.className = "cmdline";
-  tr.appendChild(cmd);
   tr.appendChild(cell(formatAge(s.age_seconds), "Age"));
   tr.appendChild(cell(s.blocked_on, "Blocked on"));
 
@@ -455,15 +453,6 @@ function renderStuckRow(s) {
     interruptBtn.title = "No control channel for this session yet";
   }
   actionTd.appendChild(interruptBtn);
-
-  // Kill stays as the secondary/danger escalation.
-  const killBtn = document.createElement("button");
-  killBtn.type = "button";
-  killBtn.className = "kill-btn";
-  killBtn.textContent = "Kill";
-  killBtn.title = "SIGTERM the wedged process, escalating to SIGKILL";
-  killBtn.addEventListener("click", () => killProcess(s.pid));
-  actionTd.appendChild(killBtn);
 
   tr.appendChild(actionTd);
   return tr;

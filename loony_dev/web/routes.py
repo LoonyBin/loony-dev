@@ -37,17 +37,13 @@ DEFAULT_TAIL_LINES = 100
 MAX_TAIL_LINES = 5000
 
 # Seconds between SSE heartbeat comments: keeps proxies from idling the
-# connection out and lets the server notice a vanished client.
+# connection out and lets the server notice a vanished client. It also doubles as
+# the consolidated /events stream's wake cadence — the FleetEventWatcher push is
+# the primary signal (sub-second), and this is just the idle fallback (issue #270).
 SSE_HEARTBEAT_INTERVAL = 15.0
-
-# Seconds between server-side state recomputes for the consolidated /events
-# stream. The snapshot is cheap to gather, so a short poll + emit-on-change is
-# enough to feel real-time without a change-notification bus (issue #155).
-SSE_STATE_INTERVAL = 2.0
 
 # Stuck-detection defaults (issue #132) — mirrored by the app factory / CLI.
 DEFAULT_STUCK_AFTER_SECONDS = 300
-DEFAULT_ACTIVITY_SAMPLE_SECONDS = 0.3
 DEFAULT_KILL_GRACE_SECONDS = 5.0
 
 # Partial-GitHub-state defaults (issue #219) — mirrored by the app factory / CLI.
@@ -127,7 +123,6 @@ def create_api_router(
     claude_home: Path | None = None,
     *,
     stuck_after_seconds: float = DEFAULT_STUCK_AFTER_SECONDS,
-    activity_sample_seconds: float = DEFAULT_ACTIVITY_SAMPLE_SECONDS,
     kill_grace_seconds: float = DEFAULT_KILL_GRACE_SECONDS,
     github_state_enabled: bool = DEFAULT_GITHUB_STATE_ENABLED,
     github_refresh_seconds: float = DEFAULT_GITHUB_REFRESH_SECONDS,
@@ -138,10 +133,10 @@ def create_api_router(
     endpoint when a request omits ``?lines=``. *claude_home* is the global
     ``~/.claude`` root used by the skills/commands endpoints (injectable so tests
     can point it at a temp tree); it defaults to ``~/.claude``. The remaining
-    keyword arguments tune the stuck-process detector and the kill endpoint's
-    SIGKILL escalation, plus the partial-GitHub-state enrichment (#219):
-    *github_state_enabled* toggles the per-snapshot ``gh`` fetch, and
-    *github_refresh_seconds* is its TTL (the 2s SSE poll reads the cache).
+    keyword arguments tune the heartbeat-derived stuck threshold and the kill
+    endpoint's SIGKILL escalation, plus the partial-GitHub-state enrichment
+    (#219): *github_state_enabled* toggles the per-snapshot ``gh`` fetch, and
+    *github_refresh_seconds* is its TTL (the event-driven SSE reads the cache).
     """
     default_tail_lines = max(1, min(tail_lines, MAX_TAIL_LINES))
     global_root = Path(claude_home) if claude_home is not None else Path.home() / ".claude"
@@ -390,12 +385,13 @@ def create_api_router(
             "task_sessions": [
                 asdict(s) for s in services.list_task_sessions(base_dir)
             ],
+            # "Stuck" is now heartbeat-age from the snapshot (#270) — a small read
+            # per active pipeline, no /proc CPU/IO sampling and no blocking sleep
+            # on the request path.
             "stuck": [
                 asdict(s)
-                for s in services.list_stuck(
-                    base_dir,
-                    threshold_seconds=stuck_after_seconds,
-                    activity_sample_seconds=activity_sample_seconds,
+                for s in services.list_stuck_by_heartbeat(
+                    base_dir, threshold_seconds=stuck_after_seconds
                 )
             ],
             # Built through the same helper as ``GET /api/pipelines`` so the
@@ -407,43 +403,56 @@ def create_api_router(
             # attempt / state per running pipeline, the Fleet board + stat-strip
             # source. Filesystem-derived, so (like workers / sessions / stuck) it
             # stays live even when GitHub state is disabled / fetch-failed and the
-            # ``pipelines`` list above is empty. The 2s SSE cadence is unchanged
-            # (streaming overhaul is #270).
+            # ``pipelines`` list above is empty. Pushed event-driven off the
+            # FleetEventWatcher inotify edge (#270), no fixed timer.
             "live_states": [asdict(s) for s in services.list_live_states(base_dir)],
         }
 
     @router.get("/events")
     async def stream_events(request: Request) -> StreamingResponse:
-        """Push a consolidated state snapshot, then updates as state changes.
+        """Push a consolidated state snapshot, then updates as state changes (#270).
 
-        Replaces the frontend's 5s poll of the four per-resource endpoints. An
-        initial snapshot is emitted on connect; thereafter the state is recomputed
-        every ``SSE_STATE_INTERVAL`` seconds and re-emitted only when it differs.
-        A heartbeat comment is sent during idle periods so proxies don't drop the
-        connection, and ``request.is_disconnected()`` reaps vanished clients —
-        the same teardown contract as the log-tail stream.
+        Event-driven: an initial snapshot is emitted on connect, then a
+        :class:`~loony_dev.web.streaming.FleetEventWatcher` inotify watch over the
+        execution-state substrate wakes the loop the instant any pipeline's
+        ``.state.json`` / ``.events.jsonl`` changes — sub-second, no 2s timer. On
+        each wake the (now cheap, heartbeat-derived) snapshot is recomputed and
+        re-emitted only when it differs. A heartbeat comment is sent during idle
+        periods (the watcher's wait timeout) so proxies don't drop the connection,
+        and ``request.is_disconnected()`` reaps vanished clients. The watcher is
+        closed in a ``finally`` so no inotify fd / loop reader leaks across
+        reconnects — the same teardown contract as the log-tail stream.
         """
 
         async def event_stream():
             loop = asyncio.get_running_loop()
+            watcher = streaming.FleetEventWatcher(base_dir)
             last_payload: str | None = None
             last_sent = loop.time()
-            while True:
-                if await request.is_disconnected():
-                    break
-                # The snapshot reads /proc and the worktree tree; run it off the
-                # event loop so a slow gather never stalls other connections.
-                snapshot = await asyncio.to_thread(_state_snapshot)
-                payload = json.dumps(snapshot, sort_keys=True)
-                now = loop.time()
-                if payload != last_payload:
-                    last_payload = payload
-                    last_sent = now
-                    yield _format_sse(payload)
-                elif now - last_sent >= SSE_HEARTBEAT_INTERVAL:
-                    last_sent = now
-                    yield ": heartbeat\n\n"
-                await asyncio.sleep(SSE_STATE_INTERVAL)
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    # Arm (reconcile watches + clear the edge) *before* the read so a
+                    # change racing the recompute leaves the edge set for the next wait.
+                    watcher.arm()
+                    # Even cheapened, the snapshot occasionally touches the FS; run it
+                    # off the event loop so a slow gather never stalls other connections.
+                    snapshot = await asyncio.to_thread(_state_snapshot)
+                    payload = json.dumps(snapshot, sort_keys=True)
+                    now = loop.time()
+                    if payload != last_payload:
+                        last_payload = payload
+                        last_sent = now
+                        yield _format_sse(payload)
+                    elif now - last_sent >= SSE_HEARTBEAT_INTERVAL:
+                        last_sent = now
+                        yield ": heartbeat\n\n"
+                    # Block until the substrate changes or the heartbeat interval
+                    # elapses (the latter drives the idle heartbeat above).
+                    await watcher.wait_for_change(timeout=SSE_HEARTBEAT_INTERVAL)
+            finally:
+                watcher.close()
 
         headers = {
             "Cache-Control": "no-cache",
@@ -459,12 +468,27 @@ def create_api_router(
         owner: str,
         repo: str,
         lines: int = Query(default_tail_lines, ge=1, le=MAX_TAIL_LINES),
+        before_offset: int | None = Query(
+            None, ge=0, description="Byte cursor: page lines older than this offset"
+        ),
     ) -> dict:
+        """Offset-paginated tail of a repo's worker log (issue #270).
+
+        Reads the tail backward from EOF (or from *before_offset*) so a large log
+        is never read from byte 0. The additive ``next_offset`` byte cursor lets a
+        client page older lines: pass it back as ``before_offset`` until it is
+        ``null`` (start of file). ``lines`` / ``count`` stay backward-compatible.
+        """
         try:
-            tail = services.tail_log(base_dir, owner, repo, lines)
+            page = services.tail_log_page(base_dir, owner, repo, lines, before_offset)
         except services.LogNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {"repo": f"{owner}/{repo}", "lines": tail, "count": len(tail)}
+        return {
+            "repo": f"{owner}/{repo}",
+            "lines": page["lines"],
+            "count": len(page["lines"]),
+            "next_offset": page["next_offset"],
+        }
 
     @router.get("/logs/{owner}/{repo}/pipelines")
     def list_pipeline_logs(owner: str, repo: str) -> dict:
@@ -482,16 +506,30 @@ def create_api_router(
         repo: str,
         pipeline_key: str,
         lines: int = Query(default_tail_lines, ge=1, le=MAX_TAIL_LINES),
+        before_offset: int | None = Query(
+            None, ge=0, description="Byte cursor: page lines older than this offset"
+        ),
     ) -> dict:
+        """Offset-paginated tail of a pipeline's log (issue #270).
+
+        The pipeline-log parity of ``/logs/{owner}/{repo}/tail``: reads backward
+        from EOF (or from *before_offset*) and returns an additive ``next_offset``
+        byte cursor so a client can page older lines (pass it back as
+        ``before_offset`` until it is ``null``). ``lines`` / ``count`` are
+        backward-compatible.
+        """
         try:
-            tail = services.tail_pipeline_log(base_dir, owner, repo, pipeline_key, lines)
+            page = services.tail_pipeline_log_page(
+                base_dir, owner, repo, pipeline_key, lines, before_offset
+            )
         except services.LogNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {
             "repo": f"{owner}/{repo}",
             "pipeline_key": pipeline_key,
-            "lines": tail,
-            "count": len(tail),
+            "lines": page["lines"],
+            "count": len(page["lines"]),
+            "next_offset": page["next_offset"],
         }
 
     _register_entry_routes(router, "skills", base_dir=base_dir, global_root=global_root)
@@ -564,14 +602,100 @@ def create_api_router(
             "count": len(events),
         }
 
+    @router.get("/activity")
+    def get_activity(
+        lines: int = Query(default_tail_lines, ge=1, le=MAX_TAIL_LINES),
+    ) -> dict:
+        """Cross-fleet "Live activity" backlog: a bounded recent-tail merge (#270).
+
+        A time-ordered merge of the last *lines* events across the **active set**
+        (≤ pool size) — not a historical/aggregate scan. Each event carries its
+        ``repo`` / ``pipeline_key`` so the UI can attribute the line. Mirror of
+        :func:`get_pipeline_activity` but fleet-wide; see ``/activity/stream`` for
+        the live push.
+        """
+        events = services.fleet_activity(base_dir, lines)
+        return {"events": events, "count": len(events)}
+
+    @router.get("/activity/stream")
+    async def stream_activity(
+        request: Request,
+        lines: int = Query(default_tail_lines, ge=1, le=MAX_TAIL_LINES),
+    ) -> StreamingResponse:
+        """SSE push of the cross-fleet activity feed (#270).
+
+        Emits the recent-tail backlog, then on each FleetEventWatcher change
+        recomputes the merged tail and emits only events past a tracked cursor
+        (the last emitted ISO ``ts`` plus a small dedupe set for equal-``ts``
+        ties), one JSON event per ``data:`` line. Same heartbeat / disconnect /
+        teardown contract as ``stream_events`` — the watcher is closed in a
+        ``finally`` so nothing leaks across reconnects.
+        """
+
+        def _key(event: dict) -> str:
+            # Canonical full-payload key: keying on only a few fields would let two
+            # distinct same-``ts`` events collide and silently drop one from the
+            # live feed, so serialise every field.
+            return json.dumps(event, sort_keys=True, separators=(",", ":"))
+
+        async def event_stream():
+            loop = asyncio.get_running_loop()
+            watcher = streaming.FleetEventWatcher(base_dir)
+            cursor_ts = ""
+            ties: set[str] = set()
+            last_sent = loop.time()
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    watcher.arm()
+                    merged = await asyncio.to_thread(services.fleet_activity, base_dir, lines)
+                    emitted_any = False
+                    for event in merged:  # ascending by ts
+                        ts = event.get("ts", "")
+                        if ts < cursor_ts:
+                            continue
+                        if ts == cursor_ts and _key(event) in ties:
+                            continue
+                        if ts > cursor_ts:
+                            cursor_ts = ts
+                            ties = {_key(event)}
+                        else:
+                            ties.add(_key(event))
+                        emitted_any = True
+                        yield _format_sse(json.dumps(event, sort_keys=True))
+                    now = loop.time()
+                    if emitted_any:
+                        last_sent = now
+                    elif now - last_sent >= SSE_HEARTBEAT_INTERVAL:
+                        last_sent = now
+                        yield ": heartbeat\n\n"
+                    await watcher.wait_for_change(timeout=SSE_HEARTBEAT_INTERVAL)
+            finally:
+                watcher.close()
+
+        headers = {
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        }
+        return StreamingResponse(
+            event_stream(), media_type="text/event-stream", headers=headers
+        )
+
     @router.get("/stuck")
     def get_stuck() -> list[dict]:
+        """Heartbeat-derived stuck pipelines (#270) — no ``/proc`` on this path.
+
+        Repointed from the ``/proc`` sampler to :func:`list_stuck_by_heartbeat` so
+        it returns the same payload shape (minus the unavailable ``pid`` /
+        ``cmdline``) without CPU/IO sampling or a blocking sleep. Kept (rather than
+        removed) so any external consumer of ``/api/stuck`` keeps a 200.
+        """
         return [
             asdict(s)
-            for s in services.list_stuck(
-                base_dir,
-                threshold_seconds=stuck_after_seconds,
-                activity_sample_seconds=activity_sample_seconds,
+            for s in services.list_stuck_by_heartbeat(
+                base_dir, threshold_seconds=stuck_after_seconds
             )
         ]
 

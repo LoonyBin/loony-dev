@@ -3,7 +3,8 @@
 The async web log tailer in :mod:`loony_dev.web.streaming` watches log files for
 appends. To avoid duplicating the ctypes glue, the low-level bits live here:
 
-- :data:`IN_MODIFY` / :data:`IN_CLOSE_WRITE` event-mask constants,
+- :data:`IN_MODIFY` / :data:`IN_CLOSE_WRITE` / :data:`IN_CREATE` /
+  :data:`IN_MOVED_TO` event-mask constants,
 - :data:`INOTIFY_AVAILABLE` — whether ``libc`` exposes the inotify syscalls,
 - :func:`init` — create a non-blocking, close-on-exec inotify instance,
 - :func:`add_watch` — register a watch on a path.
@@ -20,7 +21,26 @@ import os
 
 # inotify event-mask bits (from <sys/inotify.h>)
 IN_MODIFY = 0x00000002  # File was modified
+IN_MOVED_TO = 0x00000080  # File moved into the watched directory
 IN_CLOSE_WRITE = 0x00000008  # Writable file was closed
+IN_CREATE = 0x00000100  # File/dir created in the watched directory
+
+# Directory-level mask for the fleet event watcher (#270): a pipeline's snapshot
+# is rewritten via ``mkstemp`` + ``os.replace`` (``IN_MOVED_TO`` on the dir) and
+# its event log is appended to (``IN_MODIFY``/``IN_CLOSE_WRITE``); a brand-new
+# pipeline file first appears as ``IN_CREATE``. Watching the *directory* with all
+# four bits catches every substrate change, where a per-file watch would miss the
+# replaced inode entirely.
+DIR_WATCH_MASK = IN_MODIFY | IN_CLOSE_WRITE | IN_CREATE | IN_MOVED_TO
+
+# Creation-only mask for the *ancestor* dirs of a pipelines directory (the base
+# dir, ``.logs``, and each ``<owner>``/``<repo>``). A brand-new pipeline creates
+# its ``pipelines/`` subtree after the dashboard has already connected; watching
+# the ancestors for child *creation* lets that first append wake the SSE loop
+# immediately instead of waiting out the heartbeat. We deliberately omit
+# ``IN_MODIFY`` here so the worker log appended in the repo dir
+# (``loony-worker.log``, a direct child) does not fire an edge on every line.
+PARENT_WATCH_MASK = IN_CREATE | IN_MOVED_TO
 
 try:
     _libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
