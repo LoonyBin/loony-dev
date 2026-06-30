@@ -455,42 +455,91 @@ def _remote_control_command(session_id: str) -> list[str]:
     return ["claude", "--remote-control", session_id, "--dangerously-skip-permissions"]
 
 
-_JOIN_URL_RE = re.compile(rb"https://\S*claude\.ai/\S+")
+# Fixed PTY geometry for the remote-control child (see ``_run_remote_control_process``).
+# The ~57-char join-URL footer must never wrap, and the dimensions must match the
+# ``pyte`` screen the scanner renders into so the live behaviour and the test
+# fixture agree.
+_REMOTE_CONTROL_PTY_ROWS = 50
+_REMOTE_CONTROL_PTY_COLS = 200
 
-# Terminal control sequences a TUI redraw can splice mid-URL. CSI (``ESC[``
-# followed by the full parameter range (0x30-0x3F) then intermediate bytes and a
-# final byte, e.g. ``ESC[28G`` "cursor to column 28", ``ESC[0m``, ``ESC[2K``),
-# OSC (``ESC]`` … terminated by BEL or ST), and
-# lone two-byte escapes (``ESC`` + a single byte in ``@-_``). These bytes are
-# non-whitespace, so ``_JOIN_URL_RE``'s ``\S+`` would otherwise swallow them.
-_ANSI_ESCAPE_RE = re.compile(
-    rb"\x1b\[[0-?]*[ -/]*[@-~]"  # CSI (params 0x30-0x3F, intermediates 0x20-0x2F, final)
-    rb"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC … BEL | ST
-    rb"|\x1b[@-_]"  # lone two-byte escape
+# A claude.ai URL candidate on a *rendered* line: scheme through the first run of
+# non-whitespace. ``claude --remote-control`` may print either the new
+# ``…/code/session_<id>`` deep link or the legacy ``…/remote-control/<token>``.
+_JOIN_URL_CANDIDATE_RE = re.compile(r"https://\S*claude\.ai/\S+")
+
+# A captured candidate is only persisted if it has the exact shape of a real join
+# URL. This is the issue's "degrade to null" safety net: a malformed render such
+# as ``…/code/sssion_…`` (a dropped/duplicated char) fails this and is dropped
+# rather than written to the connection file. ``session_<id>`` ids are
+# alphanumeric; the legacy ``remote-control/<token>`` form is also accepted.
+_VALID_JOIN_URL_RE = re.compile(
+    r"^https://(?:[\w.-]+\.)?claude\.ai/"
+    r"(?:code/session_[A-Za-z0-9]+|remote-control/[A-Za-z0-9._~-]+)$"
 )
 
 
-def _strip_ansi(data: bytes) -> bytes:
-    """Remove ANSI/CSI/OSC terminal control sequences from ``data``.
+def _extract_join_url(line: str) -> str | None:
+    """Return the validated claude.ai join URL on a rendered *line*, or ``None``.
 
-    A no-op on escape-free bytes (returns them byte-for-byte).
+    The candidate is trimmed of trailing punctuation a TUI may abut, then checked
+    against :data:`_VALID_JOIN_URL_RE`; anything that isn't a well-formed join URL
+    is rejected.
     """
-    return _ANSI_ESCAPE_RE.sub(b"", data)
+    match = _JOIN_URL_CANDIDATE_RE.search(line)
+    if not match:
+        return None
+    candidate = match.group(0).rstrip(".,)'\"")
+    if _VALID_JOIN_URL_RE.match(candidate):
+        return candidate
+    return None
+
+
+class _JoinUrlScanner:
+    """Stateful scanner that recovers the join URL from a remote-control PTY.
+
+    The Claude TUI composes the URL line by repositioning the cursor mid-redraw
+    (e.g. ``ESC[28G`` — CHA, "cursor to column 28") and relies on cells written by
+    *earlier* frames, so the raw byte order does not match the rendered order and
+    naive escape-stripping cannot reconstruct the text (issue #293). Instead we
+    feed the byte stream through a ``pyte`` terminal emulator and read the URL from
+    the *rendered* screen, exactly as a human would see it.
+
+    ``feed`` is cumulative: state carries across chunks, so a URL split over a read
+    boundary (or one whose correct cells came from a prior frame) still renders.
+    """
+
+    def __init__(
+        self,
+        cols: int = _REMOTE_CONTROL_PTY_COLS,
+        rows: int = _REMOTE_CONTROL_PTY_ROWS,
+    ) -> None:
+        import pyte  # local import: only the remote-control child path needs it
+
+        self._screen = pyte.Screen(cols, rows)
+        self._stream = pyte.ByteStream(self._screen)
+
+    def feed(self, chunk: bytes) -> str | None:
+        """Feed a PTY chunk and return the first validated join URL on screen.
+
+        Returns ``None`` while the screen holds no well-formed join URL (e.g. a
+        partial mid-redraw frame), so a malformed capture never gets persisted.
+        """
+        self._stream.feed(chunk)
+        for line in self._screen.display:
+            url = _extract_join_url(line)
+            if url:
+                return url
+        return None
 
 
 def _scan_for_join_url(data: bytes) -> str | None:
-    """Best-effort scan of PTY output for a claude.ai join/deep-link URL.
+    """Render *data* through a fresh :class:`_JoinUrlScanner` and return the URL.
 
-    Returns the first match decoded as text, or ``None``. ANSI/CSI escapes are
-    stripped first so a TUI redraw splicing e.g. ``ESC[28G`` mid-URL doesn't
-    corrupt the captured link. The scan is per-chunk (no cross-chunk buffering)
-    and intentionally narrow to avoid false positives; ``join_url`` stays
-    ``null`` unless a link is actually emitted.
+    Thin convenience wrapper (one-shot, no cross-chunk state) used by tests and
+    callers that already hold the full capture; the live read loop drives a
+    long-lived scanner directly.
     """
-    match = _JOIN_URL_RE.search(_strip_ansi(data))
-    if not match:
-        return None
-    return match.group(0).decode("utf-8", errors="replace").rstrip(".,)'\"")
+    return _JoinUrlScanner().feed(data)
 
 
 def _write_connection_file(
@@ -563,24 +612,29 @@ def _run_remote_control_process(
     check observes a non-``None`` ``exitcode`` and restarts via the backoff loop.
     """
     import errno
+    import fcntl
     import pty
     import select
+    import struct
+    import termios
 
     command = _remote_control_command(session_id)
 
-    # Refresh the connection file with this process's live PID.
-    _write_connection_file(
-        conn_file,
-        repo=repo,
-        session_id=session_id,
-        key=key,
-        cwd=base_dir,
-        pid=os.getpid(),
-        started_at=started_at,
-        command=command,
-    )
-
     master_fd, slave_fd = pty.openpty()
+    # Pin the PTY geometry so the join-URL footer never wraps and the rendered
+    # screen matches the scanner's pyte dimensions (issue #293). Fail fast rather
+    # than run claude on a mismatched PTY that can only yield a wrapped/unusable
+    # join URL — the supervisor's backoff loop will restart us.
+    try:
+        winsize = struct.pack(
+            "HHHH", _REMOTE_CONTROL_PTY_ROWS, _REMOTE_CONTROL_PTY_COLS, 0, 0
+        )
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
+    except OSError as exc:
+        os.close(master_fd)
+        os.close(slave_fd)
+        logger.error("Could not set remote-control PTY winsize for %s: %s", repo, exc)
+        sys.exit(1)
     try:
         proc = subprocess.Popen(
             command,
@@ -602,7 +656,23 @@ def _run_remote_control_process(
     # The child holds the slave end; this wrapper only reads from the master.
     os.close(slave_fd)
 
+    # Refresh the connection file with this process's live PID now that claude
+    # has actually launched on a correctly-sized PTY. Writing it only after the
+    # winsize/Popen steps succeed avoids persisting a "running" session for a
+    # child that died during PTY setup (issue #293 review).
+    _write_connection_file(
+        conn_file,
+        repo=repo,
+        session_id=session_id,
+        key=key,
+        cwd=base_dir,
+        pid=os.getpid(),
+        started_at=started_at,
+        command=command,
+    )
+
     join_url_found = False
+    scanner = _JoinUrlScanner()
     with open(log_file, "ab") as logf:
         while True:
             try:
@@ -621,7 +691,7 @@ def _run_remote_control_process(
                 logf.write(chunk)
                 logf.flush()
                 if not join_url_found:
-                    url = _scan_for_join_url(chunk)
+                    url = scanner.feed(chunk)
                     if url:
                         join_url_found = True
                         _write_connection_file(
