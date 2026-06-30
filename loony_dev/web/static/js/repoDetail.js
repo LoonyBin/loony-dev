@@ -584,9 +584,10 @@ function show(repo) {
   const title = document.getElementById("repo-log-title");
   // Surface the observe stream's connection state in the title (#282) so a
   // reconnect / "no session" / error isn't masked by a permanent "(live)".
-  // Capture `repo` locally: `current` mutates on the next repo switch, but the
-  // stream is torn down then anyway, so the callback only ever reflects this one.
-  const repo = current;
+  // The `repo` parameter is already pinned to this invocation (it equals
+  // `current` after the early-returns and is never reassigned), and the streams
+  // below are torn down on the next repo switch, so the callback only ever
+  // reflects this one repo — no separate local capture is needed.
   const setLogStatus = (text) => {
     if (title) title.textContent = `— ${repo} (${text || "live"})`;
   };
