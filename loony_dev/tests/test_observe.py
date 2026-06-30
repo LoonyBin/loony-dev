@@ -12,6 +12,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -214,26 +215,117 @@ class ObservableViewTestCase(unittest.TestCase):
 
 
 class LiveObserveJsonlPathTestCase(unittest.TestCase):
-    """The base (remote-control) session JSONL resolver (#282)."""
+    """The base (remote-control) session JSONL resolver (#282, #294).
+
+    ``--remote-control`` writes its transcript under a random UUID, not the
+    deterministic relay id in ``remote-control.json``, so the resolver globs the
+    checkout's project-slug dir and returns the newest ``*.jsonl`` (issue #294)
+    rather than computing a filename from ``session_id``.
+    """
 
     def setUp(self) -> None:
         self.base = Path(_tmpdir())
-        self.addCleanup(lambda: shutil.rmtree(self.base, ignore_errors=True))
+        self.config_dir = Path(_tmpdir())
+        self.cwd = Path(_tmpdir())  # the base checkout cwd (absolute)
+        for d in (self.base, self.config_dir, self.cwd):
+            self.addCleanup(lambda d=d: shutil.rmtree(d, ignore_errors=True))
+        self.enterContext(mock.patch.dict(
+            os.environ, {"CLAUDE_CONFIG_DIR": str(self.config_dir)},
+        ))
         self.conn_dir = self.base / ".logs" / "acme" / "widgets"
         self.conn_dir.mkdir(parents=True, exist_ok=True)
         self.conn_path = self.conn_dir / "remote-control.json"
+        # The project-slug dir claude would write the base session's transcript to.
+        self.project_dir = jsonl_path_for(self.cwd, "x").parent
 
     def _write_conn(self, data: object) -> None:
         self.conn_path.write_text(json.dumps(data) if not isinstance(data, str) else data)
 
-    def test_resolves_from_cwd_and_session_id(self) -> None:
+    def _write_jsonl(self, name: str, mtime: float | None = None) -> Path:
+        self.project_dir.mkdir(parents=True, exist_ok=True)
+        path = self.project_dir / name
+        path.write_text("{}\n")
+        if mtime is not None:
+            os.utime(path, (mtime, mtime))
+        return path
+
+    def _good_conn(self) -> None:
+        # session_id is the (unusable-as-filename) relay handle; cwd is what matters.
         self._write_conn({
-            "session_id": "loony-acme-widgets-abc", "cwd": "/base/acme/widgets",
+            "session_id": "loony-acme-widgets-abc", "cwd": str(self.cwd),
             "key": "base", "mode": "remote-control",
         })
-        path = services.live_observe_jsonl_path(self.base, "acme", "widgets")
-        self.assertEqual(path, jsonl_path_for(Path("/base/acme/widgets"),
-                                              "loony-acme-widgets-abc"))
+
+    def test_resolves_to_only_transcript(self) -> None:
+        self._good_conn()
+        only = self._write_jsonl("37997fbd-aaaa.jsonl")
+        self.assertEqual(
+            services.live_observe_jsonl_path(self.base, "acme", "widgets"), only,
+        )
+
+    def test_resolves_to_newest_transcript(self) -> None:
+        # The on-disk filename is a random UUID, never the relay id; with several
+        # present the resolver returns the most-recently-modified one.
+        self._good_conn()
+        self._write_jsonl("old.jsonl", mtime=1_000.0)
+        newest = self._write_jsonl("newest.jsonl", mtime=3_000.0)
+        self._write_jsonl("middle.jsonl", mtime=2_000.0)
+        self.assertEqual(
+            services.live_observe_jsonl_path(self.base, "acme", "widgets"), newest,
+        )
+
+    def test_excludes_stale_transcript_after_restart(self) -> None:
+        # After a supervisor restart, the only on-disk transcript is the prior
+        # session's (mtime < started_at) and the new session hasn't written yet.
+        # The route tails the resolved path once and forever, so returning that
+        # stale file would pin an observer to it — instead resolve to None (→
+        # honest 4404) and let reconnect pick up the new transcript (#294 review).
+        started = datetime(2026, 6, 30, 12, 0, tzinfo=timezone.utc)
+        self._write_conn({
+            "session_id": "loony-acme-widgets-abc", "cwd": str(self.cwd),
+            "key": "base", "mode": "remote-control",
+            "started_at": started.isoformat(),
+        })
+        self._write_jsonl("prior-session.jsonl", mtime=started.timestamp() - 60)
+        self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "widgets"))
+
+    def test_resolves_current_transcript_after_restart(self) -> None:
+        # Same restart scenario, but the new session has now written: the fresh
+        # transcript (mtime >= started_at) is returned and the prior one ignored.
+        started = datetime(2026, 6, 30, 12, 0, tzinfo=timezone.utc)
+        self._write_conn({
+            "session_id": "loony-acme-widgets-abc", "cwd": str(self.cwd),
+            "key": "base", "mode": "remote-control",
+            "started_at": started.isoformat(),
+        })
+        self._write_jsonl("prior-session.jsonl", mtime=started.timestamp() - 60)
+        current = self._write_jsonl("current-session.jsonl", mtime=started.timestamp() + 5)
+        self.assertEqual(
+            services.live_observe_jsonl_path(self.base, "acme", "widgets"), current,
+        )
+
+    def test_unparseable_started_at_falls_back_to_newest(self) -> None:
+        # A connection file predating (or corrupting) started_at must not wedge
+        # resolution: fall back to unfiltered newest-mtime selection.
+        self._write_conn({
+            "session_id": "loony-acme-widgets-abc", "cwd": str(self.cwd),
+            "key": "base", "mode": "remote-control", "started_at": "not-a-time",
+        })
+        only = self._write_jsonl("37997fbd-aaaa.jsonl", mtime=1_000.0)
+        self.assertEqual(
+            services.live_observe_jsonl_path(self.base, "acme", "widgets"), only,
+        )
+
+    def test_none_when_no_transcript_yet(self) -> None:
+        # Honest-empty: project dir exists but holds no transcript → None (→ 4404),
+        # never a path to await (the #294 no-hang guarantee).
+        self._good_conn()
+        self.project_dir.mkdir(parents=True, exist_ok=True)
+        self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "widgets"))
+
+    def test_none_when_project_dir_absent(self) -> None:
+        self._good_conn()  # no project dir created at all
+        self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "widgets"))
 
     def test_none_when_missing(self) -> None:
         self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "nope"))
@@ -242,18 +334,20 @@ class LiveObserveJsonlPathTestCase(unittest.TestCase):
         self._write_conn("{not json")
         self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "widgets"))
 
-    def test_none_when_missing_cwd_or_session_id(self) -> None:
-        self._write_conn({"session_id": "sid"})  # no cwd
-        self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "widgets"))
-        self._write_conn({"cwd": "/x"})  # no session_id
+    def test_none_when_not_dict(self) -> None:
+        self._write_conn([1, 2, 3])
         self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "widgets"))
 
-    def test_none_when_cwd_or_session_id_have_invalid_shape(self) -> None:
-        # Present-but-malformed values (non-string, or a relative cwd) are rejected
-        # rather than coerced into a fabricated transcript path.
+    def test_none_when_missing_cwd(self) -> None:
+        self._write_conn({"session_id": "sid"})  # no cwd
+        self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "widgets"))
+
+    def test_none_when_cwd_has_invalid_shape(self) -> None:
+        # Present-but-malformed cwd values (non-string, empty, or relative) are
+        # rejected rather than coerced into a fabricated transcript path.
         self._write_conn({"cwd": 123, "session_id": "sid"})
         self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "widgets"))
-        self._write_conn({"cwd": "/x", "session_id": 456})
+        self._write_conn({"cwd": "", "session_id": "sid"})
         self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "widgets"))
         self._write_conn({"cwd": "relative/path", "session_id": "sid"})
         self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "widgets"))
@@ -261,17 +355,6 @@ class LiveObserveJsonlPathTestCase(unittest.TestCase):
     def test_none_for_traversal_segment(self) -> None:
         self.assertIsNone(services.live_observe_jsonl_path(self.base, "..", "widgets"))
         self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "a/b"))
-
-    def test_none_for_path_bearing_session_id(self) -> None:
-        # session_id becomes the transcript filename in jsonl_path_for(), so a
-        # path-bearing value from a malformed connection file must be rejected
-        # (→ honest None) rather than escaping projects/<slug>/.
-        for sid in ("..", ".", "../other", "/abs/x", "a/b", "a\\b", "a\x00b"):
-            self._write_conn({"cwd": "/base/acme/widgets", "session_id": sid})
-            self.assertIsNone(
-                services.live_observe_jsonl_path(self.base, "acme", "widgets"),
-                msg=f"session_id={sid!r} should be rejected",
-            )
 
 
 class ObserveWebSocketTestCase(unittest.TestCase):

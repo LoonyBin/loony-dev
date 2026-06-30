@@ -1132,27 +1132,63 @@ def observe_jsonl_path(base_dir: Path, task_key: str) -> Path | None:
     return jsonl_path_for(Path(session.cwd), session.session_id)
 
 
+def _parse_iso_timestamp(value: object) -> float | None:
+    """Parse an ISO-8601 timestamp into an epoch float, or ``None``.
+
+    Returns ``None`` for a missing/non-string/unparseable value so callers fall
+    back to their unfiltered behaviour (e.g. a connection file predating the
+    ``started_at`` field). The supervisor writes ``started_at`` as a tz-aware UTC
+    ISO string, so :meth:`datetime.timestamp` yields a UTC epoch comparable to a
+    file's ``st_mtime``.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        return None
+
+
 def live_observe_jsonl_path(base_dir: Path, owner: str, repo: str) -> Path | None:
     """Locate the always-on base (remote-control) session's JSONL for a repo (#282).
 
     Reads ``<base>/.logs/<owner>/<repo>/remote-control.json`` (the connection file
-    written by the supervisor; canonical schema in :mod:`loony_dev.supervisor`) and
-    maps its ``cwd`` + ``session_id`` to the claude transcript path via
-    :func:`loony_dev.session.jsonl_path_for`. Unlike a per-task session, the base
-    session carries no task/pipeline key, so it is addressed directly by ``owner``
-    /``repo`` rather than through the session registry.
+    written by the supervisor; canonical schema in :mod:`loony_dev.supervisor`) for
+    the base session's checkout ``cwd``, then resolves the transcript by globbing
+    that checkout's claude project-slug directory and returning the
+    **most-recently-modified** ``*.jsonl``.
+
+    The glob is deliberate, not a fallback (issue #294): the supervisor launches the
+    base session as ``claude --remote-control <name>``, where ``<name>`` is the
+    deterministic relay id (``loony-<owner>-<repo>-<hash>``) it also writes as
+    ``session_id``. But ``--remote-control`` treats that argument only as a relay
+    handle — it does **not** use it as the transcript filename, writing instead under
+    a fresh random UUID. So ``jsonl_path_for(cwd, session_id)`` named a file that
+    never exists, and the route then awaited it forever (101, then silence). The
+    base checkout ``cwd`` is used *only* by the always-on remote-control session
+    (workers run in per-pipeline worktrees with different cwds → different project
+    slugs), so the newest ``*.jsonl`` in that one directory is unambiguously the
+    live base session's transcript.
+
+    Candidates are filtered to transcripts modified at/after the connection's
+    ``started_at`` so a supervisor restart never pins observers to the prior
+    session's file: the route resolves this path *once* and tails it forever, so
+    returning the old transcript would keep an already-open observer following it
+    even after the new session writes. Until a current-session transcript exists
+    the resolver returns ``None`` (honest empty); the client's reconnect (#282)
+    then picks up the new transcript once it lands. A connection file predating
+    the ``started_at`` field falls back to unfiltered newest-mtime selection.
 
     Returns ``None`` — never raises — when the connection file is missing,
-    malformed, or predates the ``cwd``/``session_id`` contract, so a not-yet-started
-    base session degrades to an honest empty state (the route closes ``4404``)
-    rather than a dashboard 500. Path segments containing a separator/``..``/NUL are
-    rejected the same way (→ ``None``). The returned path may not exist yet (the
-    base session's first turn has not written the transcript); the tailer waits for
-    it to appear.
+    malformed, predates the ``cwd`` contract, or no current transcript exists
+    yet, so a not-yet-started base session degrades to an honest empty state (the
+    route closes ``4404`` *before* accepting the socket) rather than a hang or a
+    dashboard 500. Path segments containing a separator/``..``/NUL are rejected the
+    same way (→ ``None``).
     """
     import json
 
-    from loony_dev.session import jsonl_path_for
+    from loony_dev.session import claude_config_dir, project_slug
 
     for segment in (owner, repo):
         if (
@@ -1172,29 +1208,30 @@ def live_observe_jsonl_path(base_dir: Path, owner: str, repo: str) -> Path | Non
     if not isinstance(data, dict):
         return None
     cwd = data.get("cwd")
-    session_id = data.get("session_id")
-    # Accept only real, non-empty string values, and require an absolute cwd —
-    # the supervisor always writes the repo's absolute base checkout. A numeric,
-    # relative, or empty value is malformed input, so return None (→ honest 4404)
-    # rather than fabricating a transcript path from it. session_id becomes the
-    # transcript filename in jsonl_path_for(), so reject path-bearing values the
-    # same way owner/repo are guarded above — a malformed connection file must
-    # not let /live/observe tail a file outside projects/<slug>/.
-    if (
-        not isinstance(cwd, str)
-        or not isinstance(session_id, str)
-        or not cwd
-        or not session_id
-        or session_id in (".", "..")
-        or "/" in session_id
-        or "\\" in session_id
-        or "\x00" in session_id
-    ):
+    # We need only ``cwd`` now — ``session_id`` is the relay handle, not the
+    # on-disk transcript name (see the docstring), so it no longer drives the
+    # path. Accept only a real, non-empty, absolute cwd — the supervisor always
+    # writes the repo's absolute base checkout; a numeric, relative, or empty
+    # value is malformed input, so return None (→ honest 4404).
+    if not isinstance(cwd, str) or not cwd:
         return None
     cwd_path = Path(cwd)
     if not cwd_path.is_absolute():
         return None
-    return jsonl_path_for(cwd_path, session_id)
+    started_at = _parse_iso_timestamp(data.get("started_at"))
+
+    project_dir = claude_config_dir() / "projects" / project_slug(cwd_path)
+    try:
+        transcripts = list(project_dir.glob("*.jsonl"))
+        if started_at is not None:
+            # Drop the prior session's stale transcript after a restart — only a
+            # file written at/after this connection's launch belongs to it.
+            transcripts = [p for p in transcripts if p.stat().st_mtime >= started_at]
+        if not transcripts:
+            return None
+        return max(transcripts, key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return None
 
 
 def inject_turn(base_dir: Path, task_key: str, prompt: str) -> dict:
