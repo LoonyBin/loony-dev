@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import json
+import struct
 import tempfile
+import termios
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -392,7 +394,7 @@ class ChildEntrypointTestCase(unittest.TestCase):
         fake_proc.wait.return_value = 0
 
         with mock.patch("pty.openpty", return_value=(10, 11)), \
-             mock.patch("fcntl.ioctl"), \
+             mock.patch("fcntl.ioctl") as ioctl, \
              mock.patch("select.select", return_value=([], [], [])), \
              mock.patch.object(supervisor.os, "close"), \
              mock.patch.object(supervisor.subprocess, "Popen", return_value=fake_proc) as popen:
@@ -408,6 +410,19 @@ class ChildEntrypointTestCase(unittest.TestCase):
                 )
 
         self.assertEqual(cm.exception.code, 0)
+        # The slave PTY is sized to the pinned geometry before claude launches,
+        # so the join-URL footer never wraps (issue #293).
+        ioctl.assert_called_once_with(
+            11,
+            termios.TIOCSWINSZ,
+            struct.pack(
+                "HHHH",
+                supervisor._REMOTE_CONTROL_PTY_ROWS,
+                supervisor._REMOTE_CONTROL_PTY_COLS,
+                0,
+                0,
+            ),
+        )
         # claude launched with the PTY slave as its stdio in a new session.
         args, kwargs = popen.call_args
         self.assertEqual(
@@ -429,7 +444,7 @@ class ChildEntrypointTestCase(unittest.TestCase):
         fake_proc.poll.return_value = 3
         fake_proc.wait.return_value = 3
         with mock.patch("pty.openpty", return_value=(10, 11)), \
-             mock.patch("fcntl.ioctl"), \
+             mock.patch("fcntl.ioctl") as ioctl, \
              mock.patch("select.select", return_value=([], [], [])), \
              mock.patch.object(supervisor.os, "close"), \
              mock.patch.object(supervisor.subprocess, "Popen", return_value=fake_proc):
@@ -439,6 +454,17 @@ class ChildEntrypointTestCase(unittest.TestCase):
                     "loony-acme-widgets", "base", "2026-06-06T00:00:00+00:00",
                 )
         self.assertEqual(cm.exception.code, 3)
+        ioctl.assert_called_once_with(
+            11,
+            termios.TIOCSWINSZ,
+            struct.pack(
+                "HHHH",
+                supervisor._REMOTE_CONTROL_PTY_ROWS,
+                supervisor._REMOTE_CONTROL_PTY_COLS,
+                0,
+                0,
+            ),
+        )
 
     def test_winsize_failure_fails_fast_before_launch(self) -> None:
         # A PTY that can't be sized to the scanner's geometry can only yield a
@@ -457,6 +483,10 @@ class ChildEntrypointTestCase(unittest.TestCase):
         self.assertEqual(cm.exception.code, 1)
         popen.assert_not_called()  # claude is never launched
         self.assertCountEqual(closed, [10, 11])  # both PTY fds released
+        # The child writes its "running" connection file only after the PTY is
+        # sized and claude launches, so a winsize failure leaves no fake live
+        # session behind (#293 review).
+        self.assertFalse(self.conn_file.exists())
 
 
 class JoinUrlScanTestCase(unittest.TestCase):

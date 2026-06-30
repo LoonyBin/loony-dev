@@ -620,18 +620,6 @@ def _run_remote_control_process(
 
     command = _remote_control_command(session_id)
 
-    # Refresh the connection file with this process's live PID.
-    _write_connection_file(
-        conn_file,
-        repo=repo,
-        session_id=session_id,
-        key=key,
-        cwd=base_dir,
-        pid=os.getpid(),
-        started_at=started_at,
-        command=command,
-    )
-
     master_fd, slave_fd = pty.openpty()
     # Pin the PTY geometry so the join-URL footer never wraps and the rendered
     # screen matches the scanner's pyte dimensions (issue #293). Fail fast rather
@@ -667,6 +655,21 @@ def _run_remote_control_process(
 
     # The child holds the slave end; this wrapper only reads from the master.
     os.close(slave_fd)
+
+    # Refresh the connection file with this process's live PID now that claude
+    # has actually launched on a correctly-sized PTY. Writing it only after the
+    # winsize/Popen steps succeed avoids persisting a "running" session for a
+    # child that died during PTY setup (issue #293 review).
+    _write_connection_file(
+        conn_file,
+        repo=repo,
+        session_id=session_id,
+        key=key,
+        cwd=base_dir,
+        pid=os.getpid(),
+        started_at=started_at,
+        command=command,
+    )
 
     join_url_found = False
     scanner = _JoinUrlScanner()
