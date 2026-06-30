@@ -12,6 +12,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -271,6 +272,48 @@ class LiveObserveJsonlPathTestCase(unittest.TestCase):
         self._write_jsonl("middle.jsonl", mtime=2_000.0)
         self.assertEqual(
             services.live_observe_jsonl_path(self.base, "acme", "widgets"), newest,
+        )
+
+    def test_excludes_stale_transcript_after_restart(self) -> None:
+        # After a supervisor restart, the only on-disk transcript is the prior
+        # session's (mtime < started_at) and the new session hasn't written yet.
+        # The route tails the resolved path once and forever, so returning that
+        # stale file would pin an observer to it — instead resolve to None (→
+        # honest 4404) and let reconnect pick up the new transcript (#294 review).
+        started = datetime(2026, 6, 30, 12, 0, tzinfo=timezone.utc)
+        self._write_conn({
+            "session_id": "loony-acme-widgets-abc", "cwd": str(self.cwd),
+            "key": "base", "mode": "remote-control",
+            "started_at": started.isoformat(),
+        })
+        self._write_jsonl("prior-session.jsonl", mtime=started.timestamp() - 60)
+        self.assertIsNone(services.live_observe_jsonl_path(self.base, "acme", "widgets"))
+
+    def test_resolves_current_transcript_after_restart(self) -> None:
+        # Same restart scenario, but the new session has now written: the fresh
+        # transcript (mtime >= started_at) is returned and the prior one ignored.
+        started = datetime(2026, 6, 30, 12, 0, tzinfo=timezone.utc)
+        self._write_conn({
+            "session_id": "loony-acme-widgets-abc", "cwd": str(self.cwd),
+            "key": "base", "mode": "remote-control",
+            "started_at": started.isoformat(),
+        })
+        self._write_jsonl("prior-session.jsonl", mtime=started.timestamp() - 60)
+        current = self._write_jsonl("current-session.jsonl", mtime=started.timestamp() + 5)
+        self.assertEqual(
+            services.live_observe_jsonl_path(self.base, "acme", "widgets"), current,
+        )
+
+    def test_unparseable_started_at_falls_back_to_newest(self) -> None:
+        # A connection file predating (or corrupting) started_at must not wedge
+        # resolution: fall back to unfiltered newest-mtime selection.
+        self._write_conn({
+            "session_id": "loony-acme-widgets-abc", "cwd": str(self.cwd),
+            "key": "base", "mode": "remote-control", "started_at": "not-a-time",
+        })
+        only = self._write_jsonl("37997fbd-aaaa.jsonl", mtime=1_000.0)
+        self.assertEqual(
+            services.live_observe_jsonl_path(self.base, "acme", "widgets"), only,
         )
 
     def test_none_when_no_transcript_yet(self) -> None:

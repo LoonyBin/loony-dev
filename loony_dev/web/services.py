@@ -1132,6 +1132,23 @@ def observe_jsonl_path(base_dir: Path, task_key: str) -> Path | None:
     return jsonl_path_for(Path(session.cwd), session.session_id)
 
 
+def _parse_iso_timestamp(value: object) -> float | None:
+    """Parse an ISO-8601 timestamp into an epoch float, or ``None``.
+
+    Returns ``None`` for a missing/non-string/unparseable value so callers fall
+    back to their unfiltered behaviour (e.g. a connection file predating the
+    ``started_at`` field). The supervisor writes ``started_at`` as a tz-aware UTC
+    ISO string, so :meth:`datetime.timestamp` yields a UTC epoch comparable to a
+    file's ``st_mtime``.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        return None
+
+
 def live_observe_jsonl_path(base_dir: Path, owner: str, repo: str) -> Path | None:
     """Locate the always-on base (remote-control) session's JSONL for a repo (#282).
 
@@ -1153,14 +1170,19 @@ def live_observe_jsonl_path(base_dir: Path, owner: str, repo: str) -> Path | Non
     slugs), so the newest ``*.jsonl`` in that one directory is unambiguously the
     live base session's transcript.
 
-    Known limitation: immediately after a supervisor restart, before the new
-    session writes its first line, newest-mtime briefly points at the prior
-    session's transcript; it self-corrects on the first turn.
+    Candidates are filtered to transcripts modified at/after the connection's
+    ``started_at`` so a supervisor restart never pins observers to the prior
+    session's file: the route resolves this path *once* and tails it forever, so
+    returning the old transcript would keep an already-open observer following it
+    even after the new session writes. Until a current-session transcript exists
+    the resolver returns ``None`` (honest empty); the client's reconnect (#282)
+    then picks up the new transcript once it lands. A connection file predating
+    the ``started_at`` field falls back to unfiltered newest-mtime selection.
 
     Returns ``None`` — never raises — when the connection file is missing,
-    malformed, predates the ``cwd`` contract, or no transcript exists yet, so a
-    not-yet-started base session degrades to an honest empty state (the route
-    closes ``4404`` *before* accepting the socket) rather than a hang or a
+    malformed, predates the ``cwd`` contract, or no current transcript exists
+    yet, so a not-yet-started base session degrades to an honest empty state (the
+    route closes ``4404`` *before* accepting the socket) rather than a hang or a
     dashboard 500. Path segments containing a separator/``..``/NUL are rejected the
     same way (→ ``None``).
     """
@@ -1196,10 +1218,15 @@ def live_observe_jsonl_path(base_dir: Path, owner: str, repo: str) -> Path | Non
     cwd_path = Path(cwd)
     if not cwd_path.is_absolute():
         return None
+    started_at = _parse_iso_timestamp(data.get("started_at"))
 
     project_dir = claude_config_dir() / "projects" / project_slug(cwd_path)
     try:
         transcripts = list(project_dir.glob("*.jsonl"))
+        if started_at is not None:
+            # Drop the prior session's stale transcript after a restart — only a
+            # file written at/after this connection's launch belongs to it.
+            transcripts = [p for p in transcripts if p.stat().st_mtime >= started_at]
         if not transcripts:
             return None
         return max(transcripts, key=lambda p: p.stat().st_mtime)
