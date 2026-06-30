@@ -392,6 +392,7 @@ class ChildEntrypointTestCase(unittest.TestCase):
         fake_proc.wait.return_value = 0
 
         with mock.patch("pty.openpty", return_value=(10, 11)), \
+             mock.patch("fcntl.ioctl"), \
              mock.patch("select.select", return_value=([], [], [])), \
              mock.patch.object(supervisor.os, "close"), \
              mock.patch.object(supervisor.subprocess, "Popen", return_value=fake_proc) as popen:
@@ -428,6 +429,7 @@ class ChildEntrypointTestCase(unittest.TestCase):
         fake_proc.poll.return_value = 3
         fake_proc.wait.return_value = 3
         with mock.patch("pty.openpty", return_value=(10, 11)), \
+             mock.patch("fcntl.ioctl"), \
              mock.patch("select.select", return_value=([], [], [])), \
              mock.patch.object(supervisor.os, "close"), \
              mock.patch.object(supervisor.subprocess, "Popen", return_value=fake_proc):
@@ -438,8 +440,48 @@ class ChildEntrypointTestCase(unittest.TestCase):
                 )
         self.assertEqual(cm.exception.code, 3)
 
+    def test_winsize_failure_fails_fast_before_launch(self) -> None:
+        # A PTY that can't be sized to the scanner's geometry can only yield a
+        # wrapped/unusable join URL, so the child exits (backoff restarts it)
+        # rather than launching claude on a mismatched terminal (#293 review).
+        closed: list[int] = []
+        with mock.patch("pty.openpty", return_value=(10, 11)), \
+             mock.patch("fcntl.ioctl", side_effect=OSError("not a tty")), \
+             mock.patch.object(supervisor.os, "close", side_effect=closed.append), \
+             mock.patch.object(supervisor.subprocess, "Popen") as popen:
+            with self.assertRaises(SystemExit) as cm:
+                supervisor._run_remote_control_process(
+                    self.log_file, self.conn_file, "acme/widgets", self.base,
+                    "loony-acme-widgets", "base", "2026-06-06T00:00:00+00:00",
+                )
+        self.assertEqual(cm.exception.code, 1)
+        popen.assert_not_called()  # claude is never launched
+        self.assertCountEqual(closed, [10, 11])  # both PTY fds released
+
 
 class JoinUrlScanTestCase(unittest.TestCase):
+    """Recovering the join URL from a remote-control PTY stream (issues #284/#293).
+
+    The scanner renders the byte stream through a terminal emulator and reads the
+    URL from the *rendered* screen — naive escape-stripping cannot reconstruct a
+    line the TUI composed by repositioning the cursor (#293).
+    """
+
+    # The true URL embedded in the real ``ESC[28G`` capture below: ``session_``,
+    # not the malformed ``sssion_`` that byte-scraping produced on the live box.
+    TRUE_URL = "https://claude.ai/code/session_019DJ7qa3YebXAiD7UugmMzm"
+
+    @staticmethod
+    def _cha_capture() -> bytes:
+        """A real CHA-repositioned frame captured from a live remote-control log.
+
+        Contains the ``…/code/s`` ``ESC[28G`` ``ssion_…`` frame plus the preceding
+        footer paint that wrote the column the cursor jumps over — both are needed
+        because the correct ``e`` lives in cumulative screen state, not one chunk.
+        """
+        fixture = Path(__file__).parent / "fixtures" / "remote_control_cha.bin"
+        return fixture.read_bytes()
+
     def test_finds_claude_ai_url(self) -> None:
         data = b"Join here: https://claude.ai/remote-control/abc123 now\r\n"
         self.assertEqual(
@@ -453,31 +495,50 @@ class JoinUrlScanTestCase(unittest.TestCase):
     def test_ignores_unrelated_url(self) -> None:
         self.assertIsNone(supervisor._scan_for_join_url(b"see https://example.com/docs"))
 
-    def test_strips_embedded_ansi_escape(self) -> None:
-        # ``ESC[28G`` ("cursor to column 28") spliced mid-URL by a TUI redraw.
-        data = b"Join: https://claude.ai/code/session\x1b[28G_01ABC now\r\n"
-        self.assertEqual(
-            supervisor._scan_for_join_url(data),
-            "https://claude.ai/code/session_01ABC",
-        )
-
-    def test_strips_multiple_and_reset_escapes(self) -> None:
-        # URL bracketed by ``ESC[1m`` … ``ESC[0m`` plus a mid-URL ``ESC[28G``.
-        data = (
-            b"\x1b[1mhttps://claude.ai/code/session\x1b[28G_01XYZ\x1b[0m\r\n"
-        )
-        self.assertEqual(
-            supervisor._scan_for_join_url(data),
-            "https://claude.ai/code/session_01XYZ",
-        )
-
-    def test_clean_url_preserved_byte_for_byte(self) -> None:
+    def test_clean_url_preserved(self) -> None:
+        # A clean URL with no cursor games renders unchanged (don't regress #284).
         clean = b"Join here: https://claude.ai/remote-control/abc123 now\r\n"
-        self.assertEqual(supervisor._strip_ansi(clean), clean)
         self.assertEqual(
             supervisor._scan_for_join_url(clean),
             "https://claude.ai/remote-control/abc123",
         )
+
+    def test_reconstructs_cha_repositioned_url(self) -> None:
+        # The core regression: the raw capture greps as ``…/code/sssion_…`` (the
+        # ``e`` dropped, an extra ``s``); rendering the screen recovers the true
+        # ``session_<id>`` URL exactly.
+        self.assertEqual(
+            supervisor._scan_for_join_url(self._cha_capture()),
+            self.TRUE_URL,
+        )
+
+    def test_reconstructs_across_chunk_boundaries(self) -> None:
+        # One long-lived scanner must stitch the URL together no matter where the
+        # read boundaries fall — including a split inside ``ESC[28G`` and inside
+        # the URL — guarding the cross-chunk statefulness per-chunk scraping lacked.
+        capture = self._cha_capture()
+        for size in (1, 7, 64, 250):
+            with self.subTest(chunk_size=size):
+                scanner = supervisor._JoinUrlScanner()
+                result = None
+                for i in range(0, len(capture), size):
+                    found = scanner.feed(capture[i : i + size])
+                    if found:
+                        result = found
+                self.assertEqual(result, self.TRUE_URL)
+
+    def test_malformed_render_degrades_to_none(self) -> None:
+        # A screen that renders the broken ``…/code/sssion_…`` must not persist —
+        # validation drops it to ``None`` (the issue's "degrade, never persist").
+        data = b"  https://claude.ai/code/sssion_019DJ7qa3YebXAiD7UugmMzm\r\n"
+        self.assertIsNone(supervisor._scan_for_join_url(data))
+
+    def test_partial_cha_frame_degrades_to_none(self) -> None:
+        # A mid-redraw CHA frame with no preceding paint renders a gap at the
+        # skipped column (``…/code/s   ssion_…``); the candidate is just
+        # ``…/code/s`` and fails validation, so nothing is persisted yet.
+        data = b"\x1b[2C\x1b[1Bhttps://claude.ai/code/s\x1b[28Gssion_01ABC\r\n"
+        self.assertIsNone(supervisor._scan_for_join_url(data))
 
 
 if __name__ == "__main__":
