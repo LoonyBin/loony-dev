@@ -1,30 +1,22 @@
 "use strict";
 
-// Remote-control session card (#157). Builds one card per repo's remote-control
-// relay session, surfacing the claude.ai join URL as a large tappable "Open
-// session" button plus a scannable QR code of that same URL, so the user can
-// scan it from a phone while looking at the dashboard on desktop and land in the
-// exact same remote-control session. The interactive surface is Claude's own
-// hosted relay (see loony_dev/supervisor.py) — there is no PTY/websocket bridge
-// here.
+// Remote-control server health card (#304). Each repo runs a persistent
+// `claude rc` server (see loony_dev/supervisor.py), not a single session we
+// follow: the user creates sessions on demand from claude.ai/code or the mobile
+// app, each isolated in its own git worktree. So there is no join URL, QR, or
+// per-session conversation to render here — only the server's *health*
+// (running / restarting / errored) plus process liveness and staleness.
 //
-// The standalone Sessions grid was retired in #221: the only consumer is now the
-// Live screen (repoDetail), which embeds renderSessionCard per repo in its
-// compact variant. Pending (no join_url yet) and offline (process dead) sessions
-// render an explicit state instead of a broken link.
+// The only consumer is the Live screen (repoDetail), which embeds
+// renderSessionCard per repo in its compact variant.
 
-import { formatAge, icon } from "./dom.js";
+import { formatAge } from "./dom.js";
 
-// How fresh the connection file's mtime must be before we flag the session as
-// stale. The remote-control session rewrites it as it runs; a long-idle mtime
-// usually means the relay has gone quiet.
+// How fresh the connection file's mtime must be before we flag the server as
+// stale. The supervisor rewrites it on launch / restart / error transitions; a
+// long-idle mtime with a "running" status usually means the process has gone
+// quiet without the supervisor noticing yet.
 const STALE_AFTER_S = 120;
-
-// QR sizing: pixels per module and quiet-zone margin (also in pixels). The
-// generated GIF is rendered 1:1 and capped by CSS, so a modest cell size keeps
-// the data URL small while staying crisp.
-const QR_CELL_PX = 4;
-const QR_MARGIN_PX = 12;
 
 // Seconds since the ISO-8601 timestamp, or null if absent/unparseable.
 function ageSeconds(iso) {
@@ -34,41 +26,6 @@ function ageSeconds(iso) {
   return Math.max(0, (Date.now() - t) / 1000);
 }
 
-// Build an <img> holding a QR-code data URL for `url`, or null if the CDN QR
-// library failed to load (ad-block / SRI / offline) so the caller can fall back
-// to a link-only card.
-function qrImage(url) {
-  const qrcode = window.qrcode;
-  if (typeof qrcode !== "function") return null;
-  try {
-    // typeNumber 0 = auto-pick the smallest symbol that fits; "M" error
-    // correction tolerates a bit of phone-camera noise without bloating it.
-    const qr = qrcode(0, "M");
-    qr.addData(url);
-    qr.make();
-    const img = document.createElement("img");
-    img.className = "session-qr-img";
-    img.src = qr.createDataURL(QR_CELL_PX, QR_MARGIN_PX);
-    img.alt = "QR code to open this session on a phone";
-    return img;
-  } catch (err) {
-    console.error("QR render failed", err);
-    return null;
-  }
-}
-
-// claude.ai relay deep-links are always https. Reject anything else so a
-// javascript:/data: URL from a tampered connection file can never become a
-// clickable href. Returns the normalized href, or null if unusable.
-function safeJoinUrl(raw) {
-  try {
-    const u = new URL(raw);
-    return u.protocol === "https:" ? u.href : null;
-  } catch {
-    return null;
-  }
-}
-
 function badge(text, kind) {
   const span = document.createElement("span");
   span.className = `session-badge session-badge-${kind}`;
@@ -76,7 +33,7 @@ function badge(text, kind) {
   return span;
 }
 
-// One labelled line in the card's metadata block (e.g. "Session id  loony-x").
+// One labelled line in the card's metadata block.
 function metaRow(label, value, mono) {
   const row = document.createElement("div");
   row.className = "session-meta-row";
@@ -90,74 +47,52 @@ function metaRow(label, value, mono) {
   return row;
 }
 
-function livenessBadge(s) {
-  if (s.alive === false) return badge("offline", "offline");
-  if (s.alive === true) return badge("live", "live");
-  return badge("unknown", "unknown");
+// Map the supervisor's server health (status) — falling back to raw process
+// liveness — to a labelled badge. `status` is the authoritative signal (#304);
+// `alive` only backs it up when the connection file predates the status field.
+function serverHealthBadge(s) {
+  switch (s && s.status) {
+    case "running": return badge("running", "live");
+    case "restarting": return badge("restarting", "unknown");
+    case "errored": return badge("errored", "offline");
+    default:
+      if (s && s.alive === false) return badge("offline", "offline");
+      if (s && s.alive === true) return badge("running", "live");
+      return badge("unknown", "unknown");
+  }
 }
 
-// The action area below the metadata: the join button + QR when the session is
-// reachable, or an explicit pending/offline notice otherwise.
+// The action area below the metadata: a short note explaining where sessions
+// live, keyed off server health so an errored/restarting server reads clearly.
 function renderState(card, s) {
-  // A dead process can't be joined no matter what URL it last advertised.
-  if (s.alive === false) {
-    const note = document.createElement("p");
-    note.className = "session-note session-note-offline";
-    note.textContent = "Session offline — the remote-control process is not running.";
-    card.appendChild(note);
-    return;
-  }
-
-  // Alive (or liveness unknown) but Claude hasn't emitted the deep-link yet.
-  if (!s.join_url) {
-    const note = document.createElement("p");
-    note.className = "session-note";
-    note.textContent = "Session starting… waiting for the join link.";
-    card.appendChild(note);
-    return;
-  }
-
-  // Alive with a URL, but it isn't a usable https deep-link.
-  const joinUrl = safeJoinUrl(s.join_url);
-  if (!joinUrl) {
-    const note = document.createElement("p");
-    note.className = "session-note session-note-offline";
-    note.textContent = "Session link unavailable — the join URL is not a valid https link.";
-    card.appendChild(note);
-    return;
-  }
-
-  const joinLink = document.createElement("a");
-  joinLink.className = "btn btn-primary session-open";
-  joinLink.href = joinUrl;
-  joinLink.target = "_blank";
-  joinLink.rel = "noopener noreferrer";
-  joinLink.textContent = "Open session ";
-  joinLink.appendChild(icon("open_in_new"));
-  card.appendChild(joinLink);
-
-  const qrWrap = document.createElement("div");
-  qrWrap.className = "session-qr";
-  const img = qrImage(joinUrl);
-  if (img) {
-    qrWrap.appendChild(img);
-    const hint = document.createElement("p");
-    hint.className = "session-qr-hint muted";
-    hint.textContent = "Scan to open on your phone";
-    qrWrap.appendChild(hint);
+  const note = document.createElement("p");
+  note.className = "session-note";
+  const status = s && s.status;
+  // Match serverHealthBadge's precedence: a known status is authoritative, so
+  // `alive` only decides the note when status is absent. Otherwise a stale
+  // `alive === false` could show an offline note under a "running" badge.
+  const hasKnownStatus =
+    status === "running" || status === "restarting" || status === "errored";
+  if (status === "errored" || (!hasKnownStatus && s && s.alive === false)) {
+    note.classList.add("session-note-offline");
+    note.textContent =
+      "Remote-control server not running — sessions can't be created until it recovers.";
+  } else if (status === "restarting") {
+    note.textContent = "Remote-control server restarting…";
+  } else if (!hasKnownStatus && (!s || s.alive == null)) {
+    // No status and no PID liveness: match serverHealthBadge's "unknown" badge
+    // rather than implying the server is healthy.
+    note.textContent = "Remote-control server health unknown.";
   } else {
-    const hint = document.createElement("p");
-    hint.className = "session-qr-hint muted";
-    hint.textContent = "QR code unavailable — use the button above.";
-    qrWrap.appendChild(hint);
+    note.textContent =
+      "Create and manage sessions on demand from claude.ai/code or the mobile app.";
   }
-  card.appendChild(qrWrap);
+  card.appendChild(note);
 }
 
-// Build one session card. The #189 Live repo-detail panel passes
-// { compact: true } to drop the per-card repo title + liveness badge (its panel
-// header already carries them); a non-compact call keeps them. The join button /
-// QR / starting-offline-stale states are identical either way.
+// Build one server-health card. The #189 Live repo-detail panel passes
+// { compact: true } to drop the per-card repo title + health badge (its panel
+// header already carries them); a non-compact call keeps them.
 export function renderSessionCard(s, { compact = false } = {}) {
   const card = document.createElement("div");
   card.className = compact ? "session-card session-card-compact" : "session-card";
@@ -167,16 +102,14 @@ export function renderSessionCard(s, { compact = false } = {}) {
     head.className = "session-head";
     const title = document.createElement("span");
     title.className = "session-repo";
-    title.textContent = s.repo || s.session_id || "(unknown repo)";
-    head.append(title, livenessBadge(s));
+    title.textContent = (s && (s.repo || s.session_id)) || "(unknown repo)";
+    head.append(title, serverHealthBadge(s));
     card.appendChild(head);
   }
 
   const meta = document.createElement("div");
   meta.className = "session-meta";
-  meta.appendChild(metaRow("Session id", s.session_id || "—", true));
-  if (s.mode) meta.appendChild(metaRow("Mode", s.mode, false));
-  const age = ageSeconds(s.updated_at);
+  const age = ageSeconds(s && s.updated_at);
   if (age != null) {
     const row = metaRow("Updated", `${formatAge(age)} ago`, false);
     if (age > STALE_AFTER_S) {

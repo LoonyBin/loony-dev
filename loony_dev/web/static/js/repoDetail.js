@@ -33,15 +33,12 @@
 import { cell, setRows, formatAge, icon, goRepo, goPipeline, stageTone } from "./dom.js";
 // Shared design-system components (static/ds/) — single source of truth (#258 / Phase 4).
 import { StatePill, Tag, Avatar, Btn } from "/static/ds/components/primitives.js";
-import { ChatComposer } from "/static/ds/components/sessions.js";
 import { interruptSession } from "./overview.js";
 import { streamActivity } from "./logs.js";
-import { streamObserveAt, liveObserveUrl } from "./observe.js";
 import { renderSessionCard } from "./sessions.js";
 
 let current = null; // repo currently displayed ("owner/name"), or null
 let lastState = null; // latest consolidated snapshot {workers, worktrees, sessions, stuck}
-let stopLog = null; // { close } for the #repo-log base-session conversation stream (#282)
 let stopActivity = null; // stop fn for the sidebar Activity-timeline stream (#282)
 
 // Persisted last-viewed repo, so re-opening bare #live lands where you left off.
@@ -127,12 +124,20 @@ function renderQuickActions(repo) {
   bar.appendChild(pendingButton("Resync main", "No endpoint yet — follow-up"));
 }
 
-// Map a session's liveness into a .statepill + .sdot indicator.
+// Map the remote-control server's health (#304) into a .statepill indicator.
+// `status` is authoritative (running / restarting / errored); `alive` is the
+// fallback for a connection file that predates the status field.
 function sessionLiveness(s) {
-  // Shared StatePill (visual): the caller picks the colour tone for each liveness.
-  if (!s || s.alive === false) return StatePill({ tone: "red", label: s ? "offline" : "no session" });
-  if (s.alive === true) return StatePill({ tone: "accent", label: "live" });
-  return StatePill({ tone: "amber", label: "unknown" });
+  if (!s) return StatePill({ tone: "red", label: "no server" });
+  switch (s.status) {
+    case "running": return StatePill({ tone: "accent", label: "running" });
+    case "restarting": return StatePill({ tone: "amber", label: "restarting" });
+    case "errored": return StatePill({ tone: "red", label: "errored" });
+    default:
+      if (s.alive === false) return StatePill({ tone: "red", label: "offline" });
+      if (s.alive === true) return StatePill({ tone: "accent", label: "running" });
+      return StatePill({ tone: "amber", label: "unknown" });
+  }
 }
 
 // One labelled meta line ("Key  loony-x") for the session panel header.
@@ -165,8 +170,7 @@ function renderSession(repo, state) {
   if (metaEl) {
     metaEl.innerHTML = "";
     if (s) {
-      metaEl.appendChild(metaLine("Key", s.key, true));
-      if (s.mode) metaEl.appendChild(metaLine("Mode", s.mode, false));
+      if (s.status) metaEl.appendChild(metaLine("Status", s.status, false));
       const age = ageSeconds(s.updated_at);
       if (age != null) metaEl.appendChild(metaLine("Updated", `${formatAge(age)} ago`, false));
     }
@@ -174,12 +178,12 @@ function renderSession(repo, state) {
 
   body.innerHTML = "";
   if (!s) {
-    body.appendChild(muted("No active session for this repo yet."));
+    body.appendChild(muted("No remote-control server for this repo yet."));
     return;
   }
-  // Embed the shared #157 card (compact: the panel header already names the
-  // repo + liveness). It supplies the join button, QR, and starting/offline/
-  // stale states.
+  // Embed the shared server-health card (#304, compact: the panel header already
+  // names the repo + health). It explains that on-demand sessions are created
+  // from claude.ai/code, and surfaces restarting/errored states.
   body.appendChild(renderSessionCard(s, { compact: true }));
 }
 
@@ -462,28 +466,10 @@ function renderStuckRow(s) {
   return tr;
 }
 
-// The steer bar (#189 placeholder): the shared ChatComposer, disabled until the
-// dashboard drive bridge is wired. Built once — it carries no per-repo state, so
-// re-renders skip it. `.live-steer-bar` is the app's bottom-pin layout seam.
-const STEER_DISABLED_TIP =
-  "Driving from the dashboard isn't wired up yet — open the relay session above (join link / QR) to steer this repo.";
-function renderSteer() {
-  const host = document.getElementById("repo-steer");
-  if (!host || host.firstChild) return;
-  const bar = ChatComposer({
-    placeholder: 'Ask about the repo, or "open an issue to…"',
-    disabled: true,
-    class: "live-steer-bar",
-    attrs: { title: STEER_DISABLED_TIP },
-  });
-  host.appendChild(bar);
-}
-
 function renderAll() {
   const repo = current;
   if (!repo) return;
   renderQuickActions(repo);
-  renderSteer();
   renderSession(repo, lastState);
   renderReposList(repo, lastState);
   renderContext(repo, lastState);
@@ -555,13 +541,9 @@ function show(repo) {
     if (def) repo = def;
   }
   if (repo === current) return;
-  // Two live streams per Live view (#282): the #repo-log base-session
-  // conversation ({ close }) and the sidebar Activity timeline (bare stop fn).
-  // Tear both down on every repo switch / navigate-away so neither socket leaks.
-  if (stopLog) {
-    stopLog.close();
-    stopLog = null;
-  }
+  // One live stream per Live view: the sidebar Activity timeline (bare stop fn).
+  // Tear it down on every repo switch / navigate-away so the socket never leaks.
+  // (The #repo-log base-session conversation stream was removed in #304.)
   if (stopActivity) {
     stopActivity();
     stopActivity = null;
@@ -577,22 +559,20 @@ function show(repo) {
   // Commits are a per-repo on-demand fetch (not snapshot-driven), so kick it off
   // once here on the repo switch rather than from renderAll's per-tick path.
   loadCommits(current);
-  // #repo-log now streams the always-on base session's live claude conversation
-  // (turns + tool calls) via the #202 observe machinery (#282); the structured
-  // activity feed moves to the sidebar "Activity timeline" card.
+  // #repo-log used to stream the always-on base session's live conversation, but
+  // remote control is now a persistent `claude rc` server with no single followed
+  // session (#304): on-demand sessions run in claude.ai/code. Show a static
+  // pointer instead of a live transcript; the structured activity feed remains in
+  // the sidebar "Activity timeline" card.
   const host = document.getElementById("repo-log");
   const title = document.getElementById("repo-log-title");
-  // Surface the observe stream's connection state in the title (#282) so a
-  // reconnect / "no session" / error isn't masked by a permanent "(live)".
-  // The `repo` parameter is already pinned to this invocation (it equals
-  // `current` after the early-returns and is never reassigned), and the streams
-  // below are torn down on the next repo switch, so the callback only ever
-  // reflects this one repo — no separate local capture is needed.
-  const setLogStatus = (text) => {
-    if (title) title.textContent = `— ${repo} (${text || "live"})`;
-  };
-  setLogStatus("connecting…");
-  if (host) stopLog = streamObserveAt(liveObserveUrl(repo), host, setLogStatus);
+  if (title) title.textContent = `— ${repo}`;
+  if (host) {
+    host.innerHTML = "";
+    host.appendChild(muted(
+      "On-demand remote-control sessions run in claude.ai/code — there is no live "
+      + "session conversation to show here."));
+  }
   const timeline = document.getElementById("live-timeline");
   if (timeline) stopActivity = streamActivity(repo, timeline);
 }

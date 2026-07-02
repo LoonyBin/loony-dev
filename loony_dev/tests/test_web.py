@@ -365,6 +365,21 @@ class ServicesTestCase(unittest.TestCase):
         sessions = services.list_sessions(self.base)
         self.assertIsNone(sessions[0].join_url)
 
+    def test_list_sessions_reads_server_status(self) -> None:
+        # The rc server health file (#304): status is the primary surfaced field.
+        self._write_conn(
+            "acme", "x",
+            '{"repo": "acme/x", "mode": "remote-control", "status": "errored"}',
+        )
+        s = services.list_sessions(self.base)[0]
+        self.assertEqual(s.status, "errored")
+        self.assertEqual(s.mode, "remote-control")
+
+    def test_list_sessions_status_none_when_absent(self) -> None:
+        # A connection file predating the status field yields null, not an error.
+        self._write_conn("acme", "x", '{"repo": "acme/x"}')
+        self.assertIsNone(services.list_sessions(self.base)[0].status)
+
 
 _GIT_ENV = {
     "GIT_AUTHOR_NAME": "trixy", "GIT_AUTHOR_EMAIL": "trixy@example.com",
@@ -487,12 +502,12 @@ class WebAppTestCase(unittest.TestCase):
             self.assertEqual(resp.status_code, 200, path)
 
     def test_index_folds_session_surface_into_live(self) -> None:
-        # The remote-control session surface moved into the Live screen (#221):
-        # the shell still loads the client-side QR library, but the standalone
-        # Sessions grid is gone — the join URL + QR card now renders into the Live
-        # repo-detail session panel (repoDetail embeds renderSessionCard there).
+        # The remote-control surface lives in the Live screen (#221) and now shows
+        # server *health* only (#304): there is no join URL / QR, so the client-side
+        # QR library is gone; the health card renders into the Live repo-detail
+        # session panel (repoDetail embeds renderSessionCard there).
         body = self.client.get("/").text
-        self.assertIn('qrcode-generator', body)
+        self.assertNotIn('qrcode-generator', body)
         self.assertIn('id="repo-session-body"', body)
         # The standalone Sessions grid + task-sessions table are folded in.
         self.assertNotIn('id="sessions"', body)
@@ -500,15 +515,14 @@ class WebAppTestCase(unittest.TestCase):
         self.assertNotIn('id="task-sessions"', body)
 
     def test_index_live_has_greyed_steer_bar_and_diagnostics(self) -> None:
-        # The Live screen (#224): a disabled chat + Send steer bar below the
-        # session body, and the worktrees/stuck blocks collapsed into a
+        # The Live screen (#224): the worktrees/stuck blocks collapsed into a
         # <details> Diagnostics section (their IDs preserved for the JS). The
         # worker log moved up into the session card as a transcript (#259).
         body = self.client.get("/").text
-        # Greyed steer bar (#258 / Phase 4): now built by the shared ChatComposer
-        # factory (disabled) in repoDetail.renderSteer(), so the static shell only
-        # carries the host element it renders into.
-        self.assertIn('id="repo-steer"', body)
+        # The dashboard steer bar was removed with the base-session conversation
+        # (#304): remote control is now a persistent server with no session to
+        # steer from the dashboard.
+        self.assertNotIn('id="repo-steer"', body)
         # Diagnostics <details> wraps the preserved worktrees / stuck IDs.
         self.assertIn('class="diagnostics-section"', body)
         self.assertIn("<summary>Diagnostics</summary>", body)

@@ -66,7 +66,8 @@ class LaunchRemoteControlTestCase(unittest.TestCase):
         self.base = Path(self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
         self.repo = "acme/widgets"
-        self.session_id = supervisor._remote_control_session_id(self.repo)
+        self.name = supervisor._remote_control_name(self.repo)
+        self.command = supervisor._remote_control_command(self.repo)
         self.checkout = self.base / "acme" / "widgets"
         self.checkout.mkdir(parents=True)
         self.log_dir = self.base / ".logs" / "acme" / "widgets"
@@ -91,14 +92,13 @@ class LaunchRemoteControlTestCase(unittest.TestCase):
         # The spawned process targets the child entrypoint with the right args.
         proc = ctx.created[0]
         self.assertIs(proc.target, supervisor._run_remote_control_process)
-        _log_file, _conn_file, repo, base_dir, session_id, key, _started = proc.args
+        _log_file, _conn_file, repo, base_dir, started_at = proc.args
         self.assertEqual(repo, self.repo)
         self.assertEqual(base_dir, self.checkout)
-        self.assertEqual(session_id, self.session_id)
-        self.assertEqual(key, "base")
+        self.assertIsNotNone(started_at)
         self.assertEqual(proc.name, "remote-control-acme-widgets")
-        self.assertEqual(rcp.session_id, self.session_id)
-        self.assertEqual(rcp.key, "base")
+        self.assertEqual(rcp.repo, self.repo)
+        self.assertEqual(rcp.started_at_iso, started_at)
 
     def test_writes_pid_and_connection_files(self) -> None:
         _rcp, _ctx = self._launch()
@@ -106,28 +106,24 @@ class LaunchRemoteControlTestCase(unittest.TestCase):
         data = json.loads(self.conn_file.read_text())
         self.assertEqual(data["repo"], self.repo)
         self.assertEqual(data["mode"], "remote-control")
-        self.assertEqual(data["session_id"], self.session_id)
-        self.assertEqual(data["key"], "base")
-        self.assertEqual(data["cwd"], str(self.checkout))
         self.assertEqual(data["pid"], 4321)
         self.assertEqual(data["status"], "running")
-        self.assertIsNone(data["join_url"])
-        self.assertEqual(
-            data["command"],
-            ["claude", "--remote-control", self.session_id, "--dangerously-skip-permissions"],
-        )
+        self.assertEqual(data["command"], self.command)
         self.assertIsNotNone(data["started_at"])
+        # The shrunk health schema carries no attach-handle / join-URL fields (#304).
+        for gone in ("session_id", "key", "join_url", "cwd"):
+            self.assertNotIn(gone, data)
 
     def test_connection_file_rewritten_on_relaunch(self) -> None:
         self._launch()
         first = json.loads(self.conn_file.read_text())
-        # Simulate a restart: the connection file is rewritten each (re)launch but
-        # the session id is stable.
+        # Simulate a restart: the connection file is rewritten each (re)launch;
+        # the command is stable while started_at advances.
         with mock.patch.object(supervisor, "datetime") as fake_dt:
             fake_dt.now.return_value.isoformat.return_value = "2026-06-06T00:00:00+00:00"
             self._launch()
         second = json.loads(self.conn_file.read_text())
-        self.assertEqual(first["session_id"], second["session_id"])
+        self.assertEqual(first["command"], second["command"])
         self.assertEqual(second["started_at"], "2026-06-06T00:00:00+00:00")
 
 
@@ -249,9 +245,9 @@ class SupervisorWebFlagTestCase(unittest.TestCase):
         self.assertFalse(captured["web"])
 
 
-class SessionIdSanitizationTestCase(unittest.TestCase):
+class RemoteControlNameTestCase(unittest.TestCase):
     def test_sanitizes_special_characters(self) -> None:
-        # The id keeps a readable ``loony-<sanitized>`` prefix and appends a
+        # The name keeps a readable ``loony-<sanitized>`` prefix and appends a
         # 10-char hex digest of the original repo string.
         cases = {
             "acme/widgets": "loony-acme-widgets-",
@@ -261,23 +257,69 @@ class SessionIdSanitizationTestCase(unittest.TestCase):
         }
         for repo, prefix in cases.items():
             with self.subTest(repo=repo):
-                session_id = supervisor._remote_control_session_id(repo)
-                self.assertTrue(session_id.startswith(prefix), session_id)
-                digest = session_id[len(prefix):]
+                name = supervisor._remote_control_name(repo)
+                self.assertTrue(name.startswith(prefix), name)
+                digest = name[len(prefix):]
                 self.assertEqual(len(digest), 10)
                 self.assertTrue(all(c in "0123456789abcdef" for c in digest), digest)
 
     def test_is_deterministic(self) -> None:
         self.assertEqual(
-            supervisor._remote_control_session_id("acme/widgets"),
-            supervisor._remote_control_session_id("acme/widgets"),
+            supervisor._remote_control_name("acme/widgets"),
+            supervisor._remote_control_name("acme/widgets"),
         )
 
     def test_collision_resistant(self) -> None:
         # These all sanitize to ``loony-acme-foo-bar`` but must stay distinct.
         repos = ["acme/foo-bar", "acme/foo_bar", "acme-foo/bar"]
-        ids = {supervisor._remote_control_session_id(r) for r in repos}
-        self.assertEqual(len(ids), len(repos))
+        names = {supervisor._remote_control_name(r) for r in repos}
+        self.assertEqual(len(names), len(repos))
+
+
+class RemoteControlCommandTestCase(unittest.TestCase):
+    def test_builds_claude_rc_server_argv(self) -> None:
+        # #304: a persistent ``claude rc`` server, not a single followed session.
+        cmd = supervisor._remote_control_command("acme/widgets")
+        self.assertEqual(cmd[:2], ["claude", "rc"])
+        self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "bypassPermissions")
+        self.assertEqual(cmd[cmd.index("--spawn") + 1], "worktree")
+        self.assertIn("--no-create-session-in-dir", cmd)
+        self.assertEqual(
+            cmd[cmd.index("--name") + 1], supervisor._remote_control_name("acme/widgets")
+        )
+        # The retired single-session flags are gone.
+        self.assertNotIn("--remote-control", cmd)
+        self.assertNotIn("--dangerously-skip-permissions", cmd)
+
+
+class RemoteControlGaveUpTestCase(unittest.TestCase):
+    """The #304 crash-budget predicate: error out instead of restarting forever."""
+
+    def test_restarts_below_threshold(self) -> None:
+        self.assertFalse(supervisor._remote_control_gave_up(0, 5))
+        self.assertFalse(supervisor._remote_control_gave_up(4, 5))
+
+    def test_gives_up_at_threshold(self) -> None:
+        self.assertTrue(supervisor._remote_control_gave_up(5, 5))
+        self.assertTrue(supervisor._remote_control_gave_up(6, 5))
+
+    def test_errored_status_schema(self) -> None:
+        # Once given up, the supervisor rewrites the health file as errored.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        conn = Path(tmp.name) / "remote-control.json"
+        supervisor._write_connection_file(
+            conn,
+            repo="acme/widgets",
+            pid=None,
+            started_at="2026-06-06T00:00:00+00:00",
+            command=supervisor._remote_control_command("acme/widgets"),
+            status=supervisor.STATUS_ERRORED,
+        )
+        data = json.loads(conn.read_text())
+        self.assertEqual(data["status"], "errored")
+        self.assertIsNone(data["pid"])
+        self.assertEqual(data["repo"], "acme/widgets")
 
 
 class RestartBackoffTestCase(unittest.TestCase):
@@ -290,13 +332,12 @@ class RestartBackoffTestCase(unittest.TestCase):
         return supervisor.RemoteControlProcess(
             repo="acme/widgets",
             base_dir=Path("/x"),
-            session_id="loony-acme-widgets",
-            key="base",
             log_file=Path("/x.log"),
             pid_file=Path("/x.pid"),
             conn_file=Path("/x.json"),
             process=_FakeProcess(),
             started_at=0.0,
+            started_at_iso="2026-06-06T00:00:00+00:00",
             restart_count=restart_count,
         )
 
@@ -404,14 +445,11 @@ class ChildEntrypointTestCase(unittest.TestCase):
                     self.conn_file,
                     "acme/widgets",
                     self.base,
-                    "loony-acme-widgets",
-                    "base",
                     "2026-06-06T00:00:00+00:00",
                 )
 
         self.assertEqual(cm.exception.code, 0)
-        # The slave PTY is sized to the pinned geometry before claude launches,
-        # so the join-URL footer never wraps (issue #293).
+        # The slave PTY is sized to a sane, non-zero geometry before claude launches.
         ioctl.assert_called_once_with(
             11,
             termios.TIOCSWINSZ,
@@ -423,21 +461,20 @@ class ChildEntrypointTestCase(unittest.TestCase):
                 0,
             ),
         )
-        # claude launched with the PTY slave as its stdio in a new session.
+        # The persistent ``claude rc`` server launched with the PTY slave as its
+        # stdio in a new session.
         args, kwargs = popen.call_args
-        self.assertEqual(
-            args[0],
-            ["claude", "--remote-control", "loony-acme-widgets", "--dangerously-skip-permissions"],
-        )
+        self.assertEqual(args[0], supervisor._remote_control_command("acme/widgets"))
+        self.assertEqual(args[0][:2], ["claude", "rc"])
         self.assertEqual(kwargs["cwd"], str(self.base))
         self.assertEqual(kwargs["stdin"], 11)
         self.assertEqual(kwargs["stdout"], 11)
         self.assertEqual(kwargs["stderr"], 11)
         self.assertTrue(kwargs["start_new_session"])
-        # The connection file is refreshed with the live (child) PID.
+        # The connection file is refreshed with the live (child) PID + running status.
         data = json.loads(self.conn_file.read_text())
-        self.assertEqual(data["session_id"], "loony-acme-widgets")
-        self.assertEqual(data["key"], "base")
+        self.assertEqual(data["status"], "running")
+        self.assertEqual(data["command"], supervisor._remote_control_command("acme/widgets"))
 
     def test_exits_with_claude_return_code(self) -> None:
         fake_proc = mock.Mock()
@@ -451,7 +488,7 @@ class ChildEntrypointTestCase(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 supervisor._run_remote_control_process(
                     self.log_file, self.conn_file, "acme/widgets", self.base,
-                    "loony-acme-widgets", "base", "2026-06-06T00:00:00+00:00",
+                    "2026-06-06T00:00:00+00:00",
                 )
         self.assertEqual(cm.exception.code, 3)
         ioctl.assert_called_once_with(
@@ -467,9 +504,8 @@ class ChildEntrypointTestCase(unittest.TestCase):
         )
 
     def test_winsize_failure_fails_fast_before_launch(self) -> None:
-        # A PTY that can't be sized to the scanner's geometry can only yield a
-        # wrapped/unusable join URL, so the child exits (backoff restarts it)
-        # rather than launching claude on a mismatched terminal (#293 review).
+        # A PTY that can't be sized exits the child (the backoff loop restarts it)
+        # rather than launching claude on a broken terminal.
         closed: list[int] = []
         with mock.patch("pty.openpty", return_value=(10, 11)), \
              mock.patch("fcntl.ioctl", side_effect=OSError("not a tty")), \
@@ -478,97 +514,15 @@ class ChildEntrypointTestCase(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 supervisor._run_remote_control_process(
                     self.log_file, self.conn_file, "acme/widgets", self.base,
-                    "loony-acme-widgets", "base", "2026-06-06T00:00:00+00:00",
+                    "2026-06-06T00:00:00+00:00",
                 )
         self.assertEqual(cm.exception.code, 1)
         popen.assert_not_called()  # claude is never launched
         self.assertCountEqual(closed, [10, 11])  # both PTY fds released
         # The child writes its "running" connection file only after the PTY is
         # sized and claude launches, so a winsize failure leaves no fake live
-        # session behind (#293 review).
+        # server behind.
         self.assertFalse(self.conn_file.exists())
-
-
-class JoinUrlScanTestCase(unittest.TestCase):
-    """Recovering the join URL from a remote-control PTY stream (issues #284/#293).
-
-    The scanner renders the byte stream through a terminal emulator and reads the
-    URL from the *rendered* screen — naive escape-stripping cannot reconstruct a
-    line the TUI composed by repositioning the cursor (#293).
-    """
-
-    # The true URL embedded in the real ``ESC[28G`` capture below: ``session_``,
-    # not the malformed ``sssion_`` that byte-scraping produced on the live box.
-    TRUE_URL = "https://claude.ai/code/session_019DJ7qa3YebXAiD7UugmMzm"
-
-    @staticmethod
-    def _cha_capture() -> bytes:
-        """A real CHA-repositioned frame captured from a live remote-control log.
-
-        Contains the ``…/code/s`` ``ESC[28G`` ``ssion_…`` frame plus the preceding
-        footer paint that wrote the column the cursor jumps over — both are needed
-        because the correct ``e`` lives in cumulative screen state, not one chunk.
-        """
-        fixture = Path(__file__).parent / "fixtures" / "remote_control_cha.bin"
-        return fixture.read_bytes()
-
-    def test_finds_claude_ai_url(self) -> None:
-        data = b"Join here: https://claude.ai/remote-control/abc123 now\r\n"
-        self.assertEqual(
-            supervisor._scan_for_join_url(data),
-            "https://claude.ai/remote-control/abc123",
-        )
-
-    def test_returns_none_without_url(self) -> None:
-        self.assertIsNone(supervisor._scan_for_join_url(b"booting interactive session"))
-
-    def test_ignores_unrelated_url(self) -> None:
-        self.assertIsNone(supervisor._scan_for_join_url(b"see https://example.com/docs"))
-
-    def test_clean_url_preserved(self) -> None:
-        # A clean URL with no cursor games renders unchanged (don't regress #284).
-        clean = b"Join here: https://claude.ai/remote-control/abc123 now\r\n"
-        self.assertEqual(
-            supervisor._scan_for_join_url(clean),
-            "https://claude.ai/remote-control/abc123",
-        )
-
-    def test_reconstructs_cha_repositioned_url(self) -> None:
-        # The core regression: the raw capture greps as ``…/code/sssion_…`` (the
-        # ``e`` dropped, an extra ``s``); rendering the screen recovers the true
-        # ``session_<id>`` URL exactly.
-        self.assertEqual(
-            supervisor._scan_for_join_url(self._cha_capture()),
-            self.TRUE_URL,
-        )
-
-    def test_reconstructs_across_chunk_boundaries(self) -> None:
-        # One long-lived scanner must stitch the URL together no matter where the
-        # read boundaries fall — including a split inside ``ESC[28G`` and inside
-        # the URL — guarding the cross-chunk statefulness per-chunk scraping lacked.
-        capture = self._cha_capture()
-        for size in (1, 7, 64, 250):
-            with self.subTest(chunk_size=size):
-                scanner = supervisor._JoinUrlScanner()
-                result = None
-                for i in range(0, len(capture), size):
-                    found = scanner.feed(capture[i : i + size])
-                    if found:
-                        result = found
-                self.assertEqual(result, self.TRUE_URL)
-
-    def test_malformed_render_degrades_to_none(self) -> None:
-        # A screen that renders the broken ``…/code/sssion_…`` must not persist —
-        # validation drops it to ``None`` (the issue's "degrade, never persist").
-        data = b"  https://claude.ai/code/sssion_019DJ7qa3YebXAiD7UugmMzm\r\n"
-        self.assertIsNone(supervisor._scan_for_join_url(data))
-
-    def test_partial_cha_frame_degrades_to_none(self) -> None:
-        # A mid-redraw CHA frame with no preceding paint renders a gap at the
-        # skipped column (``…/code/s   ssion_…``); the candidate is just
-        # ``…/code/s`` and fails validation, so nothing is persisted yet.
-        data = b"\x1b[2C\x1b[1Bhttps://claude.ai/code/s\x1b[28Gssion_01ABC\r\n"
-        self.assertIsNone(supervisor._scan_for_join_url(data))
 
 
 if __name__ == "__main__":
