@@ -3,7 +3,9 @@
 Priority (highest wins):
   1. CLI options
   2. Environment vars    LOONY_DEV_<COMMAND>_<KEY>  (via Click auto_envvar_prefix)
-  3. ./.loony-dev.toml   (repo-level / per-checkout)
+  3. ./.loony-dev.toml   (repo-level / per-checkout; resolved against the
+                          worker's --work-dir, which the supervisor chdirs
+                          the worker child into — see #306)
   4. <user-config-dir>/loony-dev/config.toml  (platform-specific via click.get_app_dir)
   5. /etc/loony-dev/config.toml  (POSIX only)
   6. Click param defaults  (the application's baseline)

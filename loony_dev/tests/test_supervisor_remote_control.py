@@ -20,9 +20,10 @@ from loony_dev.config._settings import Settings
 class _FakeProcess:
     """Stand-in for ``multiprocessing.Process`` that never actually runs."""
 
-    def __init__(self, target=None, args=(), name=None) -> None:
+    def __init__(self, target=None, args=(), kwargs=None, name=None) -> None:
         self.target = target
         self.args = args
+        self.kwargs = kwargs or {}
         self.name = name
         self.pid = 4321
         self._exitcode = None
@@ -54,8 +55,8 @@ class _FakeContext:
         self._factory = factory
         self.created: list[_FakeProcess] = []
 
-    def Process(self, *, target=None, args=(), name=None):  # noqa: N802
-        proc = self._factory(target=target, args=args, name=name)
+    def Process(self, *, target=None, args=(), kwargs=None, name=None):  # noqa: N802
+        proc = self._factory(target=target, args=args, kwargs=kwargs, name=name)
         self.created.append(proc)
         return proc
 
@@ -167,9 +168,92 @@ class LaunchWorkerTestCase(unittest.TestCase):
         )
         self.assertTrue(proc.started)
 
+    def test_chdir_cwd_is_the_work_dir(self) -> None:
+        # The child is chdir'd into its checkout so the relative repo-level
+        # .loony-dev.toml resolves against the repo, not the supervisor CWD (#306).
+        ctx = self._launch()
+        proc = ctx.created[0]
+        self.assertEqual(proc.kwargs.get("cwd"), str(self.work_dir))
+
     def test_writes_pid_file(self) -> None:
         self._launch()
         self.assertEqual(self.pid_file.read_text(), "4321")
+
+
+class RunWorkerProcessCwdTestCase(unittest.TestCase):
+    """The spawn path chdirs the worker child into its checkout, so the
+    relative repo-level ``.loony-dev.toml`` is honoured under the supervisor
+    even when the supervisor's CWD differs from the work-dir (#306)."""
+
+    def test_repo_level_config_honoured_from_work_dir(self) -> None:
+        import os
+        import sys
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        work_dir = root / "acme" / "widgets"
+        work_dir.mkdir(parents=True)
+        # A repo-level config file carrying a distinctive value.
+        (work_dir / ".loony-dev.toml").write_text("[worker]\ninterval = 999\n")
+        log_file = root / "worker.log"  # absolute — dup2 is patched out anyway
+        # Stand-in for the supervisor's CWD: different from the work-dir.
+        other = root / "elsewhere"
+        other.mkdir()
+
+        observed: dict[str, object] = {}
+
+        def fake_main(*_args, **_kwargs):
+            observed["cwd"] = os.getcwd()
+            observed["config"] = config._load_config()
+
+        orig_cwd = os.getcwd()
+        orig_stdout, orig_stderr = sys.stdout, sys.stderr
+        try:
+            os.chdir(other)
+            # Patch dup2 so the test runner's real stdout/stderr fds survive;
+            # _run_worker_process still reassigns sys.stdout/err (restored below).
+            with mock.patch("os.dup2"), \
+                    mock.patch("loony_dev.cli.cli.main", side_effect=fake_main):
+                supervisor._run_worker_process(
+                    log_file, ["worker"], cwd=str(work_dir),
+                )
+        finally:
+            sys.stdout, sys.stderr = orig_stdout, orig_stderr
+            os.chdir(orig_cwd)
+
+        # The child ran with the checkout as its CWD ...
+        self.assertEqual(observed["cwd"], str(work_dir))
+        # ... so the relative .loony-dev.toml in the checkout was loaded.
+        self.assertEqual(observed["config"]["worker"]["interval"], 999)
+
+    def test_no_cwd_leaves_working_directory_untouched(self) -> None:
+        import os
+        import sys
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        log_file = root / "web.log"
+
+        observed: dict[str, object] = {}
+
+        def fake_main(*_args, **_kwargs):
+            observed["cwd"] = os.getcwd()
+
+        orig_cwd = os.getcwd()
+        orig_stdout, orig_stderr = sys.stdout, sys.stderr
+        try:
+            os.chdir(root)
+            with mock.patch("os.dup2"), \
+                    mock.patch("loony_dev.cli.cli.main", side_effect=fake_main):
+                supervisor._run_worker_process(log_file, ["web"])
+        finally:
+            sys.stdout, sys.stderr = orig_stdout, orig_stderr
+            os.chdir(orig_cwd)
+
+        # cwd=None (the web path) leaves the process CWD as it was.
+        self.assertEqual(observed["cwd"], str(root))
 
 
 class LaunchWebTestCase(unittest.TestCase):
@@ -214,6 +298,9 @@ class LaunchWebTestCase(unittest.TestCase):
         self.assertTrue(proc.started)
         self.assertEqual(wp.base_dir, self.base)
         self.assertEqual(wp.restart_count, 0)
+        # The dashboard resolves everything from --base-dir and must NOT chdir
+        # into a repo checkout (#306) — it shares _run_worker_process, cwd unset.
+        self.assertIsNone(proc.kwargs.get("cwd"))
 
     def test_writes_pid_file(self) -> None:
         self._launch()

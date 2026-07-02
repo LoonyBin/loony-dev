@@ -323,10 +323,18 @@ class WorkerProcess:
     restart_count: int = field(default=0)
 
 
-def _run_worker_process(log_file: Path, cmd_args: list[str]) -> None:
+def _run_worker_process(
+    log_file: Path, cmd_args: list[str], cwd: str | Path | None = None,
+) -> None:
     """Entry point for a worker multiprocessing.Process.
 
     Redirects sys.stdout and sys.stderr to *log_file*, then invokes the CLI.
+
+    When *cwd* is given the child ``os.chdir``s into it before the CLI parses,
+    so the relative repo-level ``.loony-dev.toml`` lookup resolves against the
+    worker's checkout instead of the supervisor's working directory (#306).
+    The web dashboard shares this entry point but passes ``cwd=None`` — it
+    resolves everything from its absolute ``--base-dir`` and must not chdir.
     """
     import os
     import sys
@@ -340,6 +348,11 @@ def _run_worker_process(log_file: Path, cmd_args: list[str]) -> None:
     log_file_obj = open(log_file, "a")
     sys.stdout = log_file_obj
     sys.stderr = log_file_obj
+
+    # chdir *after* the log_file (absolute) fd redirection and *before* the CLI
+    # parses config, so the repo-level .loony-dev.toml resolves here (#306).
+    if cwd is not None:
+        os.chdir(cwd)
 
     from loony_dev.cli import cli
     try:
@@ -374,6 +387,7 @@ def launch_worker(
     process = ctx.Process(
         target=_run_worker_process,
         args=(log_file, cmd_args),
+        kwargs={"cwd": str(work_dir)},
         name=f"worker-{repo.replace('/', '-')}"
     )
     process.start()
