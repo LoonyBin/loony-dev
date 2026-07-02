@@ -188,8 +188,12 @@ def worker(**_) -> None:
               help="Minimum seconds before restarting a crashed worker")
 @click.option("--max-restart-delay", default=300.0, show_default=True,
               help="Maximum backoff delay (seconds) for restarting a crashed worker")
+@click.option("--max-restart-retries", default=5, show_default=True,
+              help="How many times a crashed 'claude rc' remote-control server is relaunched "
+                   "before it is left in an errored state (surfaced in the dashboard) instead "
+                   "of restarted forever. Workers are unaffected.")
 @click.option("--no-remote-control", "no_remote_control", is_flag=True,
-              help="Do not launch a 'claude --remote-control' session per repo "
+              help="Do not launch a 'claude rc' remote-control server per repo "
                    "(use in environments without Anthropic relay access to avoid restart churn).")
 @click.option("--web", "web", is_flag=True,
               help="Also run the read-only web dashboard as a managed child process "

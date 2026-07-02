@@ -7,15 +7,20 @@ reach (filtered by ``--include`` / ``--exclude``), checks each one out under
 - a :class:`WorkerProcess` — ``loony-dev worker`` for that repo (the
   orchestrator loop); and
 - unless ``--no-remote-control`` is set, a :class:`RemoteControlProcess` — a
-  ``claude --remote-control`` session in the repo's base checkout. Its PTY output
-  is scanned for the claude.ai join URL, which (with the live PID) is written to
-  an atomically-rewritten **connection file** so the dashboard can surface the
-  join link / QR via ``/api/sessions``.
+  persistent ``claude rc`` **server** in the repo's base checkout. The user
+  creates sessions on demand from claude.ai/code or the mobile app; each is
+  isolated in its own git worktree (``--spawn worktree``). The supervisor writes
+  an atomically-rewritten **connection file** carrying only server *health*
+  (running / restarting / errored) — there is no single followed session, join
+  URL, or per-session conversation to surface.
 
 Both child kinds are health-checked each ``--interval`` and relaunched through
-exponential backoff (``_restart_after_backoff``) when they crash. New repos are
-picked up every ``--refresh-interval``; pending invitations from
-``--accept-invites-from`` users are auto-accepted.
+exponential backoff (``_restart_after_backoff``) when they crash. Workers restart
+indefinitely; a remote-control server that crashes more than
+``--max-restart-retries`` times is left in an ``errored`` state (surfaced in the
+dashboard) rather than restarted forever. New repos are picked up every
+``--refresh-interval``; pending invitations from ``--accept-invites-from`` users
+are auto-accepted.
 
 Coordination with the worker and dashboard is **filesystem-only** — logs and PID
 files under ``<base-dir>/.logs/<owner>/<repo>/``, plus the session registry.
@@ -390,188 +395,109 @@ def launch_worker(
 # ---------------------------------------------------------------------------
 #
 # When a worker is launched for a repo, the supervisor also spawns a sibling
-# process that runs ``claude --remote-control`` in the repo's *base checkout*
-# (``<base>/<owner>/<repo>``). After #126, tasks run in per-task worktrees, so
-# the base checkout is idle and can host a long-lived interactive Claude session
-# that the user attaches to from the Claude mobile/web app via an Anthropic-hosted
-# relay. Remote control is interactive (a TUI), so the child must allocate a PTY;
-# there is no local port/token printed to stdout — the deterministic, stable
-# session *name* (``loony-<owner>-<repo>``) is the attach handle.
+# process that runs a persistent ``claude rc`` **server** in the repo's *base
+# checkout* (``<base>/<owner>/<repo>``). Unlike the classic single-session
+# ``claude --remote-control <id>`` mode this replaced (#304), the server is not a
+# session we follow: the user creates sessions on demand from claude.ai/code or
+# the mobile app, and ``--spawn worktree`` isolates each on-demand session in its
+# own git worktree so the base checkout stays clean. loony-dev's job is simply to
+# clone the repo and run the server so the user can create sessions on demand.
 #
-# Each (re)launch writes a "connection file" describing how to join. This file is
-# the canonical contract consumed by the web sessions track (see
-# ``loony_dev/web/services.py``): the first three keys ``{session_id, repo, key}``
-# are what ``services.SessionView`` reads. The writer is atomic and additive —
-# unknown keys must be ignorable by readers.
+# Each (re)launch writes a small "connection file" describing server *health*
+# (``{repo, pid, status, started_at, command}``), consumed by the web dashboard
+# (see ``loony_dev/web/services.py``). The writer is atomic and additive — unknown
+# keys must be ignorable by readers.
 
-# Reserved per-session work key (a.k.a. task_key) for the base-checkout session.
-# The base remote-control session is not bound to a per-task worktree, so its key
-# is this sentinel rather than ``null`` — distinct from any future per-task session
-# (#132), which would carry that task's worktree key.
-REMOTE_CONTROL_KEY = "base"
+# Connection-file ``status`` values (server health, not per-session state):
+STATUS_RUNNING = "running"      # server process is up
+STATUS_RESTARTING = "restarting"  # crashed; backing off before a relaunch
+STATUS_ERRORED = "errored"      # crashed more than --max-restart-retries times
 
 
 @dataclass
 class RemoteControlProcess:
     repo: str
     base_dir: Path  # cwd = the repo's base checkout (<base>/<owner>/<repo>)
-    session_id: str
-    key: str
     log_file: Path
     pid_file: Path
     conn_file: Path
     process: multiprocessing.Process
-    started_at: float
+    started_at: float  # monotonic; supervisor health-check bookkeeping
+    started_at_iso: str  # wall-clock ISO-8601, written to the connection file
     restart_count: int = field(default=0)
 
 
-def _remote_control_session_id(repo: str) -> str:
-    """Return the deterministic, stable relay session name for *repo*.
+def _remote_control_name(repo: str) -> str:
+    """Return the ``--name`` for *repo*'s ``claude rc`` server.
 
     ``loony-<owner>-<repo>-<hash>`` with any non-alphanumeric run collapsed to a
-    single ``-``. The id is reused on every (re)launch so it survives restarts
-    unchanged and is predictable for the dashboard.
+    single ``-``. With one rc server per repo on the same host, the default
+    hostname-derived names would be indistinguishable in claude.ai/code, so we
+    give each a stable, human-readable name.
 
     The sanitizer alone is collision-prone — ``acme/foo-bar``, ``acme/foo_bar``
-    and ``acme-foo/bar`` all sanitize to ``loony-acme-foo-bar``. Since the
-    session id is both the relay attach handle and part of the on-disk
-    connection contract, a collision would let one repo overwrite or attach to
-    another's session. A short SHA-256 digest of the original repo string keeps
-    the id deterministic while making it unique (hex is alphanumeric, so it
-    preserves the sanitizer contract).
+    and ``acme-foo/bar`` all sanitize to ``loony-acme-foo-bar``. A short SHA-256
+    digest of the original repo string keeps the name deterministic while making
+    it unique (hex is alphanumeric, so it preserves the sanitizer contract).
     """
     safe = re.sub(r"[^A-Za-z0-9]+", "-", repo).strip("-")
     digest = hashlib.sha256(repo.encode("utf-8")).hexdigest()[:10]
     return f"loony-{safe}-{digest}"
 
 
-def _remote_control_command(session_id: str) -> list[str]:
-    """Build the ``claude --remote-control`` command line.
+def _remote_control_command(repo: str) -> list[str]:
+    """Build the persistent ``claude rc`` server command line for *repo* (#304).
 
-    ``--dangerously-skip-permissions`` matches how workers already invoke
-    ``claude`` and (combined with the pre-trusted base checkout) clears the
-    interactive folder-trust prompt so the session can run unattended.
+    - ``--allow-dangerously-skip-permissions`` lets on-demand sessions bypass
+      permission checks (matches how workers already invoke ``claude``).
+    - ``--spawn worktree`` isolates every on-demand session in its own git
+      worktree, keeping the base checkout clean.
+    - ``--no-create-session-in-dir`` starts the server idle: sessions exist only
+      when the user creates them, not pre-created in the base checkout.
+    - ``--name`` gives this per-repo server a distinguishable name in claude.ai.
     """
-    return ["claude", "--remote-control", session_id, "--dangerously-skip-permissions"]
+    return [
+        "claude", "rc",
+        "--allow-dangerously-skip-permissions",
+        "--spawn", "worktree",
+        "--no-create-session-in-dir",
+        "--name", _remote_control_name(repo),
+    ]
 
 
-# Fixed PTY geometry for the remote-control child (see ``_run_remote_control_process``).
-# The ~57-char join-URL footer must never wrap, and the dimensions must match the
-# ``pyte`` screen the scanner renders into so the live behaviour and the test
-# fixture agree.
+# Default PTY geometry for the remote-control child (see
+# ``_run_remote_control_process``). The rc server logs through a PTY; these are
+# just the size of that logged terminal.
+# not configurable: purely the dimensions of the drained-to-log PTY, of no
+# operator value now that no join-URL footer is scraped from it (#304).
 _REMOTE_CONTROL_PTY_ROWS = 50
 _REMOTE_CONTROL_PTY_COLS = 200
-
-# A claude.ai URL candidate on a *rendered* line: scheme through the first run of
-# non-whitespace. ``claude --remote-control`` may print either the new
-# ``…/code/session_<id>`` deep link or the legacy ``…/remote-control/<token>``.
-_JOIN_URL_CANDIDATE_RE = re.compile(r"https://\S*claude\.ai/\S+")
-
-# A captured candidate is only persisted if it has the exact shape of a real join
-# URL. This is the issue's "degrade to null" safety net: a malformed render such
-# as ``…/code/sssion_…`` (a dropped/duplicated char) fails this and is dropped
-# rather than written to the connection file. ``session_<id>`` ids are
-# alphanumeric; the legacy ``remote-control/<token>`` form is also accepted.
-_VALID_JOIN_URL_RE = re.compile(
-    r"^https://(?:[\w.-]+\.)?claude\.ai/"
-    r"(?:code/session_[A-Za-z0-9]+|remote-control/[A-Za-z0-9._~-]+)$"
-)
-
-
-def _extract_join_url(line: str) -> str | None:
-    """Return the validated claude.ai join URL on a rendered *line*, or ``None``.
-
-    The candidate is trimmed of trailing punctuation a TUI may abut, then checked
-    against :data:`_VALID_JOIN_URL_RE`; anything that isn't a well-formed join URL
-    is rejected.
-    """
-    match = _JOIN_URL_CANDIDATE_RE.search(line)
-    if not match:
-        return None
-    candidate = match.group(0).rstrip(".,)'\"")
-    if _VALID_JOIN_URL_RE.match(candidate):
-        return candidate
-    return None
-
-
-class _JoinUrlScanner:
-    """Stateful scanner that recovers the join URL from a remote-control PTY.
-
-    The Claude TUI composes the URL line by repositioning the cursor mid-redraw
-    (e.g. ``ESC[28G`` — CHA, "cursor to column 28") and relies on cells written by
-    *earlier* frames, so the raw byte order does not match the rendered order and
-    naive escape-stripping cannot reconstruct the text (issue #293). Instead we
-    feed the byte stream through a ``pyte`` terminal emulator and read the URL from
-    the *rendered* screen, exactly as a human would see it.
-
-    ``feed`` is cumulative: state carries across chunks, so a URL split over a read
-    boundary (or one whose correct cells came from a prior frame) still renders.
-    """
-
-    def __init__(
-        self,
-        cols: int = _REMOTE_CONTROL_PTY_COLS,
-        rows: int = _REMOTE_CONTROL_PTY_ROWS,
-    ) -> None:
-        import pyte  # local import: only the remote-control child path needs it
-
-        self._screen = pyte.Screen(cols, rows)
-        self._stream = pyte.ByteStream(self._screen)
-
-    def feed(self, chunk: bytes) -> str | None:
-        """Feed a PTY chunk and return the first validated join URL on screen.
-
-        Returns ``None`` while the screen holds no well-formed join URL (e.g. a
-        partial mid-redraw frame), so a malformed capture never gets persisted.
-        """
-        self._stream.feed(chunk)
-        for line in self._screen.display:
-            url = _extract_join_url(line)
-            if url:
-                return url
-        return None
-
-
-def _scan_for_join_url(data: bytes) -> str | None:
-    """Render *data* through a fresh :class:`_JoinUrlScanner` and return the URL.
-
-    Thin convenience wrapper (one-shot, no cross-chunk state) used by tests and
-    callers that already hold the full capture; the live read loop drives a
-    long-lived scanner directly.
-    """
-    return _JoinUrlScanner().feed(data)
 
 
 def _write_connection_file(
     conn_file: Path,
     *,
     repo: str,
-    session_id: str,
-    key: str,
-    cwd: Path | str,
     pid: int | None,
     started_at: str,
     command: list[str],
-    status: str = "running",
-    join_url: str | None = None,
+    status: str = STATUS_RUNNING,
 ) -> None:
-    """Atomically serialise the canonical remote-control connection schema.
+    """Atomically serialise the remote-control server *health* schema (#304).
 
     Single source of truth for the on-disk shape, used by both the launcher and
-    the child's refresh/``join_url`` update. Writes to a temp file and renames so
-    readers never observe a partial file.
+    the child's PID refresh. The file is a minimal process-status record — no
+    session id / attach handle / join URL, since there is no single followed
+    session. Writes to a temp file and renames so readers never observe a partial
+    file.
     """
     conn_file.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "repo": repo,
         "mode": "remote-control",
-        "session_id": session_id,
-        "key": key,
-        "cwd": str(cwd),
         "pid": pid,
         "status": status,
         "started_at": started_at,
-        "join_url": join_url,
         "command": list(command),
     }
     tmp = conn_file.with_name(conn_file.name + ".tmp")
@@ -599,17 +525,15 @@ def _run_remote_control_process(
     conn_file: Path,
     repo: str,
     base_dir: Path,
-    session_id: str,
-    key: str,
     started_at: str,
 ) -> None:
     """Entry point for a remote-control multiprocessing.Process.
 
-    Allocates a PTY (remote control is an interactive TUI), refreshes the
-    connection file with the live PID, launches ``claude --remote-control`` with
-    the PTY slave as its stdio in a new session, and drains the PTY master into
-    *log_file*. Exits with ``claude``'s return code so the supervisor's health
-    check observes a non-``None`` ``exitcode`` and restarts via the backoff loop.
+    Allocates a PTY, refreshes the connection file with the live PID, launches the
+    persistent ``claude rc`` server with the PTY slave as its stdio in a new
+    session, and drains the PTY master into *log_file*. Exits with ``claude``'s
+    return code so the supervisor's health check observes a non-``None``
+    ``exitcode`` and restarts via the backoff loop.
     """
     import errno
     import fcntl
@@ -618,13 +542,12 @@ def _run_remote_control_process(
     import struct
     import termios
 
-    command = _remote_control_command(session_id)
+    command = _remote_control_command(repo)
 
     master_fd, slave_fd = pty.openpty()
-    # Pin the PTY geometry so the join-URL footer never wraps and the rendered
-    # screen matches the scanner's pyte dimensions (issue #293). Fail fast rather
-    # than run claude on a mismatched PTY that can only yield a wrapped/unusable
-    # join URL — the supervisor's backoff loop will restart us.
+    # Give the PTY a sane, non-zero geometry so the server's logged output is not
+    # rendered into a 0x0 terminal. Fail fast (the backoff loop restarts us) if
+    # the PTY can't be sized rather than launching claude on a broken terminal.
     try:
         winsize = struct.pack(
             "HHHH", _REMOTE_CONTROL_PTY_ROWS, _REMOTE_CONTROL_PTY_COLS, 0, 0
@@ -656,23 +579,17 @@ def _run_remote_control_process(
     # The child holds the slave end; this wrapper only reads from the master.
     os.close(slave_fd)
 
-    # Refresh the connection file with this process's live PID now that claude
-    # has actually launched on a correctly-sized PTY. Writing it only after the
-    # winsize/Popen steps succeed avoids persisting a "running" session for a
-    # child that died during PTY setup (issue #293 review).
+    # Refresh the connection file with this process's live PID now that the server
+    # has actually launched. Writing it only after the winsize/Popen steps succeed
+    # avoids persisting a "running" server for a child that died during PTY setup.
     _write_connection_file(
         conn_file,
         repo=repo,
-        session_id=session_id,
-        key=key,
-        cwd=base_dir,
         pid=os.getpid(),
         started_at=started_at,
         command=command,
     )
 
-    join_url_found = False
-    scanner = _JoinUrlScanner()
     with open(log_file, "ab") as logf:
         while True:
             try:
@@ -690,21 +607,6 @@ def _run_remote_control_process(
                     break
                 logf.write(chunk)
                 logf.flush()
-                if not join_url_found:
-                    url = scanner.feed(chunk)
-                    if url:
-                        join_url_found = True
-                        _write_connection_file(
-                            conn_file,
-                            repo=repo,
-                            session_id=session_id,
-                            key=key,
-                            cwd=base_dir,
-                            pid=os.getpid(),
-                            started_at=started_at,
-                            command=command,
-                            join_url=url,
-                        )
             elif proc.poll() is not None:
                 break
 
@@ -722,22 +624,18 @@ def launch_remote_control(
     pid_file: Path,
     conn_file: Path,
 ) -> RemoteControlProcess:
-    """Spawn a sibling remote-control process for *repo* in its base checkout."""
+    """Spawn a sibling ``claude rc`` server process for *repo* in its base checkout."""
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
-    session_id = _remote_control_session_id(repo)
-    key = REMOTE_CONTROL_KEY
     started_at_iso = datetime.now(timezone.utc).isoformat()
-    command = _remote_control_command(session_id)
+    command = _remote_control_command(repo)
 
-    logger.info(
-        "Launching remote-control for %s (session=%s, log=%s)", repo, session_id, log_file
-    )
+    logger.info("Launching remote-control server for %s (log=%s)", repo, log_file)
 
     ctx = multiprocessing.get_context("spawn")
     process = ctx.Process(
         target=_run_remote_control_process,
-        args=(log_file, conn_file, repo, base_dir, session_id, key, started_at_iso),
+        args=(log_file, conn_file, repo, base_dir, started_at_iso),
         name=f"remote-control-{repo.replace('/', '-')}",
     )
     process.start()
@@ -746,9 +644,6 @@ def launch_remote_control(
     _write_connection_file(
         conn_file,
         repo=repo,
-        session_id=session_id,
-        key=key,
-        cwd=base_dir,
         pid=process.pid,
         started_at=started_at_iso,
         command=command,
@@ -757,13 +652,12 @@ def launch_remote_control(
     return RemoteControlProcess(
         repo=repo,
         base_dir=base_dir,
-        session_id=session_id,
-        key=key,
         log_file=log_file,
         pid_file=pid_file,
         conn_file=conn_file,
         process=process,
         started_at=time.monotonic(),
+        started_at_iso=started_at_iso,
     )
 
 
@@ -843,6 +737,23 @@ def launch_web(
 # ---------------------------------------------------------------------------
 # Supervisor loop
 # ---------------------------------------------------------------------------
+
+# Tier-1 default (see ``--max-restart-retries`` in ``cli.py`` and the
+# ``[supervisor]`` section of ``config.toml.example``): how many times a crashed
+# ``claude rc`` server is relaunched before it is left in an ``errored`` state
+# instead of restarted forever. Workers are unaffected (they restart
+# indefinitely). Used as the fallback when the setting is absent.
+_DEFAULT_MAX_RESTART_RETRIES = 5
+
+
+def _remote_control_gave_up(restart_count: int, max_retries: int) -> bool:
+    """Return True once a crashed rc server has exhausted its restart budget.
+
+    ``restart_count`` is the number of restarts already performed; when it reaches
+    ``max_retries`` the server is left ``errored`` instead of restarted again.
+    """
+    return restart_count >= max_retries
+
 
 def _terminate_process(
     process: multiprocessing.Process,
@@ -1038,7 +949,7 @@ def run_supervisor() -> None:
                         logger.exception("Failed to launch worker for %s", repo)
                         continue
 
-                    # Also launch a sibling remote-control session in the base
+                    # Also launch a sibling ``claude rc`` server in the base
                     # checkout (unless opted out). A failure here must never
                     # block the worker.
                     if config.settings.get("no_remote_control"):
@@ -1117,29 +1028,61 @@ def run_supervisor() -> None:
         if shutdown_requested:
             break
 
-        # Remote-control sessions restart with the same backoff as workers.
+        # Remote-control servers restart with the same backoff as workers, but —
+        # unlike workers — are given up on after --max-restart-retries crashes and
+        # left in an ``errored`` state the dashboard surfaces (#304).
+        max_rc_retries = config.settings.get(
+            "max_restart_retries", _DEFAULT_MAX_RESTART_RETRIES
+        )
         for repo, rcp in list(remote_controls.items()):
             rc = rcp.process.exitcode
             if rc is None:
                 continue  # Still running
 
             if graceful_shutdown:
-                # Nothing to drain for an interactive session; drop it.
+                # Nothing to drain for a server; drop it.
                 logger.info("Remote-control for %s has exited during graceful shutdown.", repo)
                 remote_controls.pop(repo)
                 _remove_pid_file(rcp.pid_file)
                 _remove_connection_file(rcp.conn_file)
                 continue
 
+            _remove_pid_file(rcp.pid_file)
+
+            if _remote_control_gave_up(rcp.restart_count, max_rc_retries):
+                # Crashed too many times: stop restarting and mark the server
+                # errored so the dashboard shows it instead of churning forever.
+                logger.error(
+                    "Remote-control for %s crashed %d times (>= max-restart-retries=%d); "
+                    "leaving it in an errored state.",
+                    repo, rcp.restart_count + 1, max_rc_retries,
+                )
+                _write_connection_file(
+                    rcp.conn_file,
+                    repo=repo,
+                    pid=None,
+                    started_at=rcp.started_at_iso,
+                    command=_remote_control_command(repo),
+                    status=STATUS_ERRORED,
+                )
+                remote_controls.pop(repo)
+                continue
+
             logger.warning(
                 "Remote-control for %s exited with code %d (restart #%d).",
                 repo, rc, rcp.restart_count + 1,
             )
-            _remove_pid_file(rcp.pid_file)
-            # The session is dead; clear the connection file so the web layer
-            # stops advertising a stale ``status: "running"`` session while we
-            # back off and relaunch (the relaunch rewrites it).
-            _remove_connection_file(rcp.conn_file)
+            # The server is dead; mark the connection file ``restarting`` so the
+            # web layer stops advertising a stale ``running`` server while we back
+            # off and relaunch (the relaunch rewrites it to ``running``).
+            _write_connection_file(
+                rcp.conn_file,
+                repo=repo,
+                pid=None,
+                started_at=rcp.started_at_iso,
+                command=_remote_control_command(repo),
+                status=STATUS_RESTARTING,
+            )
 
             new_rcp = _restart_after_backoff(
                 rcp,
@@ -1209,8 +1152,9 @@ def run_supervisor() -> None:
         logger.info("Stopping web dashboard")
         _terminate_process(web_proc.process, web_proc.pid_file, "Web dashboard")
 
-    # Remote-control sessions are interactive/idle with nothing to drain, so they
-    # are terminated on both graceful (SIGQUIT) and immediate shutdown.
+    # Remote-control servers have nothing to drain, and their lifetime is the
+    # supervisor's lifetime (#304), so they are terminated on both graceful
+    # (SIGQUIT) and immediate shutdown.
     for repo, rcp in remote_controls.items():
         logger.info("Stopping remote-control for %s", repo)
         _terminate_process(rcp.process, rcp.pid_file, f"Remote-control for {repo}")

@@ -94,14 +94,6 @@
           integrity="sha384-X9kJyAubVxnP0hcA+AMMs21U445qsnqhnUF8EBlEpP3a42Kh/JwWjlv2ZcvGfphb"
           crossorigin="anonymous" defer></script>
 
-  <!-- QR generator for the remote-control session cards (now folded into the
-       Live screen, #221): renders a join-URL QR client-side so a phone can scan
-       into the same remote-control relay session. Pure JS, no build step;
-       exposes a global `qrcode`. sessions.js degrades gracefully (link only, no
-       QR) if this fails to load. -->
-  <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"
-          integrity="sha384-8FWZA6BGMXhsfO+BLtrJK0We6gg5o1JyO8xQm6peWDEUs17ACA5ziE/NIAkl9z2k"
-          crossorigin="anonymous" defer></script>
 
   <!-- xterm.js (CDN, no build) backs the per-task Attach terminal (#164). The
        fit addon keeps the PTY sized to the viewport on desktop and mobile. -->
@@ -568,13 +560,13 @@
              sidebar. Quick actions sit above; the legacy worktrees / stuck /
              log regions remain below as a secondary signal block. -->
         <div class="live-grid">
-          <!-- Center: the per-repo remote-control session. The header carries
-               persistent/GitHub meta + liveness; the body embeds the reused
-               #157 session card (renderSessionCard, compact variant). -->
+          <!-- Center: the per-repo remote-control server. The header carries
+               persistent/GitHub meta + server health; the body embeds the reused
+               server-health card (renderSessionCard, compact variant, #304). -->
           <section class="card live-session" aria-labelledby="repo-session-title">
             <div class="live-session-head">
               <div>
-                <div class="eyebrow">Live session</div>
+                <div class="eyebrow">Remote-control server</div>
                 <h3 id="repo-session-title" class="live-session-repo"></h3>
               </div>
               <div id="repo-session-liveness"></div>
@@ -582,24 +574,14 @@
             <div id="repo-session-meta" class="live-session-meta"></div>
             <div id="repo-session-body"></div>
 
-            <!-- Base-session conversation (#282): the always-on remote-control
-                 session's actual claude conversation (turns + tool calls),
-                 streamed live from its JSONL via the #202 observe machinery
-                 (streamObserveAt → /api/repos/{owner}/{repo}/live/observe). The
-                 #259 structured activity feed moved to the sidebar "Activity
-                 timeline" card; the #repo-log / #repo-log-title IDs are preserved
-                 so repoDetail.js keeps wiring this panel. -->
+            <!-- Remote control is now a persistent `claude rc` server with no
+                 single followed session (#304): on-demand sessions run in
+                 claude.ai/code, so there is no live conversation to stream here.
+                 repoDetail.js writes a static pointer into #repo-log; the
+                 #repo-log / #repo-log-title IDs are preserved so it keeps wiring
+                 this panel. -->
             <div class="eyebrow">Conversation <span id="repo-log-title" class="muted"></span></div>
             <div id="repo-log" class="live-transcript" aria-live="polite"></div>
-
-            <!-- The design's chat + Send bar, present but disabled until an
-                 in-dashboard PTY drive bridge is reliable (#224 keeps driving on
-                 Claude's hosted relay — use the Open session link / QR above).
-                 Static markup; no JS. Both controls carry the same explanatory
-                 tooltip so the greyed affordance reads as intentional. -->
-            <!-- Steer bar: built by the shared ChatComposer factory (disabled)
-                 in repoDetail.renderSteer() (#258 / Phase 4). -->
-            <div id="repo-steer"></div>
           </section>
 
           <!-- Right sidebar: Repos switcher, repo context, recent commits,
@@ -608,8 +590,8 @@
           <aside class="live-sidebar" aria-label="Repo sidebar">
             <!-- Activity timeline (#282): the #259 structured activity feed
                  (streamActivity), relocated here from #repo-log so the repo's
-                 lifecycle events stay available alongside the base-session
-                 conversation. Mirrors the Issue ▸ PR page's #pipeline-timeline. -->
+                 lifecycle events stay available. Mirrors the Issue ▸ PR page's
+                 #pipeline-timeline. -->
             <div class="card subtle live-panel">
               <h3>Activity timeline</h3>
               <div id="live-timeline" class="timeline" aria-live="polite"></div>

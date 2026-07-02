@@ -172,13 +172,18 @@
 # Maximum backoff delay (seconds) when restarting crashed workers.
 # max_restart_delay = 300.0
 
+# How many times a crashed `claude rc` remote-control server is relaunched before
+# it is left in an errored state (surfaced in the dashboard) instead of restarted
+# forever. Workers are unaffected — they restart indefinitely.
+# max_restart_retries = 5
+
 # Write supervisor DEBUG logs to this file.
 # log_file = "/var/log/loony-dev/supervisor.log"
 
 # Enable DEBUG-level logging (default is INFO).
 # verbose = true
 
-# Do not launch a `claude --remote-control` session per repo.  Set to true in
+# Do not launch a `claude rc` remote-control server per repo.  Set to true in
 # environments without Anthropic relay access to avoid restart churn.
 # no_remote_control = false
 

@@ -365,23 +365,10 @@ def create_api_router(
         """
         await _observe_session(base_dir, websocket, task_key)
 
-    @router.websocket("/repos/{owner}/{repo}/live/observe")
-    async def live_observe(websocket: WebSocket, owner: str, repo: str) -> None:
-        """Stream the always-on base (remote-control) session's conversation (#282).
-
-        The Live screen's ``#repo-log`` source: the per-repo base session has no
-        task/pipeline key, so it is addressed directly by ``owner``/``repo`` rather
-        than through the session registry. Resolves its JSONL from the
-        ``remote-control.json`` connection file and reuses the same
-        backlog-then-live pump as ``/sessions/{task_key}/observe``. Closes ``4404``
-        (the same code as observe/attach) when no base session exists yet, so the
-        client can tell "not started" apart from a network failure.
-        """
-        jsonl_path = services.live_observe_jsonl_path(base_dir, owner, repo)
-        if jsonl_path is None:
-            await websocket.close(code=4404, reason="no base session")
-            return
-        await _pump_transcript(websocket, jsonl_path)
+    # The per-repo remote-control session-conversation stream was removed in #304:
+    # ``claude rc`` is now a persistent server with no single followed session, so
+    # on-demand sessions live entirely in claude.ai/code. The dashboard surfaces
+    # only server health (see ``services.list_sessions`` ``status``).
 
     def _state_snapshot() -> dict:
         """Gather the consolidated dashboard state in one shot.
