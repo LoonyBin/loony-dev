@@ -448,7 +448,7 @@ def _remote_control_name(repo: str) -> str:
 def _remote_control_command(repo: str) -> list[str]:
     """Build the persistent ``claude rc`` server command line for *repo* (#304).
 
-    - ``--allow-dangerously-skip-permissions`` lets on-demand sessions bypass
+    - ``--permission-mode bypassPermissions`` lets on-demand sessions bypass
       permission checks (matches how workers already invoke ``claude``).
     - ``--spawn worktree`` isolates every on-demand session in its own git
       worktree, keeping the base checkout clean.
@@ -458,7 +458,7 @@ def _remote_control_command(repo: str) -> list[str]:
     """
     return [
         "claude", "rc",
-        "--allow-dangerously-skip-permissions",
+        "--permission-mode", "bypassPermissions",
         "--spawn", "worktree",
         "--no-create-session-in-dir",
         "--name", _remote_control_name(repo),

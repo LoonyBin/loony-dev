@@ -281,7 +281,7 @@ class RemoteControlCommandTestCase(unittest.TestCase):
         # #304: a persistent ``claude rc`` server, not a single followed session.
         cmd = supervisor._remote_control_command("acme/widgets")
         self.assertEqual(cmd[:2], ["claude", "rc"])
-        self.assertIn("--allow-dangerously-skip-permissions", cmd)
+        self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "bypassPermissions")
         self.assertEqual(cmd[cmd.index("--spawn") + 1], "worktree")
         self.assertIn("--no-create-session-in-dir", cmd)
         self.assertEqual(
