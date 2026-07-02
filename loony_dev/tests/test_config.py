@@ -48,6 +48,79 @@ def test_load_config_invalid_ignored(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# .local override variants (#307)
+# ---------------------------------------------------------------------------
+
+def test_get_config_files_interleaves_local_variants(tmp_path, monkeypatch):
+    """Each base tier is immediately followed by its .local sibling."""
+    import click
+
+    monkeypatch.setattr(click, "get_app_dir", lambda name: str(tmp_path / name))
+    files = config._get_config_files()
+    # POSIX (the test/dev platform): /etc, user-dir, project — each doubled.
+    assert files == [
+        "/etc/loony-dev/config.toml",
+        "/etc/loony-dev/config.local.toml",
+        str(tmp_path / "loony-dev" / "config.toml"),
+        str(tmp_path / "loony-dev" / "config.local.toml"),
+        ".loony-dev.toml",
+        ".loony-dev.local.toml",
+    ]
+
+
+def _isolate_config_tiers(monkeypatch, paths):
+    """Pin config._load_config() to *paths* only, ignoring real host tiers.
+
+    _load_config() resolves the bare ``_get_config_files`` name in the
+    _loader module namespace, so patch it there (not the __init__ re-export)
+    to keep the precedence tests hermetic — a stray /etc or user-dir
+    config on the dev/CI machine must not affect the outcome.
+    """
+    ordered = [str(p) for p in paths]
+    monkeypatch.setattr(config._loader, "_get_config_files", lambda: ordered)
+
+
+def test_local_overrides_base_same_tier(tmp_path, monkeypatch):
+    """A project .local file wins over its base .loony-dev.toml for the same key."""
+    base = tmp_path / ".loony-dev.toml"
+    local = tmp_path / ".loony-dev.local.toml"
+    base.write_text("[worker]\ninterval = 30\n")
+    local.write_text("[worker]\ninterval = 99\n")
+    _isolate_config_tiers(monkeypatch, [base, local])
+    result = config._load_config()
+    assert result["worker"]["interval"] == 99
+
+
+def test_local_partial_override_deep_merges(tmp_path, monkeypatch):
+    """A .local file with only one key overrides just that key; others survive."""
+    base = tmp_path / ".loony-dev.toml"
+    local = tmp_path / ".loony-dev.local.toml"
+    base.write_text("[worker]\ninterval = 30\nwork_dir = \"/base\"\n")
+    local.write_text("[worker]\ninterval = 99\n")
+    _isolate_config_tiers(monkeypatch, [base, local])
+    result = config._load_config()
+    assert result["worker"]["interval"] == 99
+    assert result["worker"]["work_dir"] == "/base"
+
+
+def test_lower_tier_local_loses_to_higher_tier_base(tmp_path, monkeypatch):
+    """User config.local.toml still loses to the project .loony-dev.toml base."""
+    user_local = tmp_path / "user" / "config.local.toml"
+    user_local.parent.mkdir(parents=True)
+    user_local.write_text("[worker]\ninterval = 1\n")
+
+    project_base = tmp_path / "proj" / ".loony-dev.toml"
+    project_base.parent.mkdir(parents=True)
+    project_base.write_text("[worker]\ninterval = 42\n")
+
+    # Lowest → highest: the user-tier .local sits below the project base.
+    _isolate_config_tiers(monkeypatch, [user_local, project_base])
+    result = config._load_config()
+    # Project base (42) outranks the user-tier .local (1).
+    assert result["worker"]["interval"] == 42
+
+
+# ---------------------------------------------------------------------------
 # _build_default_map
 # ---------------------------------------------------------------------------
 
