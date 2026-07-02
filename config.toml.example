@@ -10,6 +10,13 @@
 # sub-command. There are no shared top-level defaults that flow into
 # sub-commands; place every key inside the appropriate [section].
 #
+# Most keys mirror a CLI flag. A few are advanced tuning knobs that are
+# file-only (no flag) and read straight from the section here — they are noted
+# inline as "No CLI flag". Every documented key IS read by the code, and every
+# configurable Tier-1/2 setting the code reads IS documented here; this file is
+# the source of truth for what is configurable. (Tier-3 internal constants are
+# intentionally not configurable and live only in code — see CLAUDE.md.)
+#
 # Priority order (highest wins):
 #   1. CLI flags
 #   2. Environment variables  LOONY_DEV_<COMMAND>_<KEY>
@@ -68,9 +75,21 @@
 # when no reset time can be parsed from the error message.
 # quota_fallback_seconds = 1800
 
-# Seconds to wait for a persistent Claude session's transcript to appear after
-# launching the CLI before giving up. Raise this if session startup is slow.
-# claude_session_startup_timeout_seconds = 120
+# Wall-clock cap (seconds) on a single `claude -p` turn — one phase of an issue
+# (plan, implement, fix a review). On overrun the CLI process group is killed and
+# the turn returns rc 124. Raise it if turns are being cut off; lower it to fail
+# faster. No CLI flag (advanced tuning); set it here under [worker].
+# claude_turn_timeout_seconds = 1800
+
+# Seconds a bot lease-holder's heartbeat may stall before another worker may
+# reclaim the pipeline (the middle reclaim tier, below the 12h global backstop).
+# Must stay strictly greater than claude_turn_timeout_seconds or a slow-but-live
+# worker gets falsely reclaimed. No CLI flag; advanced reliability knob.
+# heartbeat_stale_after = 3600
+
+# Display name for the orchestrator/supervisor identity in the activity/event
+# feed (the "capo" actor). Rarely changed. No CLI flag.
+# capo_name = "capo"
 
 # Number of identical consecutive bot failure comments on an item before it is
 # marked with the in-error label and excluded from discovery (requires manual
