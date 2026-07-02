@@ -12,9 +12,10 @@
 #
 # Most keys mirror a CLI flag. A few are advanced tuning knobs that are
 # file-only (no flag) and read straight from the section here — they are noted
-# inline as "No CLI flag". Every documented key IS read by the code and every
-# tunable the code reads IS documented here; this file is the source of truth
-# for what is configurable.
+# inline as "No CLI flag". Every documented key IS read by the code, and every
+# configurable Tier-1/2 setting the code reads IS documented here; this file is
+# the source of truth for what is configurable. (Tier-3 internal constants are
+# intentionally not configurable and live only in code — see CLAUDE.md.)
 #
 # Priority order (highest wins):
 #   1. CLI flags
