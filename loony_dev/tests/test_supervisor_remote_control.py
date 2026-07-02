@@ -222,8 +222,12 @@ class RunWorkerProcessCwdTestCase(unittest.TestCase):
             sys.stdout, sys.stderr = orig_stdout, orig_stderr
             os.chdir(orig_cwd)
 
-        # The child ran with the checkout as its CWD ...
-        self.assertEqual(observed["cwd"], str(work_dir))
+        # The child ran with the checkout as its CWD (realpath both sides:
+        # os.getcwd() resolves symlinks, but tempfile's path does not — on
+        # macOS /var is a symlink to /private/var, so a bare compare fails).
+        self.assertEqual(
+            os.path.realpath(observed["cwd"]), os.path.realpath(str(work_dir))
+        )
         # ... so the relative .loony-dev.toml in the checkout was loaded.
         self.assertEqual(observed["config"]["worker"]["interval"], 999)
 
@@ -252,8 +256,12 @@ class RunWorkerProcessCwdTestCase(unittest.TestCase):
             sys.stdout, sys.stderr = orig_stdout, orig_stderr
             os.chdir(orig_cwd)
 
-        # cwd=None (the web path) leaves the process CWD as it was.
-        self.assertEqual(observed["cwd"], str(root))
+        # cwd=None (the web path) leaves the process CWD as it was (realpath
+        # both sides — os.getcwd() resolves the macOS /var symlink, tempfile
+        # does not).
+        self.assertEqual(
+            os.path.realpath(observed["cwd"]), os.path.realpath(str(root))
+        )
 
 
 class LaunchWebTestCase(unittest.TestCase):
