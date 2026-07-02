@@ -75,7 +75,10 @@ _POLL_INTERVAL = 0.1
 # ``Stop``). This is a *liveness net only* — the authoritative signal is the
 # hook event; the backstop merely stops a crashed CLI (one that exits before
 # firing the hook) from hanging the worker forever. It must therefore be large.
-# Override via the ``claude_session_backstop_seconds`` key under ``[worker]``.
+# NOT configurable today: the constructor accepts ``backstop_seconds`` but no
+# caller wires it to config, so this constant is the effective value. If a knob
+# is wanted, expose it as a Tier-2 ``[worker] claude_session_backstop_seconds``
+# key (see the "Configuration & tunable constants" convention in CLAUDE.md).
 # Callers MUST pre-trust the cwd (see ``trust_directory``) or interactive
 # ``claude`` blocks on the folder-trust dialog and never fires ``SessionStart``.
 _DEFAULT_BACKSTOP = 600.0
