@@ -68,13 +68,18 @@ function renderState(card, s) {
   const note = document.createElement("p");
   note.className = "session-note";
   const status = s && s.status;
-  if (status === "errored" || (s && s.alive === false)) {
+  // Match serverHealthBadge's precedence: a known status is authoritative, so
+  // `alive` only decides the note when status is absent. Otherwise a stale
+  // `alive === false` could show an offline note under a "running" badge.
+  const hasKnownStatus =
+    status === "running" || status === "restarting" || status === "errored";
+  if (status === "errored" || (!hasKnownStatus && s && s.alive === false)) {
     note.classList.add("session-note-offline");
     note.textContent =
       "Remote-control server not running — sessions can't be created until it recovers.";
   } else if (status === "restarting") {
     note.textContent = "Remote-control server restarting…";
-  } else if (!status && (!s || s.alive == null)) {
+  } else if (!hasKnownStatus && (!s || s.alive == null)) {
     // No status and no PID liveness: match serverHealthBadge's "unknown" badge
     // rather than implying the server is healthy.
     note.textContent = "Remote-control server health unknown.";
