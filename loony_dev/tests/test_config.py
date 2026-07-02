@@ -48,6 +48,67 @@ def test_load_config_invalid_ignored(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# .local override variants (#307)
+# ---------------------------------------------------------------------------
+
+def test_get_config_files_interleaves_local_variants(tmp_path, monkeypatch):
+    """Each base tier is immediately followed by its .local sibling."""
+    import click
+
+    monkeypatch.setattr(click, "get_app_dir", lambda name: str(tmp_path / name))
+    files = config._get_config_files()
+    # POSIX (the test/dev platform): /etc, user-dir, project — each doubled.
+    assert files == [
+        "/etc/loony-dev/config.toml",
+        "/etc/loony-dev/config.local.toml",
+        str(tmp_path / "loony-dev" / "config.toml"),
+        str(tmp_path / "loony-dev" / "config.local.toml"),
+        ".loony-dev.toml",
+        ".loony-dev.local.toml",
+    ]
+
+
+def test_local_overrides_base_same_tier(tmp_path, monkeypatch):
+    """A project .local file wins over its base .loony-dev.toml for the same key."""
+    (tmp_path / ".loony-dev.toml").write_text("[worker]\ninterval = 30\n")
+    (tmp_path / ".loony-dev.local.toml").write_text("[worker]\ninterval = 99\n")
+    monkeypatch.chdir(tmp_path)
+    result = config._load_config()
+    assert result["worker"]["interval"] == 99
+
+
+def test_local_partial_override_deep_merges(tmp_path, monkeypatch):
+    """A .local file with only one key overrides just that key; others survive."""
+    (tmp_path / ".loony-dev.toml").write_text(
+        "[worker]\ninterval = 30\nwork_dir = \"/base\"\n"
+    )
+    (tmp_path / ".loony-dev.local.toml").write_text("[worker]\ninterval = 99\n")
+    monkeypatch.chdir(tmp_path)
+    result = config._load_config()
+    assert result["worker"]["interval"] == 99
+    assert result["worker"]["work_dir"] == "/base"
+
+
+def test_lower_tier_local_loses_to_higher_tier_base(tmp_path, monkeypatch):
+    """User config.local.toml still loses to the project .loony-dev.toml base."""
+    import click
+
+    app_dir = tmp_path / "app" / "loony-dev"
+    app_dir.mkdir(parents=True)
+    (app_dir / "config.local.toml").write_text("[worker]\ninterval = 1\n")
+    monkeypatch.setattr(click, "get_app_dir", lambda name: str(tmp_path / "app" / name))
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".loony-dev.toml").write_text("[worker]\ninterval = 42\n")
+    monkeypatch.chdir(project)
+
+    result = config._load_config()
+    # Project base (42) outranks the user-tier .local (1).
+    assert result["worker"]["interval"] == 42
+
+
+# ---------------------------------------------------------------------------
 # _build_default_map
 # ---------------------------------------------------------------------------
 

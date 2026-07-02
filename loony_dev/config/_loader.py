@@ -71,13 +71,36 @@ def _populate_settings(ctx: click.Context) -> None:
     _config_module.settings = Settings(data)
 
 
+def _local_variant(path: str) -> str:
+    """Return the ``.local`` sibling of *path* (``.toml`` → ``.local.toml``).
+
+    Inserts ``.local`` before the final ``.toml`` suffix so the transform is
+    uniform across all tiers and a ``.toml`` appearing elsewhere in the path
+    can't be miscorrupted.
+    """
+    p = Path(path)
+    return str(p.with_name(f"{p.stem}.local{p.suffix}"))
+
+
 def _get_config_files() -> list[str]:
-    """Return platform-appropriate config file paths, lowest to highest priority."""
-    files = []
+    """Return config file paths, lowest to highest priority.
+
+    Each base tier is immediately followed by its machine-local ``.local``
+    sibling (``config.toml`` → ``config.local.toml``), which is merged directly
+    above its base file so a single machine can override any tier without
+    editing (and dirtying) the tracked file.  Missing files are skipped by
+    :func:`_load_config`, so a ``.local`` file need only contain the keys it
+    overrides.
+    """
+    bases = []
     if os.name == "posix":
-        files.append("/etc/loony-dev/config.toml")
-    files.append(str(Path(click.get_app_dir("loony-dev")) / "config.toml"))
-    files.append(".loony-dev.toml")
+        bases.append("/etc/loony-dev/config.toml")
+    bases.append(str(Path(click.get_app_dir("loony-dev")) / "config.toml"))
+    bases.append(".loony-dev.toml")
+    files = []
+    for base in bases:
+        files.append(base)
+        files.append(_local_variant(base))
     return files
 
 
@@ -93,7 +116,9 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> None:
 def _load_config() -> dict[str, Any]:
     """Load config from TOML files, returning a merged dict.
 
-    File priority (lowest to highest): /etc, user-config-dir, ./.loony-dev.toml.
+    File priority (lowest to highest): each of /etc, user-config-dir, and
+    ./.loony-dev.toml, with each base tier immediately followed by its
+    machine-local ``.local`` sibling (see :func:`_get_config_files`).
     Environment variables are handled natively by Click via auto_envvar_prefix.
     """
     result: dict[str, Any] = {}

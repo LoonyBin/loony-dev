@@ -3,10 +3,16 @@
 Priority (highest wins):
   1. CLI options
   2. Environment vars    LOONY_DEV_<COMMAND>_<KEY>  (via Click auto_envvar_prefix)
-  3. ./.loony-dev.toml   (repo-level / per-checkout)
-  4. <user-config-dir>/loony-dev/config.toml  (platform-specific via click.get_app_dir)
-  5. /etc/loony-dev/config.toml  (POSIX only)
-  6. Click param defaults  (the application's baseline)
+  3. ./.loony-dev.local.toml  (repo-level, machine-local — never checked in)
+  4. ./.loony-dev.toml   (repo-level / per-checkout)
+  5. <user-config-dir>/loony-dev/config.local.toml  (user-level, machine-local)
+  6. <user-config-dir>/loony-dev/config.toml  (platform-specific via click.get_app_dir)
+  7. /etc/loony-dev/config.local.toml  (system-wide, machine-local; POSIX only)
+  8. /etc/loony-dev/config.toml  (POSIX only)
+  9. Click param defaults  (the application's baseline)
+
+Each ``.local`` sibling is merged directly above its base tier and, thanks to
+deep-merging, need only contain the keys it overrides.
 
 Usage
 -----
