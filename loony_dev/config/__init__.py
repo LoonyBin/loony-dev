@@ -14,6 +14,10 @@ Priority (highest wins):
 Each ``.local`` sibling is merged directly above its base tier and, thanks to
 deep-merging, need only contain the keys it overrides.
 
+The repo-level files (tiers 3 & 4) are resolved against the worker's
+``--work-dir``, which the supervisor chdirs the worker child into so a
+``.loony-dev.toml`` committed to a repo checkout is honoured — see #306.
+
 Usage
 -----
 Use ``cls=config.ClickGroup`` on the root CLI group::

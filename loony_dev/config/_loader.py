@@ -120,6 +120,11 @@ def _load_config() -> dict[str, Any]:
     ./.loony-dev.toml, with each base tier immediately followed by its
     machine-local ``.local`` sibling (see :func:`_get_config_files`).
     Environment variables are handled natively by Click via auto_envvar_prefix.
+
+    The repo-level ``./.loony-dev.toml`` is relative to the process CWD. Under
+    the supervisor the worker child is chdir'd into its ``--work-dir`` checkout
+    before parsing (see ``supervisor._run_worker_process``), so this resolves
+    against the repo checkout rather than the supervisor's CWD (#306).
     """
     result: dict[str, Any] = {}
     for path in _get_config_files():
