@@ -6,6 +6,14 @@
 #   ~/Library/Application Support/loony-dev/config.toml  (user-level, macOS)
 #   /etc/loony-dev/config.toml                 (system-wide, POSIX only)
 #
+# Every tier has a machine-local ".local" sibling (e.g. ".loony-dev.local.toml",
+# "config.local.toml") merged directly ABOVE its base file. Use it to override
+# a tier on one specific machine without editing — and dirtying — the tracked
+# file. Because config is deep-merged, a ".local" file need only contain the
+# keys it overrides. These files are never checked in; add
+# ".loony-dev.local.toml" to your project's .gitignore (the worker also adds it
+# to .git/info/exclude automatically).
+#
 # Configuration is STRICTLY SCOPED: each section applies only to the matching
 # sub-command. There are no shared top-level defaults that flow into
 # sub-commands; place every key inside the appropriate [section].
@@ -20,10 +28,13 @@
 # Priority order (highest wins):
 #   1. CLI flags
 #   2. Environment variables  LOONY_DEV_<COMMAND>_<KEY>
-#   3. ./.loony-dev.toml
-#   4. User config dir config.toml
-#   5. /etc/loony-dev/config.toml
-#   6. Built-in CLI defaults
+#   3. ./.loony-dev.local.toml                 (machine-local, never checked in)
+#   4. ./.loony-dev.toml
+#   5. User config dir config.local.toml       (machine-local)
+#   6. User config dir config.toml
+#   7. /etc/loony-dev/config.local.toml        (machine-local, POSIX only)
+#   8. /etc/loony-dev/config.toml
+#   9. Built-in CLI defaults
 
 
 # ---------------------------------------------------------------------------
