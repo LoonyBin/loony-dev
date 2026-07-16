@@ -10,6 +10,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock
 
+from loony_dev.actors import ACTOR_MARKER_PREFIX, DEFAULT_ACTOR, decode_actor
 from loony_dev.github.comment import WarningComment
 
 
@@ -19,6 +20,7 @@ BOT_NAME = "loony-bot"
 def _make_repo() -> MagicMock:
     repo = MagicMock()
     repo.bot_name = BOT_NAME
+    repo.actor = DEFAULT_ACTOR
     return repo
 
 
@@ -118,6 +120,37 @@ class TestWarningCommentDedup(unittest.TestCase):
 
         wc = WarningComment(number=1, field_name="body", injections=[], _repo=repo)
         self.assertIn(_sentinel("body"), str(wc.body))
+
+    # ------------------------------------------------------------------
+    # 7. Actor attribution — stamped without breaking the sentinel dedup
+    # ------------------------------------------------------------------
+    def test_save_stamps_worker_actor_and_keeps_sentinel_intact(self) -> None:
+        """A non-default role's warning is attributed to that role; the
+        loonybin sentinel stays byte-identical (prepended, never folded)."""
+        repo = _make_repo()
+        repo.actor = "pm"
+        repo.client.gh_json.return_value = {"comments": []}
+
+        wc = WarningComment(number=1, field_name="body", injections=[], _repo=repo)
+        wc.save()
+
+        posted = repo.client.gh.call_args[0][-1]
+        self.assertTrue(posted.startswith(f"{ACTOR_MARKER_PREFIX} actor=pm -->\n"))
+        self.assertIn(_sentinel("body"), posted)
+        self.assertEqual(decode_actor(posted), "pm")
+
+    def test_stamped_prior_warning_still_suppresses_repost(self) -> None:
+        """Dedup matches the sentinel by substring, so a stamped prior warning
+        (actor line above the sentinel) still suppresses a re-post."""
+        repo = _make_repo()
+        repo.client.gh_json.return_value = {
+            "comments": [{"body": f"{ACTOR_MARKER_PREFIX} actor=pm -->\n{_warning_body('body')}"}],
+        }
+
+        wc = WarningComment(number=1, field_name="body", injections=[], _repo=repo)
+        wc.save()
+
+        repo.client.gh.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
+from loony_dev.actors import DEFAULT_ACTOR, comment_actor
 from loony_dev.models import RateLimitedError, truncate_for_log
 from loony_dev.tasks.base import FAILURE_MARKER, SUCCESS_MARKER, Task, _slugify
 from loony_dev.tasks.planning_task import PLAN_MARKER, PLAN_MARKER_PREFIX
@@ -38,7 +39,7 @@ def issue_action(issue: Issue, repo: Repo) -> IssueTask | None:
         logger.debug("Issue #%d is in-error — skipping", issue.number)
         return None
     comments = issue.comments
-    plan = IssueTask._find_plan(comments, repo.bot_name)
+    plan = IssueTask._find_plan(comments, repo.bot_name, repo.actor)
     if plan is not None:
         logger.debug("Issue #%d has an approved plan (%d chars)", issue.number, len(plan))
     else:
@@ -73,11 +74,20 @@ class IssueTask(Task):
                 yield task
 
     @staticmethod
-    def _find_plan(comments: list[Comment], bot_name: str) -> str | None:
-        """Return the text of the most recent approved plan comment, or None."""
+    def _find_plan(
+        comments: list[Comment], bot_name: str, actor: str = DEFAULT_ACTOR
+    ) -> str | None:
+        """Return the text of the most recent approved plan comment, or None.
+
+        Only plans this worker posted count: authored by *bot_name* **and**
+        attributed to *actor* (untagged bot comments resolve to the default).
+        """
         plan: str | None = None
         for c in comments:
-            if c.author == bot_name and c.body.startswith(PLAN_MARKER_PREFIX):
+            if (
+                comment_actor(c.author, str(c.body), bot_name) == actor
+                and c.body.startswith(PLAN_MARKER_PREFIX)
+            ):
                 end = c.body.find("-->")
                 plan = c.body[end + 3:].strip() if end >= 0 else c.body[len(PLAN_MARKER):].strip()
         return plan
@@ -226,6 +236,7 @@ class IssueTask(Task):
             repo.bot_name,
             repo.repeated_failure_threshold,
             repo.owner,
+            actor=repo.actor,
         )
         if not in_error:
             self.issue.add_label("ready-for-development")

@@ -72,6 +72,17 @@ class Comment:
         self.thread_id = thread_id
         self.in_reply_to_id = in_reply_to_id
 
+    def actor_for(self, bot_name: str) -> str | None:
+        """The agent role this comment is attributed to, or ``None`` if not bot-authored.
+
+        A method rather than a stored property because attribution needs the
+        repo's ``bot_name``, which a ``Comment`` does not hold. Independent of
+        the body's ``safe`` flag, which stays purely login-based.
+        """
+        from loony_dev.actors import comment_actor
+
+        return comment_actor(self.author, str(self.body), bot_name)
+
     # --- Class-level reads ---
 
     _ISSUE_COMMENTS_QUERY = """\
@@ -317,12 +328,24 @@ class WarningComment(Comment):
         return any(sentinel in c.get("body", "") for c in data.get("comments", []))
 
     def save(self) -> None:
-        """Post this warning comment if it doesn't already exist."""
+        """Post this warning comment if it doesn't already exist.
+
+        Posts via the raw ``gh`` transport (not ``GitHubItem.add_comment``)
+        but stamps the worker's actor itself so a non-default role is not
+        mis-attributed to the default actor at read time. The ``loonybin-``
+        sentinel is outside the ``loony-`` marker family, so ``stamp_actor``
+        *prepends* a standalone actor line and the sentinel stays
+        byte-identical for ``exists()``'s substring dedup.
+        """
+        from loony_dev.actors import stamp_actor
+
         if self.exists():
             return
+        stamped_body = stamp_actor(str(self.body), self._repo.actor)
         try:
             self._repo.client.gh(
-                "issue", "comment", str(self._number), "--body", str(self.body),
+                "issue", "comment", str(self._number), "--body",
+                stamped_body,
             )
         except Exception as exc:
             logger.warning(

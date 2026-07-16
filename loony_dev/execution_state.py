@@ -119,6 +119,10 @@ def stage_for_task_type(task_type: str) -> str | None:
 
 # ---------------------------------------------------------------------------
 # Actor resolution (config-resolved, never hardcoded — #218)
+#
+# Distinct from ``loony_dev.actors``: that module is the GitHub comment
+# attribution vocabulary (the ``actor=`` marker attribute, e.g. "developer");
+# this one resolves *display names* for the JSONL execution-event feed.
 # ---------------------------------------------------------------------------
 
 ACTOR_BOT = "bot"

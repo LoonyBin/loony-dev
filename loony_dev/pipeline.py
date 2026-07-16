@@ -154,7 +154,7 @@ class Pipeline:
             task = conflict_action(self.pr, repo.bot_name, _default_branch(repo))
             if task is not None:
                 return task
-            task = ci_failure_action(self.pr, repo.bot_name)
+            task = ci_failure_action(self.pr, repo.bot_name, repo.actor)
             if task is not None:
                 return task
             task = pr_review_action(self.pr, repo)

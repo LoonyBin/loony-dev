@@ -113,4 +113,5 @@ class ConflictResolutionTask(Task):
             repo.bot_name,
             repo.repeated_failure_threshold,
             repo.owner,
+            actor=repo.actor,
         )

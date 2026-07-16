@@ -4,9 +4,15 @@ import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
+from loony_dev.actors import DEFAULT_ACTOR, comment_actor
 from loony_dev.github.repo import parse_datetime
 from loony_dev.models import RateLimitedError
-from loony_dev.tasks.base import CI_FAILURE_MARKER, Task, issue_or_pr_keys
+from loony_dev.tasks.base import (
+    CI_FAILURE_MARKER,
+    CI_FAILURE_MARKER_PREFIX,
+    Task,
+    issue_or_pr_keys,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -15,17 +21,19 @@ if TYPE_CHECKING:
     from loony_dev.models import TaskResult
 
 
-def ci_already_handled(pr: PullRequest, bot_name: str) -> bool:
-    """True if the bot already posted a CI-failure marker after the latest push.
+def ci_already_handled(pr: PullRequest, bot_name: str, actor: str = DEFAULT_ACTOR) -> bool:
+    """True if this worker already posted a CI-failure marker after the latest push.
 
     Idempotency for the CI rung: a marker comment whose timestamp is at or after
     the PR's ``updatedAt`` (the most recent push) means this failure has been
-    addressed and must not be re-dispatched.
+    addressed and must not be re-dispatched. The marker must be *mine*
+    (bot-authored and attributed to *actor*) and lead the comment — a CI
+    marker quoted inside an in-error body does not count.
     """
     for comment in pr.comments:
-        if CI_FAILURE_MARKER not in comment.body:
+        if not str(comment.body).startswith(CI_FAILURE_MARKER_PREFIX):
             continue
-        if comment.author != bot_name:
+        if comment_actor(comment.author, str(comment.body), bot_name) != actor:
             continue
         comment_time = parse_datetime(comment.created_at)
         if comment_time and pr.updated_at and comment_time >= pr.updated_at:
@@ -33,7 +41,9 @@ def ci_already_handled(pr: PullRequest, bot_name: str) -> bool:
     return False
 
 
-def ci_failure_action(pr: PullRequest, bot_name: str) -> CIFailureTask | None:
+def ci_failure_action(
+    pr: PullRequest, bot_name: str, actor: str = DEFAULT_ACTOR
+) -> CIFailureTask | None:
     """Pure predicate: a CI-fix task for *pr* if it has unhandled failures, else None."""
     if not pr.is_assigned_to(bot_name):
         return None
@@ -48,7 +58,7 @@ def ci_failure_action(pr: PullRequest, bot_name: str) -> CIFailureTask | None:
     if not failed:
         return None
 
-    if ci_already_handled(pr, bot_name):
+    if ci_already_handled(pr, bot_name, actor):
         return None
 
     return CIFailureTask(pr=pr, failed_checks=failed)
@@ -73,7 +83,7 @@ class CIFailureTask(Task):
         from loony_dev.github import PullRequest
 
         for pr in PullRequest.list_open(repo=repo):
-            task = ci_failure_action(pr, repo.bot_name)
+            task = ci_failure_action(pr, repo.bot_name, repo.actor)
             if task is not None:
                 yield task
 
@@ -144,4 +154,5 @@ class CIFailureTask(Task):
             repo.bot_name,
             repo.repeated_failure_threshold,
             repo.owner,
+            actor=repo.actor,
         )
