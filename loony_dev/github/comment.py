@@ -341,10 +341,11 @@ class WarningComment(Comment):
 
         if self.exists():
             return
+        stamped_body = stamp_actor(str(self.body), self._repo.actor)
         try:
             self._repo.client.gh(
                 "issue", "comment", str(self._number), "--body",
-                stamp_actor(str(self.body), self._repo.actor),
+                stamped_body,
             )
         except Exception as exc:
             logger.warning(
