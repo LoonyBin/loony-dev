@@ -135,7 +135,7 @@ class Repo:
         actor: str | None = None,
     ) -> None:
         from loony_dev import config
-        from loony_dev.actors import configured_actor
+        from loony_dev.actors import configured_actor, validate_actor
 
         self.cwd = cwd
         self.name: str = repo or Repo.detect(cwd=cwd)
@@ -143,7 +143,9 @@ class Repo:
         self.bot_name: str = bot_name or config.settings.get("bot_name") or Repo.detect_bot_name()
         # The agent role stamped into every comment this worker posts (all
         # roles share the bot_name login; the actor label distinguishes them).
-        self.actor: str = actor or configured_actor()
+        # An explicit constructor value is validated just like a configured one
+        # so a bad identity fails loudly at startup.
+        self.actor: str = validate_actor(actor) if actor else configured_actor()
         self.allowed_users: set[str] = (
             allowed_users if allowed_users is not None
             else set(config.settings.get("allowed_users") or [])

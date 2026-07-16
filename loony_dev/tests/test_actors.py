@@ -158,6 +158,29 @@ class TestStampActor(unittest.TestCase):
         for body in (f"{SUCCESS_MARKER}\n\nDone.", "plain text"):
             self.assertEqual(decode_actor(stamp_actor(body, "pm")), "pm")
 
+    def test_invalid_actor_raises_instead_of_corrupting_marker(self) -> None:
+        """An explicit override with a bad name must fail loudly, not stamp garbage."""
+        for bad in ("Bad Name", "", "human"):
+            with self.assertRaises(ValueError):
+                stamp_actor("hello", bad)
+
+
+class TestLoonybinSentinelExclusion(unittest.TestCase):
+    """The `loonybin-` namespace (injection-warning sentinel) is outside the
+    `loony-` marker family: never read as an actor marker, never folded into."""
+
+    SENTINEL = '<!-- loonybin-injection-warning field="title" -->'
+
+    def test_decode_ignores_loonybin_sentinel(self) -> None:
+        body = '<!-- loonybin-injection-warning field="title" actor=pm -->\n> warning'
+        self.assertIsNone(decode_actor(body))
+
+    def test_stamp_prepends_instead_of_folding_into_sentinel(self) -> None:
+        body = f"{self.SENTINEL}\n> warning"
+        stamped = stamp_actor(body, "pm")
+        self.assertTrue(stamped.startswith(f"{ACTOR_MARKER_PREFIX} actor=pm -->\n"))
+        self.assertIn(self.SENTINEL, stamped)  # dedup substring stays byte-identical
+
 
 # ---------------------------------------------------------------------------
 # decode_last_seen coexistence
@@ -295,6 +318,27 @@ class TestStampingChokePoint(unittest.TestCase):
         item.edit_comment(42, f"{SUCCESS_MARKER}\n\nUpdated.")
         kwargs = item._repo.client.gh_api_patch.call_args.kwargs
         self.assertEqual(decode_actor(kwargs["body"]), DEFAULT_ACTOR)
+
+    def test_add_comment_invalid_explicit_actor_raises(self) -> None:
+        item = self._item()
+        with self.assertRaises(ValueError):
+            item.add_comment("Plain notice.", actor="Bad Name")
+        item._repo.client.gh.assert_not_called()
+
+
+class TestRepoActorValidation(unittest.TestCase):
+
+    def test_explicit_constructor_actor_validated(self) -> None:
+        from loony_dev.github.repo import Repo
+
+        with self.assertRaises(ValueError):
+            Repo("owner/repo", bot_name="loony-bot", actor="Bad Name")
+
+    def test_explicit_constructor_actor_accepted(self) -> None:
+        from loony_dev.github.repo import Repo
+
+        repo = Repo("owner/repo", bot_name="loony-bot", actor="pm")
+        self.assertEqual(repo.actor, "pm")
 
 
 if __name__ == "__main__":

@@ -41,6 +41,13 @@ DEFAULT_ACTOR = "developer"
 # Standalone marker prepended to comments whose body has no lifecycle marker.
 ACTOR_MARKER_PREFIX = "<!-- loony-actor"
 
+# The lifecycle-marker family an actor attribute may live in (loony-failure,
+# loony-success, loony-ci-failure, loony-in-error, loony-plan, loony-actor).
+# The trailing hyphen deliberately excludes the `loonybin-` namespace (the
+# injection-warning sentinel), whose exact-string dedup must never be folded
+# into and whose first line must never be read as an actor marker.
+_LOONY_MARKER_FAMILY = "<!-- loony-"
+
 # Actor names are a tight lowercase slug so a malformed or hostile tag simply
 # fails to parse (resolving to DEFAULT_ACTOR) instead of smuggling arbitrary
 # text into decision logic. Length cap 32 — not configurable: slug sanity
@@ -57,12 +64,12 @@ RESERVED_ACTORS = frozenset({"human", "system"})
 def decode_actor(body: str) -> str | None:
     """Extract the actor tag from *body*'s first-line marker, or ``None``.
 
-    Only the first line is consulted, and only when it is a ``<!-- loony``
-    HTML comment — markers quoted later in the body (e.g. inside a
-    ``<details>`` block) never match.
+    Only the first line is consulted, and only when it is a ``<!-- loony-``
+    family marker — markers quoted later in the body (e.g. inside a
+    ``<details>`` block) and ``loonybin-`` sentinels never match.
     """
     first_line = str(body).lstrip().split("\n", 1)[0].strip()
-    if not first_line.startswith("<!-- loony") or not first_line.endswith("-->"):
+    if not first_line.startswith(_LOONY_MARKER_FAMILY) or not first_line.endswith("-->"):
         return None
     m = _ACTOR_ATTR_RE.search(first_line)
     return m.group(1) if m else None
@@ -97,13 +104,18 @@ def stamp_actor(body: str, actor: str) -> str:
     """Return *body* with ``actor=<name>`` stamped into its first line.
 
     Marker-first bodies get the attribute folded in before the closing
-    ``-->`` (a sibling of ``last-seen=``); plain bodies get a standalone
-    ``<!-- loony-actor actor=<name> -->`` line prepended. Idempotent: a body
-    whose first-line marker already carries an actor is returned unchanged.
+    ``-->`` (a sibling of ``last-seen=``); other bodies — including ones led
+    by a ``loonybin-`` sentinel, which must stay byte-identical for its
+    dedup — get a standalone ``<!-- loony-actor actor=<name> -->`` line
+    prepended. Idempotent: a body whose first-line marker already carries an
+    actor is returned unchanged. Raises :class:`ValueError` on an invalid
+    *actor* so a bad explicit override fails loudly instead of corrupting
+    the marker.
     """
+    validate_actor(actor)
     first, sep, rest = body.partition("\n")
     line = first.strip()
-    if line.startswith("<!-- loony") and line.endswith("-->"):
+    if line.startswith(_LOONY_MARKER_FAMILY) and line.endswith("-->"):
         if _ACTOR_ATTR_RE.search(line):
             return body
         stamped = f"{line[:-3].rstrip()} actor={actor} -->"

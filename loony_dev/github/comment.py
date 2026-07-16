@@ -330,16 +330,21 @@ class WarningComment(Comment):
     def save(self) -> None:
         """Post this warning comment if it doesn't already exist.
 
-        Posts via the raw ``gh`` transport, deliberately bypassing the
-        actor-stamping in ``GitHubItem.add_comment``: ``exists()`` dedupes on
-        an exact sentinel substring, and the warning resolves to the default
-        actor at read time anyway.
+        Posts via the raw ``gh`` transport (not ``GitHubItem.add_comment``)
+        but stamps the worker's actor itself so a non-default role is not
+        mis-attributed to the default actor at read time. The ``loonybin-``
+        sentinel is outside the ``loony-`` marker family, so ``stamp_actor``
+        *prepends* a standalone actor line and the sentinel stays
+        byte-identical for ``exists()``'s substring dedup.
         """
+        from loony_dev.actors import stamp_actor
+
         if self.exists():
             return
         try:
             self._repo.client.gh(
-                "issue", "comment", str(self._number), "--body", str(self.body),
+                "issue", "comment", str(self._number), "--body",
+                stamp_actor(str(self.body), self._repo.actor),
             )
         except Exception as exc:
             logger.warning(
