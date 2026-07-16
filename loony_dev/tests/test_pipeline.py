@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from loony_dev.actors import DEFAULT_ACTOR, stamp_actor
 from loony_dev.github.check_run import CheckRun
 from loony_dev.github.comment import Comment
 from loony_dev.github.issue import Issue
@@ -43,6 +44,7 @@ def _make_repo() -> MagicMock:
     repo.name = "owner/repo"
     repo.owner = "owner"
     repo.bot_name = BOT
+    repo.actor = DEFAULT_ACTOR
     repo._tick_cache = {}
     repo.is_authorized = MagicMock(return_value=True)
     repo.detect_default_branch.return_value = "main"
@@ -276,11 +278,16 @@ class TestNextTask(unittest.TestCase):
 class TestCIIdempotencyRegression(unittest.TestCase):
     """The marker-vs-updatedAt 'already handled?' check lives once in next_task."""
 
-    def _ci_pr(self, *, marker_at: str | None, updated_at: datetime) -> tuple[MagicMock, PullRequest]:
+    def _ci_pr(
+        self, *, marker_at: str | None, updated_at: datetime, stamped: bool = False
+    ) -> tuple[MagicMock, PullRequest]:
         repo = _make_repo()
         comments = []
         if marker_at is not None:
-            comments.append(Comment(author=BOT, body=f"{CI_FAILURE_MARKER}\n\ndone", created_at=marker_at))
+            body = f"{CI_FAILURE_MARKER}\n\ndone"
+            if stamped:
+                body = stamp_actor(body, DEFAULT_ACTOR)
+            comments.append(Comment(author=BOT, body=body, created_at=marker_at))
         pr = _pr(
             20, branch="issue-7/slug", mergeable="MERGEABLE",
             comments=comments, updated_at=updated_at, repo=repo,
@@ -298,6 +305,18 @@ class TestCIIdempotencyRegression(unittest.TestCase):
         # Marker posted at/after updatedAt => already handled, no task.
         repo, pr = self._ci_pr(
             marker_at="2024-01-02T00:00:00Z", updated_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+        )
+        failing = {"sha1": [CheckRun(name="t", status="completed", conclusion="failure", details_url="u")]}
+        with _world(repo, prs=[pr], failing_checks=failing):
+            task = Pipeline("issue-7", pr=pr).next_task(repo)
+        self.assertIsNone(task)
+
+    def test_stamped_marker_after_push_means_handled(self) -> None:
+        # Regression: a marker carrying actor= must still be recognized, or the
+        # same CI failure would be re-dispatched forever.
+        repo, pr = self._ci_pr(
+            marker_at="2024-01-02T00:00:00Z", updated_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+            stamped=True,
         )
         failing = {"sha1": [CheckRun(name="t", status="completed", conclusion="failure", details_url="u")]}
         with _world(repo, prs=[pr], failing_checks=failing):

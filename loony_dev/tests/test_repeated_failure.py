@@ -12,6 +12,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, call, patch
 
+from loony_dev.actors import DEFAULT_ACTOR, stamp_actor
 from loony_dev.github.comment import Comment
 from loony_dev.github.content import Content
 from loony_dev.github.issue import GitHubItem, Issue, _normalize_failure_body
@@ -192,7 +193,7 @@ class TestCheckAndPostFailure(unittest.TestCase):
         result = item.check_and_post_failure(body, BOT, 2, OWNER)
 
         self.assertFalse(result)
-        item.add_comment.assert_called_once_with(body)
+        item.add_comment.assert_called_once_with(body, actor=DEFAULT_ACTOR)
         item.add_label.assert_not_called()
 
     def test_non_identical_failures_posts_regular_comment(self) -> None:
@@ -204,7 +205,7 @@ class TestCheckAndPostFailure(unittest.TestCase):
         result = item.check_and_post_failure(body, BOT, 2, OWNER)
 
         self.assertFalse(result)
-        item.add_comment.assert_called_once_with(body)
+        item.add_comment.assert_called_once_with(body, actor=DEFAULT_ACTOR)
         item.add_label.assert_not_called()
 
     def test_identical_failures_triggers_in_error(self) -> None:
@@ -261,7 +262,7 @@ class TestCheckAndPostFailure(unittest.TestCase):
         result = item.check_and_post_failure(body, BOT, 3, OWNER)
 
         self.assertFalse(result)
-        item.add_comment.assert_called_once_with(body)
+        item.add_comment.assert_called_once_with(body, actor=DEFAULT_ACTOR)
         item.add_label.assert_not_called()
 
     def test_threshold_of_one_triggers_on_single_prior(self) -> None:
@@ -286,6 +287,48 @@ class TestCheckAndPostFailure(unittest.TestCase):
 
         self.assertFalse(result)
         item.add_label.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Actor attribution — "mine" = (login, actor), not the login alone
+# ---------------------------------------------------------------------------
+
+
+class TestActorAttribution(unittest.TestCase):
+
+    def test_stamped_ci_marker_counted(self) -> None:
+        """Regression: a CI marker carrying actor= must still match (prefix, not
+        closed-string) or CI failures stop counting toward in-error escalation."""
+        stamped = _comment(
+            BOT, stamp_actor(f"{CI_FAILURE_MARKER}\n\nCI failed", DEFAULT_ACTOR),
+            ts="2024-01-01T09:00:00Z",
+        )
+        item = _mock_item([stamped])
+        self.assertEqual(item._recent_bot_failure_comments(BOT, 2), [stamped])
+
+    def test_mixed_legacy_and_stamped_identical_failures_escalate(self) -> None:
+        """Escalation survives the transition: legacy and stamped bodies normalize the same."""
+        msg = "Implementation failed: oops"
+        legacy = _failure(ts="2024-01-01T09:00:00Z")
+        stamped = _comment(
+            BOT, stamp_actor(f"{FAILURE_MARKER}\n\n{msg}", DEFAULT_ACTOR),
+            ts="2024-01-01T10:00:00Z",
+        )
+        item = _mock_item([legacy, stamped], author="alice")
+
+        result = item.check_and_post_failure(f"{FAILURE_MARKER}\n\n{msg}", BOT, 2, OWNER)
+
+        self.assertTrue(result)
+        item.add_label.assert_called_once_with("in-error")
+
+    def test_peer_actor_failures_do_not_count(self) -> None:
+        """Another role's failures (same login, different actor) never count as mine."""
+        pm_failure = _comment(
+            BOT, "<!-- loony-failure actor=pm -->\n\nImplementation failed: oops",
+            ts="2024-01-01T09:00:00Z",
+        )
+        item = _mock_item([pm_failure])
+        self.assertEqual(item._recent_bot_failure_comments(BOT, 2), [])
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import re
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
+from loony_dev.actors import DEFAULT_ACTOR, comment_actor
 from loony_dev.models import RateLimitedError, truncate_for_log
 from loony_dev.tasks.base import (
     FAILURE_MARKER,
@@ -61,7 +62,7 @@ def planning_action(issue: Issue, repo: Repo) -> PlanningTask | None:
 
     comments = issue.comments
     existing_plan, existing_plan_comment_id, new_comments = PlanningTask._analyze_planning_comments(
-        comments, repo.bot_name
+        comments, repo.bot_name, repo.actor
     )
     if existing_plan is not None:
         logger.debug(
@@ -140,29 +141,38 @@ class PlanningTask(Task):
 
     @staticmethod
     def _analyze_planning_comments(
-        comments: list[Comment], bot_name: str
+        comments: list[Comment], bot_name: str, actor: str = DEFAULT_ACTOR
     ) -> tuple[str | None, int | None, list[Comment]]:
-        """Return (existing_plan, existing_plan_comment_id, new_user_comments_since_last_plan)."""
+        """Return (existing_plan, existing_plan_comment_id, new_user_comments_since_last_plan).
+
+        "My plan" means authored by *bot_name* **and** attributed to *actor*
+        (untagged bot comments resolve to the default actor); everything else
+        — foreign logins and sibling roles sharing the login — counts as new
+        feedback.
+        """
         bot_last_plan_idx = -1
         bot_last_plan: str | None = None
         bot_last_plan_comment_id: int | None = None
 
+        def mine(c: Comment) -> bool:
+            return comment_actor(c.author, str(c.body), bot_name) == actor
+
         for i, c in enumerate(comments):
-            if c.author == bot_name and c.body.startswith(PLAN_MARKER_PREFIX):
+            if mine(c) and c.body.startswith(PLAN_MARKER_PREFIX):
                 bot_last_plan_idx = i
                 bot_last_plan_comment_id = c.id
                 end = c.body.find("-->")
                 bot_last_plan = c.body[end + 3:].strip() if end >= 0 else c.body[len(PLAN_MARKER):].strip()
 
         if bot_last_plan_idx == -1:
-            new_comments = [c for c in comments if c.author != bot_name]
+            new_comments = [c for c in comments if not mine(c)]
         else:
             last_seen = decode_last_seen(comments[bot_last_plan_idx].body)
             if last_seen is not None:
-                new_comments = [c for c in comments if c.author != bot_name and c.created_at > last_seen]
+                new_comments = [c for c in comments if not mine(c) and c.created_at > last_seen]
             else:
                 new_comments = [
-                    c for c in comments[bot_last_plan_idx + 1:] if c.author != bot_name
+                    c for c in comments[bot_last_plan_idx + 1:] if not mine(c)
                 ]
 
         return bot_last_plan, bot_last_plan_comment_id, new_comments
@@ -268,4 +278,5 @@ class PlanningTask(Task):
             repo.bot_name,
             repo.repeated_failure_threshold,
             repo.owner,
+            actor=repo.actor,
         )

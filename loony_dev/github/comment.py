@@ -72,6 +72,17 @@ class Comment:
         self.thread_id = thread_id
         self.in_reply_to_id = in_reply_to_id
 
+    def actor_for(self, bot_name: str) -> str | None:
+        """The agent role this comment is attributed to, or ``None`` if not bot-authored.
+
+        A method rather than a stored property because attribution needs the
+        repo's ``bot_name``, which a ``Comment`` does not hold. Independent of
+        the body's ``safe`` flag, which stays purely login-based.
+        """
+        from loony_dev.actors import comment_actor
+
+        return comment_actor(self.author, str(self.body), bot_name)
+
     # --- Class-level reads ---
 
     _ISSUE_COMMENTS_QUERY = """\
@@ -317,7 +328,13 @@ class WarningComment(Comment):
         return any(sentinel in c.get("body", "") for c in data.get("comments", []))
 
     def save(self) -> None:
-        """Post this warning comment if it doesn't already exist."""
+        """Post this warning comment if it doesn't already exist.
+
+        Posts via the raw ``gh`` transport, deliberately bypassing the
+        actor-stamping in ``GitHubItem.add_comment``: ``exists()`` dedupes on
+        an exact sentinel substring, and the warning resolves to the default
+        actor at read time anyway.
+        """
         if self.exists():
             return
         try:

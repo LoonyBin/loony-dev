@@ -14,6 +14,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
+from loony_dev.actors import DEFAULT_ACTOR, stamp_actor
 from loony_dev.github.comment import Comment
 from loony_dev.github.content import Content
 from loony_dev.github.pull_request import PullRequest
@@ -28,6 +29,7 @@ REVIEWER = "alice"
 def _mock_repo() -> MagicMock:
     repo = MagicMock()
     repo.bot_name = BOT_NAME
+    repo.actor = DEFAULT_ACTOR
     return repo
 
 
@@ -127,6 +129,27 @@ class TestNewSinceBot(unittest.TestCase):
         comments = [t1, marker, t2]
         result = PRReviewTask._new_since_bot(comments, BOT_NAME)
         self.assertEqual(result, [t2])
+
+    # ------------------------------------------------------------------
+    # Actor attribution — "mine" = (login, actor), not the login alone
+    # ------------------------------------------------------------------
+    def test_stamped_success_marker_recognized_as_cutoff(self) -> None:
+        """A success marker carrying actor= still counts as my last response."""
+        legacy = _success("2024-01-01T12:00:00Z", last_seen="2024-01-01T10:00:00Z")
+        marker = _comment(BOT_NAME, stamp_actor(str(legacy.body), DEFAULT_ACTOR), legacy.created_at)
+        old = _general("2024-01-01T09:00:00Z")
+        new = _general("2024-01-01T13:00:00Z")
+
+        result = PRReviewTask._new_since_bot([old, marker, new], BOT_NAME)
+        self.assertEqual(result, [new])
+
+    def test_peer_actor_comment_counts_as_new(self) -> None:
+        """A bot-login comment tagged with a *different* actor is not mine — it is new."""
+        marker = _success("2024-01-01T12:00:00Z", last_seen="2024-01-01T10:00:00Z")
+        pm = _comment(BOT_NAME, "<!-- loony-actor actor=pm -->\nPlease also fix Y.", "2024-01-01T13:00:00Z")
+
+        result = PRReviewTask._new_since_bot([marker, pm], BOT_NAME)
+        self.assertEqual(result, [pm])
 
 
 class TestDiscoverInlineOnly(unittest.TestCase):

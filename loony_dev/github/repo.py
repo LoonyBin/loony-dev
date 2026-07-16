@@ -132,13 +132,18 @@ class Repo:
         min_role: str | None = None,
         skip_ci_checks: set[str] | None = None,
         cwd: str | None = None,
+        actor: str | None = None,
     ) -> None:
         from loony_dev import config
+        from loony_dev.actors import configured_actor
 
         self.cwd = cwd
         self.name: str = repo or Repo.detect(cwd=cwd)
         self.client = GitHubClient(self.name, cwd=cwd)
         self.bot_name: str = bot_name or config.settings.get("bot_name") or Repo.detect_bot_name()
+        # The agent role stamped into every comment this worker posts (all
+        # roles share the bot_name login; the actor label distinguishes them).
+        self.actor: str = actor or configured_actor()
         self.allowed_users: set[str] = (
             allowed_users if allowed_users is not None
             else set(config.settings.get("allowed_users") or [])
@@ -349,8 +354,10 @@ class Repo:
             logger.warning("Failed to remove label '%s' from #%d: %s", label, number, exc)
             raise
 
-    def post_comment(self, number: int, body: str) -> None:
+    def post_comment(self, number: int, body: str, *, actor: str | None = None) -> None:
+        from loony_dev.actors import stamp_actor
         from loony_dev.models import truncate_for_log
+        body = stamp_actor(body, actor or self.actor)
         logger.debug("post_comment(#%d): %s", number, truncate_for_log(body))
         self.client.gh("issue", "comment", str(number), "--body", body)
 

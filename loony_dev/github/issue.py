@@ -5,6 +5,7 @@ import logging
 import subprocess
 from typing import TYPE_CHECKING
 
+from loony_dev.actors import DEFAULT_ACTOR, comment_actor, stamp_actor
 from loony_dev.github.content import Content
 from loony_dev.github.repo import parse_datetime
 
@@ -45,17 +46,28 @@ class GitHubItem:
         self.number = number
         self._repo = _repo
 
-    def add_comment(self, body: str) -> None:
-        """Post a comment on this issue or PR."""
+    def add_comment(self, body: str, *, actor: str | None = None) -> None:
+        """Post a comment on this issue or PR, stamped with its actor label.
+
+        Every comment posted through here carries an ``actor=`` attribute
+        (folded into a leading ``<!-- loony-* -->`` marker, or a standalone
+        ``<!-- loony-actor -->`` line) identifying the agent role that wrote
+        it. Defaults to this worker's role (``Repo.actor``).
+        """
         from loony_dev.models import truncate_for_log
 
+        body = stamp_actor(body, actor or self._repo.actor)
         logger.debug("add_comment(#%d): %s", self.number, truncate_for_log(body))
         self._repo.client.gh("issue", "comment", str(self.number), "--body", body)
 
-    def edit_comment(self, comment_id: int, body: str) -> None:
-        """Edit an existing comment by its database ID via the REST API."""
+    def edit_comment(self, comment_id: int, body: str, *, actor: str | None = None) -> None:
+        """Edit an existing comment by its database ID via the REST API.
+
+        Stamped with an actor label exactly like :meth:`add_comment`.
+        """
         from loony_dev.models import truncate_for_log
 
+        body = stamp_actor(body, actor or self._repo.actor)
         logger.debug("edit_comment(#%d, comment=%d): %s", self.number, comment_id, truncate_for_log(body))
         self._repo.client.gh_api_patch(f"issues/comments/{comment_id}", body=body)
 
@@ -94,41 +106,47 @@ class GitHubItem:
 
         return Comment.list_for_issue(self.number, repo=self._repo)
 
-    def _recent_bot_failure_comments(self, bot_name: str, n: int) -> list[Comment]:
-        """Return the last *n* bot-authored failure comments on this item.
+    def _recent_bot_failure_comments(
+        self, bot_name: str, n: int, actor: str = DEFAULT_ACTOR
+    ) -> list[Comment]:
+        """Return the last *n* of this worker's failure comments on this item.
 
         Only comments whose body starts with a failure marker (implementation
         failure or CI failure) are considered; success and plan comments are
         ignored so a recent success does not displace prior failures from the
-        repeated-failure window.
+        repeated-failure window. "This worker's" means authored by *bot_name*
+        **and** attributed to *actor* — another role's failures never count
+        toward this role's in-error escalation.
         """
-        from loony_dev.tasks.base import CI_FAILURE_MARKER, FAILURE_MARKER_PREFIX
+        from loony_dev.tasks.base import CI_FAILURE_MARKER_PREFIX, FAILURE_MARKER_PREFIX
 
         all_comments = self.get_comments()
         bot_comments = [
             c for c in all_comments
-            if c.author == bot_name and (
+            if comment_actor(c.author, str(c.body), bot_name) == actor and (
                 str(c.body).startswith(FAILURE_MARKER_PREFIX)
-                or str(c.body).startswith(CI_FAILURE_MARKER)
+                or str(c.body).startswith(CI_FAILURE_MARKER_PREFIX)
             )
         ]
         return bot_comments[-n:]
 
     def check_and_post_failure(
-        self, failure_body: str, bot_name: str, n: int, fallback_owner: str
+        self, failure_body: str, bot_name: str, n: int, fallback_owner: str,
+        actor: str = DEFAULT_ACTOR,
     ) -> bool:
         """Decide whether to post a regular failure comment or trigger in-error.
 
-        Compares the last *n* bot failure comments against *failure_body*
-        (ignoring dynamic marker attributes).  If all *n* match, applies the
-        ``in-error`` label and posts a sleeping notice tagging the item owner.
+        Compares the last *n* of this worker's failure comments (bot-authored
+        and attributed to *actor*) against *failure_body* (ignoring dynamic
+        marker attributes).  If all *n* match, applies the ``in-error`` label
+        and posts a sleeping notice tagging the item owner.
 
         Returns True if the in-error path was taken, False otherwise.
         """
         from loony_dev.tasks.base import IN_ERROR_MARKER
 
         normalized_current = _normalize_failure_body(failure_body)
-        recent = self._recent_bot_failure_comments(bot_name, n)
+        recent = self._recent_bot_failure_comments(bot_name, n, actor)
 
         if len(recent) >= n and all(
             _normalize_failure_body(str(c.body)) == normalized_current
@@ -136,14 +154,15 @@ class GitHubItem:
         ):
             item_owner = getattr(self, "author", "") or fallback_owner
             if not self.add_label("in-error"):
-                self.add_comment(failure_body)
+                self.add_comment(failure_body, actor=actor)
                 return False
             self.add_comment(
                 f"{IN_ERROR_MARKER}\n\n"
                 f"I've encountered the same failure {n + 1} time(s) in a row and will stop "
                 f"retrying. @{item_owner}, please review.\n\n"
                 f"<details><summary>Repeated failure</summary>\n\n"
-                f"{failure_body}\n\n</details>"
+                f"{failure_body}\n\n</details>",
+                actor=actor,
             )
             logger.warning(
                 "#%d marked in-error after %d identical consecutive failure(s)",
@@ -151,7 +170,7 @@ class GitHubItem:
             )
             return True
 
-        self.add_comment(failure_body)
+        self.add_comment(failure_body, actor=actor)
         return False
 
 

@@ -10,12 +10,16 @@ if TYPE_CHECKING:
     from loony_dev.models import TaskResult
 
 
-# Prefix strings — match both old markers (no last-seen) and new markers (with last-seen).
-# Use these for startswith() checks so both formats are recognized.
+# Prefix strings — match old markers (bare) and new markers carrying attributes
+# (last-seen=, actor=). Use these for startswith() checks so all formats are
+# recognized.
 FAILURE_MARKER_PREFIX = "<!-- loony-failure"
 SUCCESS_MARKER_PREFIX = "<!-- loony-success"
+CI_FAILURE_MARKER_PREFIX = "<!-- loony-ci-failure"
+IN_ERROR_MARKER_PREFIX = "<!-- loony-in-error"
 
-# Legacy fixed-string markers kept for backward compatibility (old markers have no last-seen).
+# Legacy fixed-string markers kept for backward compatibility (old markers have
+# no attributes). Never use these for detection — a stamped marker won't match.
 FAILURE_MARKER = "<!-- loony-failure -->"
 SUCCESS_MARKER = "<!-- loony-success -->"
 

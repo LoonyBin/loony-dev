@@ -4,6 +4,7 @@ import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
+from loony_dev.actors import DEFAULT_ACTOR, comment_actor
 from loony_dev.models import RateLimitedError, truncate_for_log
 from loony_dev.tasks.base import (
     FAILURE_MARKER,
@@ -37,7 +38,7 @@ def pr_review_action(pr: PullRequest, repo: Repo) -> PRReviewTask | None:
         return None
 
     all_comments = PRReviewTask._assemble_comments(pr, repo)
-    new_comments = PRReviewTask._new_since_bot(all_comments, repo.bot_name)
+    new_comments = PRReviewTask._new_since_bot(all_comments, repo.bot_name, repo.actor)
 
     if not new_comments:
         logger.debug("PR #%d has no new comments — skipping", pr.number)
@@ -107,23 +108,33 @@ class PRReviewTask(Task):
         return comments
 
     @staticmethod
-    def _new_since_bot(comments: list[Comment], bot_name: str) -> list[Comment]:
-        """Return non-bot comments after the bot's last *successful* response."""
+    def _new_since_bot(
+        comments: list[Comment], bot_name: str, actor: str = DEFAULT_ACTOR
+    ) -> list[Comment]:
+        """Return comments not mine after my last *successful* response.
+
+        "Mine" means authored by *bot_name* **and** attributed to *actor*
+        (untagged bot comments resolve to the default actor); foreign logins
+        and sibling roles sharing the login count as new.
+        """
+        def mine(c: Comment) -> bool:
+            return comment_actor(c.author, str(c.body), bot_name) == actor
+
         bot_last_success_idx = -1
         bot_last_success_body: str | None = None
         for i, c in enumerate(comments):
-            if c.author == bot_name and c.body.startswith(SUCCESS_MARKER_PREFIX):
+            if mine(c) and c.body.startswith(SUCCESS_MARKER_PREFIX):
                 bot_last_success_idx = i
                 bot_last_success_body = c.body
 
         if bot_last_success_idx == -1:
-            result = [c for c in comments if c.author != bot_name]
+            result = [c for c in comments if not mine(c)]
         else:
             last_seen = decode_last_seen(bot_last_success_body or "")
             if last_seen is not None:
-                result = [c for c in comments if c.author != bot_name and c.created_at > last_seen]
+                result = [c for c in comments if not mine(c) and c.created_at > last_seen]
             else:
-                result = [c for c in comments[bot_last_success_idx + 1:] if c.author != bot_name]
+                result = [c for c in comments[bot_last_success_idx + 1:] if not mine(c)]
 
         logger.debug(
             "_new_since_bot: last success marker at index %d, returning %d new comment(s)",
@@ -244,4 +255,5 @@ class PRReviewTask(Task):
             repo.bot_name,
             repo.repeated_failure_threshold,
             repo.owner,
+            actor=repo.actor,
         )
