@@ -3272,5 +3272,60 @@ class SetPipelineLabelApiTestCase(unittest.TestCase):
         self.assertEqual(resp.status_code, 422)
 
 
+class ListWorktreesSessionIdTestCase(unittest.TestCase):
+    """``list_worktrees`` tags each pipeline worktree with its predicted id.
+
+    Display-only fallback for the Worktree card when the session registry has no
+    recorded id yet; the base checkout and any detached worktree must carry
+    ``None`` rather than an invented uuid.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        (self.base / ".logs" / "acme" / "widgets").mkdir(parents=True)
+        (self.base / "acme" / "widgets" / ".git").mkdir(parents=True)
+
+    def _list(self, infos: list) -> list[services.WorktreeView]:
+        with mock.patch.object(services.GitRepo, "list_worktrees", lambda self: infos):
+            return services.list_worktrees(self.base)
+
+    def test_pipeline_branch_gets_the_deterministic_id(self) -> None:
+        from loony_dev.git import WorktreeInfo
+        from loony_dev.session import session_id_for
+
+        views = self._list([
+            WorktreeInfo(path=Path("/w/issue-184"), branch="issue-184/add-session-id",
+                         head="a" * 40),
+        ])
+        self.assertEqual(
+            views[0].predicted_session_id,
+            session_id_for("acme/widgets", "issue:184"),
+        )
+
+    def test_base_checkout_and_detached_carry_no_id(self) -> None:
+        from loony_dev.git import WorktreeInfo
+
+        views = self._list([
+            WorktreeInfo(path=Path("/w/main"), branch="main", head="b" * 40),
+            WorktreeInfo(path=Path("/w/loose"), branch=None, head="c" * 40, detached=True),
+        ])
+        self.assertEqual([v.predicted_session_id for v in views], [None, None])
+
+    def test_id_is_repo_scoped(self) -> None:
+        """Same branch in a different repo must not collide."""
+        (self.base / ".logs" / "other" / "widgets").mkdir(parents=True)
+        (self.base / "other" / "widgets" / ".git").mkdir(parents=True)
+        from loony_dev.git import WorktreeInfo
+
+        views = self._list([
+            WorktreeInfo(path=Path("/w/issue-184"), branch="issue-184/x", head="a" * 40),
+        ])
+        ids = {v.repo: v.predicted_session_id for v in views}
+        self.assertEqual(len(ids), 2)
+        self.assertNotEqual(ids["acme/widgets"], ids["other/widgets"])
+
+
 if __name__ == "__main__":
     unittest.main()
