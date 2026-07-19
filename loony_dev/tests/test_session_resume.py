@@ -43,6 +43,37 @@ def _git_init(path: Path) -> GitRepo:
 
 
 # ---------------------------------------------------------------------------
+# Branch -> pipeline key
+# ---------------------------------------------------------------------------
+
+class PipelineKeyForBranchTestCase(unittest.TestCase):
+    def test_strips_the_slug_suffix(self) -> None:
+        self.assertEqual(
+            session_resume.pipeline_key_for_branch("issue-184/add-session-id"), "issue-184"
+        )
+
+    def test_accepts_the_bare_key(self) -> None:
+        self.assertEqual(session_resume.pipeline_key_for_branch("pr-210"), "pr-210")
+
+    def test_non_pipeline_branches_yield_no_key(self) -> None:
+        """A bogus key would mint a plausible-looking but wrong session id."""
+        for branch in ("main", "feat/comment-actor", "fix/x", "issue-/x", "issueX-1"):
+            with self.subTest(branch=branch):
+                self.assertIsNone(session_resume.pipeline_key_for_branch(branch))
+
+    def test_detached_head_yields_no_key(self) -> None:
+        self.assertIsNone(session_resume.pipeline_key_for_branch(None))
+
+    def test_round_trips_to_the_agent_session_id(self) -> None:
+        """The predicted id must equal what IssueTask's session_key produces."""
+        key = session_resume.pipeline_key_for_branch("issue-184/add-session-id")
+        self.assertEqual(
+            session_id_for(REPO, session_resume.pipeline_session_key(key)),
+            session_id_for(REPO, "issue:184"),
+        )
+
+
+# ---------------------------------------------------------------------------
 # Registry round-trip
 # ---------------------------------------------------------------------------
 

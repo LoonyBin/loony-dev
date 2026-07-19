@@ -24,6 +24,7 @@ Two entry points mirror the issue's two modes:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -79,6 +80,27 @@ def pipeline_session_key(pipeline_key: str) -> str:
     ``:`` to recover the session key the agent used for ``--resume`` continuity.
     """
     return pipeline_key.replace("-", ":", 1)
+
+
+# A pipeline branch is ``<pipeline_key>/<slug>`` (``issue-184/add-session-id``) or
+# the bare key. Anchored and typed so a non-pipeline branch (``main``,
+# ``feat/whatever``) yields no key rather than a plausible-looking bogus one —
+# ``feat/x`` must not become session key ``feat``.
+_PIPELINE_BRANCH_RE = re.compile(r"^((?:issue|pr)-\d+)(?:/|$)")
+
+
+def pipeline_key_for_branch(branch: str | None) -> str | None:
+    """Return the pipeline key a worktree *branch* belongs to, or ``None``.
+
+    The inverse of ``IssueTask.branch_name`` (``issue-N/<slug>``): the branch
+    carries a human-readable slug suffix the pipeline identity does not, so the
+    key is just its leading ``issue-N`` / ``pr-P`` segment. Branches outside the
+    pipeline vocabulary (``main``, ad-hoc ``feat/…``) return ``None``.
+    """
+    if not branch:
+        return None
+    m = _PIPELINE_BRANCH_RE.match(branch)
+    return m.group(1) if m else None
 
 
 def canonical_worktree_path(git: GitRepo, repo: str, pipeline_key: str) -> Path:

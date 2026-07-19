@@ -1395,6 +1395,7 @@ button.action:hover,
 }
 .kv dt { color: var(--fg-secondary); }
 .kv dd { margin: 0; word-break: break-word; }
+.kv dd.mono { font-family: var(--font-mono); font-size: var(--fs-xs); }
 .join-link { display: inline-block; margin-top: var(--space-2); text-decoration: none; }
 
 /* ---- ScreenHead (#222) ----------------------------------------------- */

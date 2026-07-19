@@ -29,6 +29,7 @@ from pathlib import Path
 from loony_dev import execution_state, pipeline_lease, pipeline_log, session_registry
 from loony_dev.agents import session_resume
 from loony_dev.git import GitRepo
+from loony_dev.session import session_id_for
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +62,26 @@ class WorkerView:
 
 @dataclass(frozen=True)
 class WorktreeView:
+    """One ``git worktree list`` entry, tagged with its owning repo.
+
+    ``predicted_session_id`` is the deterministic id this worktree's pipeline
+    *would* use — ``session_id_for(repo, "issue:N")``, recomputed from the branch
+    — and is a **fallback for display only**, never an attach handle. The
+    authoritative id is the session registry's (``TaskSessionView.session_id``),
+    because a branch with no prior commits is deliberately given a fresh random
+    id instead of the deterministic one, so the prediction is wrong exactly
+    there. Present it as predicted, and prefer the recorded id whenever one
+    exists. ``None`` for detached HEAD and for non-pipeline branches (the base
+    checkout's ``main``).
+    """
+
     repo: str
     path: str
     branch: str | None
     head: str | None
     detached: bool
     bare: bool
+    predicted_session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -284,15 +299,22 @@ def list_worktrees(base_dir: Path) -> list[WorktreeView]:
             infos = GitRepo(work_dir=checkout).list_worktrees()
         except Exception:
             continue
+        repo = f"{owner}/{name}"
         for info in infos:
+            key = session_resume.pipeline_key_for_branch(info.branch)
             worktrees.append(
                 WorktreeView(
-                    repo=f"{owner}/{name}",
+                    repo=repo,
                     path=str(info.path),
                     branch=info.branch,
                     head=info.head,
                     detached=info.detached,
                     bare=info.bare,
+                    predicted_session_id=(
+                        session_id_for(repo, session_resume.pipeline_session_key(key))
+                        if key
+                        else None
+                    ),
                 )
             )
     return worktrees

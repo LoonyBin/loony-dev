@@ -473,7 +473,16 @@ function renderLinked(repo, key, worktree) {
   host.appendChild(prCard);
 }
 
-function renderWorktree(worktree) {
+// The Claude session id is the operator's handle for `claude --resume` against
+// this pipeline's transcript, so it belongs beside the worktree coordinates it
+// pairs with (branch/HEAD/path). Two sources, and the label distinguishes them
+// because they are not equally trustworthy: the session registry's recorded id
+// is authoritative ("Session"), while the worktree's server-computed
+// `predicted_session_id` is only what `session_id_for(repo, "issue:N")` derives
+// ("Session (predicted)"). The prediction is wrong precisely when a branch had
+// no prior commits — those get a fresh random id deliberately — so it is a
+// hint to try, never presented as fact, and the recorded id always wins.
+function renderWorktree(worktree, row) {
   const host = document.getElementById("pipeline-worktree");
   if (!host) return;
   host.innerHTML = "";
@@ -486,6 +495,12 @@ function renderWorktree(worktree) {
   kvRow(dl, "Branch", worktree.detached ? "(detached)" : worktree.branch);
   kvRow(dl, "HEAD", worktree.head ? worktree.head.slice(0, 10) : null);
   kvRow(dl, "Path", worktree.path);
+  const recorded = row && row.session_id;
+  if (recorded) {
+    kvRow(dl, "Session", recorded, "mono");
+  } else {
+    kvRow(dl, "Session (predicted)", worktree.predicted_session_id, "mono");
+  }
   host.appendChild(dl);
   host.appendChild(muted("isolated · auto-GC on merge"));
 }
@@ -706,7 +721,7 @@ function renderAll() {
   renderSteerGate(row);
   renderLifecycle(repo, key);
   renderLinked(repo, key, worktree);
-  renderWorktree(worktree);
+  renderWorktree(worktree, row);
 }
 
 // Start the inline conversation stream once, if the row is observable. Idempotent:
